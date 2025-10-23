@@ -1,4 +1,4 @@
-# 🎧 ComplexVAE: Generative Backbone for Complex-Valued Audio Spectrograms
+# 🎧 EulerAudioBackbone: Generative Backbone for Complex-Valued Audio Spectrograms
 
 ## Overview
 **ComplexVAE** is a research-oriented backbone for **complex-valued Variational Autoencoders (VAE)** operating directly on **complex STFT spectrograms**.  
