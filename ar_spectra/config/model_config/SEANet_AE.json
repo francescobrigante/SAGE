@@ -1,0 +1,31 @@
+{
+  "autoencoder": {
+    "return_latent": false
+  },
+  "encoder": {
+    "class": "ar_spectra.models.autoencoder.SeaNET_AE.SEANetEncoder2d",
+    "kwargs": {
+      "input_size": 1,
+      "dimension": 128,
+      "n_filters": 32,
+      "n_residual_layers": 1,
+      "ratios": [[4,1], [4,1], [4,2], [4,1]],
+      "activation": "ELU",
+      "norm": "weight_norm",
+      "causal": false
+    }
+  },
+  "decoder": {
+    "class": "ar_spectra.models.autoencoder.SeaNET_AE.SEANetDecoder2d",
+    "kwargs": {
+      "input_size": 128,
+      "channels": 1,
+      "n_filters": 32,
+      "n_residual_layers": 1,
+      "ratios": [[4,1], [4,1], [4,2], [4,1]],
+      "activation": "ELU",
+      "norm": "weight_norm",
+      "causal": false
+    }
+  }
+}

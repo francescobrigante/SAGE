@@ -1,0 +1,115 @@
+{
+  "seed": 42,
+  "device": "cuda",
+  "train_dataset": {
+    "class": "ar_spectra.dataset.OnTheFlySTFTDataset",
+    "kwargs": {
+      "audio_dir": "/home/cerovaz/repos/data/jamendo_full/train",
+      "target_frames": 512,
+      "sample_rate": 44100,
+      "n_fft": 512,
+      "hop_length": 128, 
+      "win_length": 512,
+      "center": true,
+      "normalized": false,
+      "extensions": [".mp3"],
+      "stereo": true,
+      "cac": true,
+      "skip_broken_files": true
+    }
+  },
+  "train_dataloader": {
+    "batch_size": 24,
+    "num_workers": 8,
+    "prefetch_factor": 8,
+    "pin_memory": true,
+    "persistent_workers": false,
+    "shuffle": true,
+    "pin_memory_device": "cuda:0"
+  },
+  "eval_dataset": {
+    "class": "ar_spectra.dataset.OnTheFlySTFTDataset",
+    "kwargs": {
+      "audio_dir": "/home/cerovaz/repos/data/jamendo_full/eval",
+      "target_frames": 512,
+      "sample_rate": 44100,
+      "n_fft": 512,
+      "hop_length": 256,
+      "win_length": 512,
+      "center": true,
+      "normalized": false,
+      "extensions": [".mp3"],
+      "stereo": true,
+      "cac": true,
+      "skip_broken_files": true
+    }
+  },
+  "val_dataloader": {
+    "batch_size": 1,
+    "num_workers": 8,
+    "prefetch_factor": 8,
+    "pin_memory": true,
+    "persistent_workers": false,
+    "shuffle": false,
+    "pin_memory_device": "cuda:0"
+  },
+  "model": {
+    "autoencoder": { "return_latent": false},
+    "encoder": {
+      "class": "ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d",
+      "kwargs": {
+        "input_size": "auto",
+        "dimension": 64,
+        "n_filters": 32,
+        "n_residual_layers": 1,
+        "ratios": [[4,1],[4,1],[4,2],[4,1]],
+        "activation": "ELU",
+        "norm": "weight_norm",
+        "causal": false
+      }
+    },
+    "decoder": {
+      "class": "ar_spectra.models.autoencoders.SeaNET_AE.SEANetDecoder2d",
+      "kwargs": {
+        "channels": "auto",
+        "input_size": 64,
+        "n_filters": 32,
+        "n_residual_layers": 1,
+        "ratios": [[4,1],[4,1],[4,2],[4,1]],
+        "activation": "ELU",
+        "norm": "weight_norm",
+        "causal": false
+      }
+    }
+  },
+  "optimizer": {
+    "class": "torch.optim.AdamW",
+    "kwargs": { "lr": 0.0002, "weight_decay": 0.01 }
+  },
+  
+  "trainer": {
+    "epochs": 1,
+    "amp": false,
+    "log_interval": 1,
+    "ckpt_dir": "checkpoints/seanet_stft",
+    "profile": false
+  },
+  "wandb": {
+    "project": "ICML_2026",
+    "name": "SEANet_STFT",
+    "use_wandb": true
+  },
+  "demo": {
+    "every_n_epochs": 1,
+    "max_demos": 6,
+    "target_seconds": 1.0,
+    "istft_params": {
+      "n_fft": 512,
+      "hop_length": 256,
+      "win_length": 512,
+      "center": true,
+      "normalized": false
+    },
+    "save_basename": "recon_val"
+  }
+}
