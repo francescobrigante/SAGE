@@ -34,23 +34,6 @@ def load_json(path: str):
     with open(path, "r") as f:
         return json.load(f)
 
-def _maybe_build_optimizer_configs(cfg):
-    optimizer_configs = cfg.get("optimizer_configs", None)
-    if optimizer_configs is not None:
-        return optimizer_configs
-
-    # fallback: usa "optimizer" unica per gen/disc
-    opt_spec = cfg.get("optimizer", {"class": "torch.optim.AdamW", "kwargs": {"lr": 2e-4, "betas": (0.8,0.99)}})
-    def to_local(spec):
-        if isinstance(spec, dict) and "class" in spec:
-            typ = spec["class"].split(".")[-1]
-            return {"type": typ, "config": spec.get("kwargs", {})}
-        return spec
-    return {
-        "autoencoder": {"optimizer": to_local(opt_spec)},
-        "discriminator": {"optimizer": to_local(opt_spec)},
-    }
-
 class DatasetEpochSetter(pl.Callback):
     def __init__(self, dataset):
         super().__init__()
@@ -66,10 +49,11 @@ class ModelInfoLogger(pl.Callback):
     - salva un JSON su disco
     - logga su W&B (se attivo)
     """
-    def __init__(self, filename: str = "model_info.json", max_module_lines: int = 512):
+    def __init__(self, filename: str = "model_info.json", max_module_lines: int = 512, log_structure: bool = False ):
         super().__init__()
         self.filename = filename
         self.max_module_lines = int(max_module_lines)
+        self.log_structure = bool(log_structure)
 
     @rank_zero_only
     def on_fit_start(self, trainer, pl_module):
@@ -85,7 +69,8 @@ class ModelInfoLogger(pl.Callback):
         console.print(f"params total/trainable: {info.get('num_parameters_total')}/{info.get('num_parameters_trainable')}")
         console.rule("[bold cyan]Model structure")
         model_cfg = extract_model_config(model)
-        print("[MODEL SUMMARY]\n", model_cfg["repr"])
+        if self.log_structure:
+            print("[MODEL SUMMARY]\n", model_cfg["repr"])
         console.rule()
 
         # Salva JSON su disco
@@ -95,8 +80,9 @@ class ModelInfoLogger(pl.Callback):
             base_dir.mkdir(parents=True, exist_ok=True)
             out_path = base_dir / self.filename
             out_path.write_text(json.dumps(info, indent=2))
+            ok(f"ModelInfoLogger: saved model info JSON to {str(out_path)}")
         except Exception as e:
-            warn(f"ModelInfoLogger: impossibile salvare JSON ({type(e).__name__}: {e})")
+            warn(f"ModelInfoLogger: not able to save JSON ({type(e).__name__}: {e})")
             out_path = None
 
         # Logga su W&B (se presente)
@@ -198,23 +184,28 @@ def main():
 
     # build modello e wrapper Lightning
     autoenc = AutoEncoder.from_config(model_cfg)
-    optimizer_configs = _maybe_build_optimizer_configs(cfg)
+    # optimizer/scheduler specs will be consumed inside the LightningModule
+    optimizer_spec = cfg.get("optimizer", None)
+    scheduler_spec = cfg.get("scheduler", None)
+
     wrapper = AutoencoderTrainingWrapper(
         autoencoder=autoenc,
         sample_rate=int(cfg["train_dataset"]["kwargs"].get("sample_rate", 44100)),
         audio_channels=int(audio_channels),
         loss_config=cfg.get("loss_config", None),
         eval_loss_config=cfg.get("eval_loss_config", None),
-        optimizer_configs=optimizer_configs,
+        optimizer_configs=None,
         warmup_steps=int(cfg.get("trainer", {}).get("warmup_steps", 0)),
         warmup_mode=str(cfg.get("trainer", {}).get("warmup_mode", "adv")),
         encoder_freeze_on_warmup=bool(cfg.get("trainer", {}).get("encoder_freeze_on_warmup", False)),
         force_input_mono=bool(cfg.get("model", {}).get("autoencoder", {}).get("force_input_mono", False)),
         latent_mask_ratio=float(cfg.get("model", {}).get("autoencoder", {}).get("latent_mask_ratio", 0.0)),
         teacher_model=None,
-        stft_params=cfg.get("train_dataset", {}).get("kwargs", {})
+        stft_params=cfg.get("train_dataset", {}).get("kwargs", {}),
+        optimizer_spec=optimizer_spec,
+        scheduler_spec=scheduler_spec,
     )
-    ok(f"Instantiated AutoEncoder, AutoencoderTrainingWrapper, optimizer: {optimizer_configs}")
+    ok(f"Instantiated AutoEncoder and Lightning wrapper.")
 
     # logger (W&B opzionale)
     wandb_cfg = (cfg.get("wandb", {}) or {})
@@ -231,7 +222,7 @@ def main():
     ckpt_dir = Path(cfg.get("trainer", {}).get("ckpt_dir", "checkpoints/seanet_stft"))
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     callbacks = [
-        ModelInfoLogger(filename="model_info.json", max_module_lines=768), 
+        ModelInfoLogger(filename="model_info.json", max_module_lines=768, log_structure=False), 
         ModelCheckpoint(
             dirpath=str(ckpt_dir),
             filename="epoch_{epoch:03d}",
