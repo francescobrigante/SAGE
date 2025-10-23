@@ -8,7 +8,7 @@
       "target_frames": 512,
       "sample_rate": 44100,
       "n_fft": 512,
-      "hop_length": 128, 
+      "hop_length": 128,
       "win_length": 512,
       "center": true,
       "normalized": false,
@@ -59,7 +59,7 @@
       "class": "ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d",
       "kwargs": {
         "input_size": "auto",
-        "dimension": 64,
+        "dimension": 128,
         "n_filters": 32,
         "n_residual_layers": 1,
         "ratios": [[4,1],[4,1],[4,2],[4,1]],
@@ -80,13 +80,21 @@
         "norm": "weight_norm",
         "causal": false
       }
-    }
+    },
+    "bottleneck": { "class": "ar_spectra.models.bottlenecks.VAEBottleneck" }
   },
   "optimizer": {
-    "class": "torch.optim.AdamW",
-    "kwargs": { "lr": 0.0002, "weight_decay": 0.01 }
+    "type": "AdamW",
+    "config": { "lr": 0.0002, "weight_decay": 0.01 }
   },
-  
+  "scheduler": {
+    "type": "InverseLR",
+    "config": {
+      "inv_gamma": 200000,
+      "power": 0.5,
+      "warmup": 0.999
+    }
+  },
   "trainer": {
     "epochs": 1,
     "amp": false,
@@ -111,5 +119,19 @@
       "normalized": false
     },
     "save_basename": "recon_val"
+  },
+  "loss_config": {
+    "bottleneck": { "weights": { "kl": 1e-4 } },
+    "spectral": {
+      "type": "mrstft",
+      "config": {
+        "fft_sizes": [2048,1024,512,256,128,64,32],
+        "hop_sizes": [512,256,128,64,32,16,8],
+        "win_lengths": [2048,1024,512,256,128,64,32],
+        "perceptual_weighting": true
+      },
+      "weights": { "mrstft": 1.0 }
+    },
+    "time": { "weights": { "l1": 0.0 } }
   }
 }

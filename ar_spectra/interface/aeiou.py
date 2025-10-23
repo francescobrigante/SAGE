@@ -194,10 +194,12 @@ def mel_spectrogram(waveform, power=2.0, sample_rate=48000, db=False, n_fft=1024
         sample_rate=sample_rate, n_fft=n_fft, win_length=win_length, 
         hop_length=hop_length, center=True, pad_mode="reflect", power=power, 
         norm='slaney', onesided=True, n_mels=n_mels, mel_scale="htk")
+    # Assicura che la window/buffer del transform sia sullo stesso device del waveform
+    mel_spectrogram_op = mel_spectrogram_op.to(waveform.device)
 
     melspec = mel_spectrogram_op(waveform.float())
     if db: 
-        amp_to_db_op = T.AmplitudeToDB()
+        amp_to_db_op = T.AmplitudeToDB().to(melspec.device)
         melspec = amp_to_db_op(melspec)
     if debug:
         print_stats(melspec, print=print) 
@@ -216,6 +218,10 @@ def spectrogram_image(
         figsize=(5, 4), # size of plot (if justimage==False)
     ):
     "Modified from PyTorch tutorial https://pytorch.org/tutorials/beginner/audio_feature_extractions_tutorial.html"
+    # Se arriva un tensore su GPU, portalo su CPU per l'uso con NumPy/matplotlib
+    if isinstance(spec, torch.Tensor):
+        spec = spec.detach().to('cpu')
+
     fig = Figure(figsize=figsize, dpi=100) if not justimage else Figure(figsize=(4.145, 4.145), dpi=100, tight_layout=True)
     canvas = FigureCanvasAgg(fig)
     axs = fig.add_subplot()
@@ -238,7 +244,6 @@ def spectrogram_image(
     if justimage: # remove tiny white border
         b = 15 # border size 
         im = im.crop((b,b, im.size[0]-b, im.size[1]-b))
-        #print(f"im.size = {im.size}")
     return im
 
 def audio_spectrogram_image(waveform, power=2.0, sample_rate=48000, print=print, db=False, db_range=[35,120], justimage=False, log=False, figsize=(5, 4)):
