@@ -34,13 +34,10 @@ class VAEBottleneck(Bottleneck):
 
     def encode(self, x, return_info=False, **kwargs):
         info = {}
-
+        assert x.shape[1] % 2 == 0, "VAEBottleneck expects even channels [mu|scale] along dim=1"
         mean, scale = x.chunk(2, dim=1)
-
         x, kl = vae_sample(mean, scale)
-
         info["kl"] = kl
-
         if return_info:
             return x, info
         else:

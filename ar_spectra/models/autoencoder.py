@@ -7,6 +7,8 @@ import importlib
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import torch
 import torch.nn as nn
+import warnings
+from .bottlenecks import VAEBottleneck
 
 def checkpoint(function, *args, **kwargs):
     kwargs.setdefault("use_reentrant", False)
@@ -68,6 +70,46 @@ class AutoEncoder(nn.Module):
             (_locate_class(bottleneck)() if isinstance(bottleneck, (str, type)) else bottleneck)
             if bottleneck is not None else None
         )
+        
+        # Consistency checks encoder/decoder vs bottleneck 
+        def _get_enc_dim(m):
+
+            if hasattr(m, "output_size"):
+                try: return int(m.output_size())
+                except Exception: pass
+            for k in ["dimension", "latent_dim", "out_channels"]:
+                if hasattr(m, k):
+                    try: return int(getattr(m, k))
+                    except Exception: pass
+            return None
+
+        def _get_dec_in_dim(m):
+            for k in ["input_size", "dimension", "in_channels"]:
+                if hasattr(m, k):
+                    try: return int(getattr(m, k))
+                    except Exception: pass
+            return None
+
+        enc_dim = _get_enc_dim(self.encoder)
+        dec_in  = _get_dec_in_dim(self.decoder)
+
+        if isinstance(self.bottleneck, VAEBottleneck):
+            if (enc_dim is not None) and (dec_in is not None):
+                assert enc_dim == 2 * dec_in, (
+                    f"Config mismatch with VAEBottleneck: encoder channels={enc_dim} "
+                    f"must be 2× decoder input={dec_in}. "
+                    f"Tip: set encoder.dimension=2*C and decoder.input_size=C."
+                )
+            else:
+                warnings.warn("VAEBottleneck active but unable to deduce enc_dim/dec_in for check. Ensure encoder.dimension=2*C and decoder.input_size=C. if using VAE bottleneck.")
+        else:
+            if (enc_dim is not None) and (dec_in is not None):
+                assert enc_dim == dec_in, (
+                    f"Encoder/Decoder channel mismatch without bottleneck: "
+                    f"{enc_dim} vs {dec_in}"
+                )
+            elif self.bottleneck is None:
+                warnings.warn("No bottleneck selected: unable to verify enc/dec because dimensions are not deducible.")
         
     
     def encode(self, audio, skip_bottleneck: bool = False, return_info=False, iterate_batch=False, **kwargs):

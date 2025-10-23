@@ -86,7 +86,8 @@ class AutoencoderEngine(nn.Module):
                 "autoencoder": {"optimizer": {"type": "AdamW", "config": {"lr": 2e-4, "betas": (0.8, 0.99)}}},
                 "discriminator": {"optimizer": {"type": "AdamW", "config": {"lr": 2e-4, "betas": (0.8, 0.99)}}},
             }
-        self.optimizer_configs = optimizer_configs
+        # NOTE: DEPRECATED, mantenuto per retrocompatibilità
+        self.optimizer_configs = optimizer_configs 
 
         # Numero di canali del segnale audio (mono/stereo)
         if audio_channels is None:
@@ -360,7 +361,20 @@ class AutoencoderEngine(nn.Module):
 
         latents, _ = self.autoencoder.encode(encoder_input, return_info=True)
         sp_decoded = self.autoencoder.decode(latents)
-        decoded = self.autoencoder.istft(sp_decoded)
+        try:
+            #print("the shape of sp_decoded is:", sp_decoded.shape)
+            decoded = self.autoencoder.istft(sp_decoded)
+        except ValueError as e:
+            # fallback: prova a passare i parametri STFT presi dalla configurazione del dataset
+            if self.stft_params:
+                decoded = self.autoencoder.istft(sp_decoded, **self.stft_params)
+            else:
+                # rialza con messaggio più informativo
+                raise ValueError(
+                    "autoencoder.istft failed and no stft params available for fallback. "
+                    "Pass 'stft_params' (containing at least 'n_fft') to AutoencoderEngine "
+                    "or include them in the dataset config."
+                ) from e
         decoded, orig_waveforms = trim_to_shortest(decoded, orig_waveforms)
 
         val_loss_dict: Dict[str, float] = {}

@@ -22,6 +22,11 @@ from .losses import MelSpectrogramLoss, MultiLoss, AuralossLoss, ValueLoss, Targ
 from .losses import auraloss as auraloss
 from .utils import create_optimizer_from_config, create_scheduler_from_config, log_audio, log_image, log_metric, log_point_cloud, logger_project_name
 import torch.nn.functional as F
+from rich.console import Console
+
+console = Console()
+def ok(msg):     console.print(msg, style="bold green")
+def warn(msg):   console.print(msg, style="bold yellow")
 
 def trim_to_shortest(a, b):
     """Trim the longer of two tensors to the length of the shorter one."""
@@ -46,7 +51,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
     """
     Adapter Lightning che delega all'AutoencoderEngine:
     - nessuna logica di loss qui dentro
-    - usa engine.configure_optimizers()
+    - configure_optimizers: crea optimizer/scheduler usando utils e i fallback dal JSON
     - training_step chiama engine.compute() e fa backward/step/logging
     - validation_step chiama engine.compute_validation()
     """
@@ -67,6 +72,8 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         clip_grad_norm: float = 0.0,
         audio_channels: Optional[int] = None,
         stft_params: Optional[dict] = None,
+        optimizer_spec: Optional[dict] = None,
+        scheduler_spec: Optional[dict] = None,
     ):
         super().__init__()
         self.automatic_optimization = False
@@ -75,12 +82,16 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         self.audio_channels = audio_channels
         self.stft_params = stft_params
 
+        # Store raw specs (may be None). We normalize in configure_optimizers.
+        self._optimizer_spec = optimizer_spec
+        self._scheduler_spec = scheduler_spec
+
         self.engine = AutoencoderEngine(
             autoencoder=autoencoder,
             sample_rate=sample_rate,
             loss_config=loss_config,
             eval_loss_config=eval_loss_config,
-            optimizer_configs=optimizer_configs,
+            optimizer_configs=optimizer_configs,  # no longer used for creation; kept for compatibility
             warmup_steps=warmup_steps,
             warmup_mode=warmup_mode,
             encoder_freeze_on_warmup=encoder_freeze_on_warmup,
@@ -116,8 +127,60 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         return S.to(device, non_blocking=True), wav.to(device, non_blocking=True)
     
     def configure_optimizers(self):
-        return self.engine.configure_optimizers()
+        """
+        Create optimizers/schedulers here using utils helpers.
+        Pull specs from JSON (self._optimizer_spec/self._scheduler_spec), with sensible fallbacks.
+        """
+        def normalize_spec(spec: Optional[dict], default: dict, kind: str):
+            # Accept both {"type": "...", "config": {...}} and legacy {"class": "...", "kwargs": {...}}
+            if spec is None:
+                warn(f"{kind}: missing in config, using fallback {default['type']} with config {default.get('config', {})}")
+                return default
+            if not isinstance(spec, dict):
+                warn(f"{kind}: invalid spec type {type(spec).__name__}, using fallback {default['type']}")
+                return default
+            spec = deepcopy(spec)
+            if "type" not in spec and "class" in spec:
+                # convert legacy "class" -> "type"
+                spec["type"] = spec.pop("class")
+            if "config" not in spec and "kwargs" in spec:
+                spec["config"] = spec.pop("kwargs")
+            if "type" not in spec:
+                warn(f"{kind}: missing 'type', using fallback {default['type']}")
+                return default
+            spec.setdefault("config", {})
+            return spec
 
+        default_opt = {"type": "AdamW", "config": {"lr": 2e-4, "betas": (0.8, 0.99)}}
+        default_sched = {"type": "InverseLR", "config": {"inv_gamma": 200000, "power": 0.5, "warmup": 0.999}}
+
+        opt_spec = normalize_spec(self._optimizer_spec, default_opt, "optimizer")
+        sched_spec = normalize_spec(self._scheduler_spec, default_sched, "scheduler")
+
+        # Create optimizers
+        gen_params = list(self.autoencoder.parameters())
+        opt_gen = create_optimizer_from_config(opt_spec, gen_params)
+
+        opt_disc = None
+        if self.use_disc and self.discriminator is not None:
+            # Same spec for discriminator by default
+            opt_disc = create_optimizer_from_config(opt_spec, self.discriminator.parameters())
+
+        # Create schedulers
+        sched_gen = create_scheduler_from_config(sched_spec, opt_gen) if sched_spec else None
+        sched_disc = create_scheduler_from_config(sched_spec, opt_disc) if (sched_spec and opt_disc is not None) else None
+
+        ok(f"Using optimizer {opt_spec['type']} with config {opt_spec.get('config', {})} "
+           f"and scheduler {sched_spec['type']} with config {sched_spec.get('config', {})}")
+
+        if self.use_disc and opt_disc is not None:
+            if sched_gen is not None and sched_disc is not None:
+                return [opt_gen, opt_disc], [sched_gen, sched_disc]
+            return [opt_gen, opt_disc]
+        else:
+            if sched_gen is not None:
+                return [opt_gen], [sched_gen]
+            return [opt_gen]
     def forward(self, reals):
         latents, _ = self.engine.autoencoder.encode(reals, return_info=True)
         decoded = self.engine.autoencoder.decode(latents)
@@ -131,13 +194,22 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
 
         log_dict = {}
 
-        # Prendi optimizer e scheduler da Lightning
+        # Prendi optimizer e scheduler da Lightning (gestione robusta lista/singolo)
         if self.use_disc:
             opt_gen, opt_disc = self.optimizers()
-            sched_gen, sched_disc = (self.lr_schedulers() or (None, None))
+            schedulers = self.lr_schedulers()
+            if isinstance(schedulers, (list, tuple)):
+                sched_gen = schedulers[0] if len(schedulers) > 0 else None
+                sched_disc = schedulers[1] if len(schedulers) > 1 else None
+            else:
+                sched_gen, sched_disc = schedulers, None
         else:
             opt_gen = self.optimizers()
-            sched_gen = self.lr_schedulers()
+            schedulers = self.lr_schedulers()
+            if isinstance(schedulers, (list, tuple)):
+                sched_gen = schedulers[0] if len(schedulers) > 0 else None
+            else:
+                sched_gen = schedulers
             opt_disc = sched_disc = None
 
         # DISC step
