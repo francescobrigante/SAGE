@@ -129,15 +129,15 @@
   "loss_config": {
     "bottleneck": { "weights": { "kl": 1e-4 } },
     "spectral": {
-      "type": "mrstft",
-      "config": {
-        "fft_sizes": [2048,1024,512,256,128,64,32],
-        "hop_sizes": [512,256,128,64,32,16,8],
-        "win_lengths": [2048,1024,512,256,128,64,32],
-        "perceptual_weighting": true
+      "mse": {
+        "config": {
+          "normalize": "avg",
+          "p": 2.0,
+          "reduction": "mean",
+          "bin_weighted": false
+        }
       },
       "weights": { "mrstft": 1.0 }
-    },
-    "time": { "weights": { "l1": 0.0 } }
+    }
   }
 }
