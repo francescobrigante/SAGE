@@ -49,3 +49,84 @@ This project extends these paradigms into the **complex domain**, enabling expli
 ---
 
 ## 🧩 Repository Structure
+
+# AutoEncoder Construction Guide
+
+This project lets you build the AutoEncoder in multiple interchangeable ways. All approaches produce an AutoEncoder instance; pick the one that best fits your workflow or tooling.
+
+## 1) From a dict “spec” (same shape as JSON configs)
+
+```python
+from ar_spectra.models.autoencoder import AutoEncoder
+
+ae = AutoEncoder(
+    encoder={
+        "class": "ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d",
+        "kwargs": {"input_size": 128}
+    },
+    decoder={
+        "class": "ar_spectra.models.autoencoders.SeaNET_AE.SEANetDecoder2d",
+        "kwargs": {"input_size": 64}
+    },
+    bottleneck={
+        "class": "ar_spectra.models.bottlenecks.VAEBottleneck",
+        "kwargs": {"skip_bottleneck": True}
+    }
+)
+```
+
+## 2) Passing classes directly (no constructor args)
+
+```python
+from ar_spectra.models.autoencoders.SeaNET_AE import SEANetEncoder2d, SEANetDecoder2d
+from ar_spectra.models.autoencoder import AutoEncoder
+
+ae = AutoEncoder(encoder=SEANetEncoder2d, decoder=SEANetDecoder2d)
+```
+
+## 3) Passing class paths as strings (no constructor args)
+
+```python
+from ar_spectra.models.autoencoder import AutoEncoder
+
+ae = AutoEncoder(
+    encoder="ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d",
+    decoder="ar_spectra.models.autoencoders.SeaNET_AE.SEANetDecoder2d",
+)
+```
+
+## 4) Passing prebuilt instances
+
+```python
+from ar_spectra.models.autoencoders.SeaNET_AE import SEANetEncoder2d, SEANetDecoder2d
+from ar_spectra.models.autoencoder import AutoEncoder
+
+enc = SEANetEncoder2d(input_size=128)
+dec = SEANetDecoder2d(input_size=64)
+ae = AutoEncoder(encoder=enc, decoder=dec)
+```
+
+## 5) From a model config dict (recommended with experiment JSON)
+
+```python
+from ar_spectra.models.autoencoder import AutoEncoder
+
+# cfg is your experiment config loaded from JSON (e.g., ar_spectra/config/experiments/SEANet_STFT.json)
+ae = AutoEncoder.from_config(cfg["model"])
+```
+
+---
+
+## How the pieces work together
+
+- AutoEncoder.encode(x): runs encoder(x) → optional bottleneck.encode(latents) → latents.
+- AutoEncoder.decode(z): runs optional bottleneck.decode(z) → decoder(z) → reconstruction.
+- AutoEncoder.istft(spec, ...): converts complex/RI spectrogram back to waveform using provided STFT params.
+
+### Dimension checks
+To prevent silent shape mismatches, the constructor validates channels:
+- Without a VAE bottleneck: encoder output channels must equal decoder input channels.
+- With VAEBottleneck: encoder channels must be 2 × decoder input (mean + logvar).
+- With SkipBottleneck: encoder channels must equal decoder input.
+
+---
