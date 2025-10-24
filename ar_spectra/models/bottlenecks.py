@@ -46,3 +46,29 @@ class VAEBottleneck(Bottleneck):
     def decode(self, x):
         return x
 
+# Skip/passthrough bottleneck (JSON-controlled)
+class SkipBottleneck(Bottleneck):
+    """
+    Passthrough bottleneck. 
+    """
+    def __init__(self, target_channels: int | None = None):
+        super().__init__(is_discrete=False)
+        self.target_channels = target_channels
+
+    def encode(self, x, return_info=False, **kwargs):
+        info = {}
+        if self.target_channels is not None:
+            cx = x.shape[1]
+
+            if cx != self.target_channels:
+                raise AssertionError(
+                    f"SkipBottleneck: encoder channels={cx} must be target={self.target_channels} "
+                    f"to bypass VAE."
+                )
+        if return_info:
+            return x, info
+        return x
+
+    def decode(self, x):
+        return x
+
