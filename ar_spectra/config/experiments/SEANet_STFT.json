@@ -22,7 +22,7 @@
     "batch_size": 64,
     "num_workers": 8,
     "prefetch_factor": 8,
-    "pin_memory": "auto",
+    "pin_memory": "false",
     "persistent_workers": false,
     "shuffle": true,
     "pin_memory_device": "cuda"
@@ -48,7 +48,7 @@
     "batch_size": 64,
     "num_workers": 8,
     "prefetch_factor": 8,
-    "pin_memory": "auto",
+    "pin_memory": "false",
     "persistent_workers": false,
     "shuffle": false,
     "pin_memory_device": "cuda"
@@ -73,7 +73,7 @@
       "class": "ar_spectra.models.autoencoders.SeaNET_AE.SEANetDecoder2d",
       "kwargs": {
         "channels": "auto",
-        "input_size": 64,
+        "input_size": 128,
         "n_filters": 8,
         "n_residual_layers": 1,
         "ratios": [[4,1],[4,1],[4,2],[4,1]],

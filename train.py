@@ -69,7 +69,7 @@ def _parse_pin_flag(value):
     # default to auto if unspecified
     return "auto"
 
-def _decide_pin_memory(requested, dataset, batch_size: int) -> bool:
+def _decide_pin_memory(requested, dataset, batch_size, num_workers: int = 0, prefetch_factor: int = None) -> bool:
     req = _parse_pin_flag(requested)
     if req is True or req is False:
         info(f"pin_memory set from config: {req}")
@@ -78,15 +78,31 @@ def _decide_pin_memory(requested, dataset, batch_size: int) -> bool:
     if not torch.cuda.is_available():
         info("CUDA not available; pin_memory disabled.")
         return False
+
     pinnable_mb = _max_pinnable_mb()
     item_bytes = _sample_size_bytes(dataset)
     if item_bytes <= 0:
         warn("Could not estimate item size; enabling pin_memory conservatively.")
         return True
+
     batch_mb = (item_bytes * batch_size) / (1024 * 1024)
-    use_pin = batch_mb <= pinnable_mb
+    if num_workers > 0:
+        pf = prefetch_factor if (prefetch_factor is not None) else 2  # default PyTorch
+        pinned_batches = (num_workers * pf) + 2
+    else:
+        pf = None
+        pinned_batches = 1
+
+    effective_mb = batch_mb * pinned_batches
+    use_pin = effective_mb <= pinnable_mb
     msg = ("enabled" if use_pin else "disabled")
-    info(f"Auto pin_memory {msg}: batch≈{batch_mb:.2f} MB, pinnable≈{pinnable_mb} MB")
+    if pf is None:
+        info(f"Auto pin_memory {msg}: batch≈{batch_mb:.2f} MB, pipelined_batches≈{pinned_batches}, "
+             f"effective≈{effective_mb:.2f} MB, pinnable≈{pinnable_mb} MB")
+    else:
+        info(f"Auto pin_memory {msg}: batch≈{batch_mb:.2f} MB, pipelined_batches≈{pinned_batches} "
+             f"(workers={num_workers}, prefetch={pf}), effective≈{effective_mb:.2f} MB, "
+             f"pinnable≈{pinnable_mb} MB")
     return use_pin
 # --- End auto pin-memory helpers ---
 
@@ -180,7 +196,10 @@ def main():
     # Decide pin_memory for train
     train_batch_size = int(dl_cfg.get("batch_size", 8))
     train_pin_req = dl_cfg.get("pin_memory", "auto")
-    train_pin_memory = _decide_pin_memory(train_pin_req, train_ds, train_batch_size)
+    _train_pf = int(dl_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None
+    train_pin_memory = _decide_pin_memory(
+        train_pin_req, train_ds, train_batch_size, num_workers=num_workers, prefetch_factor=_train_pf
+    )
 
     train_dl = DataLoader(
         train_ds,
@@ -199,7 +218,10 @@ def main():
     if eval_ds is not None:
         eval_batch_size = int(dl_eval_cfg.get("batch_size", train_batch_size))
         eval_pin_req = dl_eval_cfg.get("pin_memory", train_pin_req)
-        eval_pin_memory = _decide_pin_memory(eval_pin_req, eval_ds, eval_batch_size)
+        _eval_pf = int(dl_eval_cfg.get("prefetch_factor", dl_cfg.get("prefetch_factor", 8))) if num_workers > 0 else None
+        eval_pin_memory = _decide_pin_memory(
+            eval_pin_req, eval_ds, eval_batch_size, num_workers=num_workers, prefetch_factor=_eval_pf
+        )
         eval_dl = DataLoader(
             eval_ds,
             batch_size=eval_batch_size,
