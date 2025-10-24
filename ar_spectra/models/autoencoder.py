@@ -108,7 +108,7 @@ class AutoEncoder(nn.Module):
                 warnings.warn("VAEBottleneck active but unable to deduce enc_dim/dec_in for check. Ensure encoder.dimension=2*C and decoder.input_size=C. if using VAE bottleneck.")
         elif isinstance(self.bottleneck, SkipBottleneck):
             if (enc_dim is not None) and (dec_in is not None):
-                assert enc_dim in (dec_in), (
+                assert enc_dim == dec_in, (
                     f"Config mismatch with SkipBottleneck: encoder channels={enc_dim} "
                     f"must be {dec_in}."
                 )
