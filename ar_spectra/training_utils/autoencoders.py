@@ -395,8 +395,9 @@ class AutoencoderValDemoCallback(pl.Callback):
             except Exception:
                 filename = f'{self.save_basename}_ep{epoch:04d}.wav'
 
-            wav16 = reals_fakes.to(torch.float32).clamp(-1, 1).mul(32767).to(torch.int16).cpu()
-            torchaudio.save(filename, wav16, sr)
+            # Salva in float32 per evitare clipping
+            wav_f32 = reals_fakes.detach().to(torch.float32).cpu()
+            torchaudio.save(filename, wav_f32, sr, encoding="PCM_F")
 
             # logging
             from .utils import log_audio, log_image, log_point_cloud

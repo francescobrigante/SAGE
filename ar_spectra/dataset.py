@@ -8,8 +8,7 @@ from typing import Union, List, Tuple
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from rich.console import Console
-console = Console()  # aumenta la larghezza effettiva
-
+console = Console()  
 
 def ok(msg):     console.print(msg, style="bold green")
 def warn(msg):   console.print(msg, style="bold yellow")

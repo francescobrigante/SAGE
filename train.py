@@ -14,7 +14,7 @@ from tqdm import tqdm
 from rich.console import Console
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from ar_spectra.training_utils.get_model_config import extract_model_config
-
+import wandb
 console = Console()  
 
 def ok(msg):     console.print(msg, style="bold green")
@@ -29,6 +29,66 @@ def collate_stft(batch):
     assert all(x.shape == s0 for x in Ss), f"STFT shapes differ: {[x.shape for x in Ss]}"
     assert all(x.shape == w0 for x in wavs), f"Wav shapes differ: {[x.shape for x in wavs]}"
     return torch.stack(Ss, 0), torch.stack(wavs, 0)
+
+# --- Auto pin-memory helpers ---
+def _max_pinnable_mb() -> int:
+    if not torch.cuda.is_available():
+        return 0
+    mb_list = [8, 16, 24, 32, 40, 48, 56, 64, 96, 128, 192, 256, 384, 512]
+    last_ok = 0
+    for mb in mb_list:
+        try:
+            x = torch.empty((mb * 1024 * 1024) // 4, dtype=torch.float32)
+            x.pin_memory()
+            last_ok = mb
+        except Exception:
+            break
+    return last_ok
+
+def _sample_size_bytes(dataset) -> int:
+    # Estimate item size by reading a single sample (S, W)
+    try:
+        s0, w0 = dataset[0]
+        return s0.numel() * s0.element_size() + w0.numel() * w0.element_size()
+    except Exception as e:
+        warn(f"Could not estimate item size from dataset[0] ({type(e).__name__}: {e}); falling back to 0.")
+        return 0
+
+def _parse_pin_flag(value):
+    # Accept bools or strings: "auto"|"true"|"false"
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("true", "1", "yes", "y"):
+            return True
+        if v in ("false", "0", "no", "n"):
+            return False
+        if v == "auto":
+            return "auto"
+    # default to auto if unspecified
+    return "auto"
+
+def _decide_pin_memory(requested, dataset, batch_size: int) -> bool:
+    req = _parse_pin_flag(requested)
+    if req is True or req is False:
+        info(f"pin_memory set from config: {req}")
+        return bool(req)
+    # auto mode
+    if not torch.cuda.is_available():
+        info("CUDA not available; pin_memory disabled.")
+        return False
+    pinnable_mb = _max_pinnable_mb()
+    item_bytes = _sample_size_bytes(dataset)
+    if item_bytes <= 0:
+        warn("Could not estimate item size; enabling pin_memory conservatively.")
+        return True
+    batch_mb = (item_bytes * batch_size) / (1024 * 1024)
+    use_pin = batch_mb <= pinnable_mb
+    msg = ("enabled" if use_pin else "disabled")
+    info(f"Auto pin_memory {msg}: batch≈{batch_mb:.2f} MB, pinnable≈{pinnable_mb} MB")
+    return use_pin
+# --- End auto pin-memory helpers ---
 
 def load_json(path: str):
     with open(path, "r") as f:
@@ -49,7 +109,7 @@ class ModelInfoLogger(pl.Callback):
     - salva un JSON su disco
     - logga su W&B (se attivo)
     """
-    def __init__(self, filename: str = "model_info.json", max_module_lines: int = 512, log_structure: bool = False ):
+    def __init__(self, filename: str = "model_info.json", max_module_lines: int = 512, log_structure: bool = True ):
         super().__init__()
         self.filename = filename
         self.max_module_lines = int(max_module_lines)
@@ -70,7 +130,7 @@ class ModelInfoLogger(pl.Callback):
         console.rule("[bold cyan]Model structure")
         model_cfg = extract_model_config(model)
         if self.log_structure:
-            print("[MODEL SUMMARY]\n", model_cfg["repr"])
+            console.print("[MODEL SUMMARY]\n", model_cfg["repr"])
         console.rule()
 
         # Salva JSON su disco
@@ -110,41 +170,46 @@ def main():
     seed = int(cfg.get("seed", 42))
     seed_everything(seed, workers=True)
 
-    # Enable kernel autotuner for more stable conv performance
     torch.backends.cudnn.benchmark = True
 
     # Dataset
     train_ds = instantiate_from_spec(cfg["train_dataset"])
     dl_cfg = cfg.get("train_dataloader", {}) or {}
     num_workers = int(dl_cfg.get("num_workers", 8))
+
+    # Decide pin_memory for train
+    train_batch_size = int(dl_cfg.get("batch_size", 8))
+    train_pin_req = dl_cfg.get("pin_memory", "auto")
+    train_pin_memory = _decide_pin_memory(train_pin_req, train_ds, train_batch_size)
+
     train_dl = DataLoader(
         train_ds,
-        batch_size=dl_cfg.get("batch_size", 8),
+        batch_size=train_batch_size,
         num_workers=num_workers,
-        pin_memory=bool(dl_cfg.get("pin_memory", True)),
+        pin_memory=train_pin_memory,
         shuffle=bool(dl_cfg.get("shuffle", True)),
         drop_last=True,
         persistent_workers=(dl_cfg.get("persistent_workers", False) if num_workers > 0 else False),
         prefetch_factor=int(dl_cfg.get("prefetch_factor", 14)) if num_workers > 0 else None,
         collate_fn=collate_stft,
-        pin_memory_device=dl_cfg.get("pin_memory_device"),
-
     )
     
-    
     eval_ds = instantiate_from_spec(cfg.get("eval_dataset", None))
+    dl_eval_cfg = cfg.get("eval_dataloader", {}) or {}
     if eval_ds is not None:
+        eval_batch_size = int(dl_eval_cfg.get("batch_size", train_batch_size))
+        eval_pin_req = dl_eval_cfg.get("pin_memory", train_pin_req)
+        eval_pin_memory = _decide_pin_memory(eval_pin_req, eval_ds, eval_batch_size)
         eval_dl = DataLoader(
             eval_ds,
-            batch_size=dl_cfg.get("batch_size", 8),
+            batch_size=eval_batch_size,
             num_workers=num_workers,
-            pin_memory=bool(dl_cfg.get("pin_memory", True)),
+            pin_memory=eval_pin_memory,
             shuffle=False,
             drop_last=False,
-            persistent_workers=(dl_cfg.get("persistent_workers", False) if num_workers > 0 else False),
-            prefetch_factor=int(dl_cfg.get("prefetch_factor", 14)) if num_workers > 0 else None,
+            persistent_workers=(dl_eval_cfg.get("persistent_workers", False) if num_workers > 0 else False),
+            prefetch_factor=int(dl_eval_cfg.get("prefetch_factor", 14)) if num_workers > 0 else None,
             collate_fn=collate_stft,
-            pin_memory_device=dl_cfg.get("pin_memory_device"),
         )
     else:
         eval_dl = None
@@ -216,6 +281,7 @@ def main():
             project=wandb_cfg.get("project", "ICML_2026"),
             name=wandb_cfg.get("name", None),
             log_model=False,  # evita upload pesanti
+            settings=wandb.Settings(_service_wait=7)
         )
 
     # Callback e checkpoint
@@ -301,11 +367,13 @@ def main():
         logger=logger,
         callbacks=callbacks,
         enable_model_summary=True,
-        log_every_n_steps=int(cfg.get("trainer", {}).get("log_interval", 500)),
+        log_every_n_steps=int(cfg.get("trainer", {}).get("log_interval", 1)),
         num_sanity_val_steps=0,
         gradient_clip_val=0.0,
         detect_anomaly=False,
-        profiler=profiler,  # None se non richiesto
+        profiler=profiler,
+        check_val_every_n_epoch=int(cfg.get("trainer", {}).get("check_val_every_n_epoch", 1500)),
+        val_check_interval=cfg.get("trainer", {}).get("val_check_interval", None),
     )
 
     # passa anche val_dataloaders
