@@ -190,7 +190,7 @@ def main():
         shuffle=bool(dl_cfg.get("shuffle", True)),
         drop_last=True,
         persistent_workers=(dl_cfg.get("persistent_workers", False) if num_workers > 0 else False),
-        prefetch_factor=int(dl_cfg.get("prefetch_factor", 14)) if num_workers > 0 else None,
+        prefetch_factor=int(dl_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
         collate_fn=collate_stft,
     )
     
@@ -208,7 +208,7 @@ def main():
             shuffle=False,
             drop_last=False,
             persistent_workers=(dl_eval_cfg.get("persistent_workers", False) if num_workers > 0 else False),
-            prefetch_factor=int(dl_eval_cfg.get("prefetch_factor", 14)) if num_workers > 0 else None,
+            prefetch_factor=int(dl_eval_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
             collate_fn=collate_stft,
         )
     else:

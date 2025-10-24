@@ -8,7 +8,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import torch
 import torch.nn as nn
 import warnings
-from .bottlenecks import VAEBottleneck
+from .bottlenecks import VAEBottleneck, SkipBottleneck
+from rich.console import Console
+
+console = Console()
+def warn(msg):   console.print(msg, style="bold yellow")
 
 def checkpoint(function, *args, **kwargs):
     kwargs.setdefault("use_reentrant", False)
@@ -22,7 +26,7 @@ def _locate_class(class_path: Union[str, type]) -> type:
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
 
-
+# for train and eval ds
 def instantiate_from_spec(spec: Dict[str, Any]) -> Any:
     """
     spec = {
@@ -102,6 +106,12 @@ class AutoEncoder(nn.Module):
                 )
             else:
                 warnings.warn("VAEBottleneck active but unable to deduce enc_dim/dec_in for check. Ensure encoder.dimension=2*C and decoder.input_size=C. if using VAE bottleneck.")
+        elif isinstance(self.bottleneck, SkipBottleneck):
+            if (enc_dim is not None) and (dec_in is not None):
+                assert enc_dim in (dec_in), (
+                    f"Config mismatch with SkipBottleneck: encoder channels={enc_dim} "
+                    f"must be {dec_in}."
+                )
         else:
             if (enc_dim is not None) and (dec_in is not None):
                 assert enc_dim == dec_in, (
@@ -129,7 +139,8 @@ class AutoEncoder(nn.Module):
 
         info["pre_bottleneck_latents"] = latents
 
-        if self.bottleneck is not None and not skip_bottleneck:
+        # JSON is the only ground truth: if a SkipBottleneck is set, we never apply VAEs or others.
+        if self.bottleneck is not None:
             # TODO: Add iterate batch logic, needs to merge the info dicts
             latents, bottleneck_info = self.bottleneck.encode(latents, return_info=True, **kwargs)
 
@@ -142,7 +153,7 @@ class AutoEncoder(nn.Module):
 
     def decode(self, latents, skip_bottleneck: bool = False, iterate_batch=False, **kwargs):
 
-        if self.bottleneck is not None and not skip_bottleneck:
+        if self.bottleneck is not None:
             if iterate_batch:
                 decoded = []
                 for i in range(latents.shape[0]):
@@ -368,6 +379,33 @@ class AutoEncoder(nn.Module):
         encoder_spec = cfg["encoder"]
         decoder_spec = cfg["decoder"]
         bottleneck_spec = cfg.get("bottleneck", None)
+
+        # Decide skip from JSON only (unique source of truth)
+        skip_flag = False
+        target_channels: Optional[int] = None
+        if isinstance(bottleneck_spec, dict):
+            # Support either top-level flags inside "bottleneck" or inside its kwargs
+            bn_kwargs = bottleneck_spec.get("kwargs", {}) or {}
+            skip_flag = bool(
+                bottleneck_spec.get("skip_bottleneck", False)
+                or bottleneck_spec.get("skip", False)
+                or bn_kwargs.get("skip_bottleneck", False)
+                or bn_kwargs.get("skip", False)
+            )
+        # Infer decoder latent channels (input_size / in_channels / dimension)
+        if isinstance(decoder_spec, dict):
+            dkw = decoder_spec.get("kwargs", {}) or {}
+            for k in ("input_size", "dimension", "in_channels"):
+                if k in dkw and isinstance(dkw[k], (int, float)):
+                    target_channels = int(dkw[k])
+                    break
+
+        if skip_flag:
+            warn("Warning: bottleneck skipped; disable skip_bottleneck to undo this behavior.")
+            # Replace whatever bottleneck with SkipBottleneck
+            bottleneck_inst = SkipBottleneck(target_channels=target_channels)
+            return cls(encoder_spec, decoder_spec, bottleneck=bottleneck_inst, **ae_kwargs)
+
         return cls(encoder_spec, decoder_spec, bottleneck=bottleneck_spec, **ae_kwargs)
 
 

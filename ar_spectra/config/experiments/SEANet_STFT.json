@@ -19,13 +19,13 @@
     }
   },
   "train_dataloader": {
-    "batch_size": 24,
+    "batch_size": 64,
     "num_workers": 8,
     "prefetch_factor": 8,
-    "pin_memory": true,
+    "pin_memory": "auto",
     "persistent_workers": false,
     "shuffle": true,
-    "pin_memory_device": "cuda:0"
+    "pin_memory_device": "cuda"
   },
   "eval_dataset": {
     "class": "ar_spectra.dataset.OnTheFlySTFTDataset",
@@ -44,14 +44,14 @@
       "skip_broken_files": true
     }
   },
-  "val_dataloader": {
-    "batch_size": 1,
+  "eval_dataloader": {
+    "batch_size": 64,
     "num_workers": 8,
     "prefetch_factor": 8,
-    "pin_memory": true,
+    "pin_memory": "auto",
     "persistent_workers": false,
     "shuffle": false,
-    "pin_memory_device": "cuda:0"
+    "pin_memory_device": "cuda"
   },
   "model": {
     "autoencoder": { "return_latent": false},
@@ -60,11 +60,12 @@
       "kwargs": {
         "input_size": "auto",
         "dimension": 128,
-        "n_filters": 32,
+        "n_filters": 8,
         "n_residual_layers": 1,
         "ratios": [[4,1],[4,1],[4,2],[4,1]],
         "activation": "ELU",
-        "norm": "weight_norm",
+        "norm": "time_group_norm",
+        "norm_params": { "num_groups": 1 },
         "causal": false
       }
     },
@@ -73,15 +74,19 @@
       "kwargs": {
         "channels": "auto",
         "input_size": 64,
-        "n_filters": 32,
+        "n_filters": 8,
         "n_residual_layers": 1,
         "ratios": [[4,1],[4,1],[4,2],[4,1]],
         "activation": "ELU",
-        "norm": "weight_norm",
+        "norm": "time_group_norm",
+        "norm_params": { "num_groups": 1 },
         "causal": false
       }
     },
-    "bottleneck": { "class": "ar_spectra.models.bottlenecks.VAEBottleneck" }
+    "bottleneck": {
+      "class": "ar_spectra.models.bottlenecks.VAEBottleneck",
+      "skip_bottleneck": true
+    }
   },
   "optimizer": {
     "type": "AdamW",
@@ -96,11 +101,12 @@
     }
   },
   "trainer": {
-    "epochs": 1,
+    "epochs": 100,
     "amp": false,
     "log_interval": 1,
     "ckpt_dir": "checkpoints/seanet_stft",
-    "profile": false
+    "profile": false,
+    "check_val_every_n_epoch": 1
   },
   "wandb": {
     "project": "ICML_2026",
