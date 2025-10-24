@@ -7,9 +7,10 @@ from ..models.discriminators import EncodecDiscriminator, OobleckDiscriminator, 
 from ..models.bottlenecks import VAEBottleneck
 from .losses import (
     MelSpectrogramLoss, MultiLoss, AuralossLoss, ValueLoss, TargetValueLoss,
-    L1Loss, LossWithTarget, MSELoss, HubertLoss,
+    L1Loss, LossWithTarget, MSELoss, HubertLoss, 
 )
 from .losses import auraloss as auraloss
+from .losses.ar_spectra_losses import PerceptuallyWeightedComplexMSE
 from .utils import create_optimizer_from_config, create_scheduler_from_config
 from rich.console import Console
 console = Console()  
@@ -94,45 +95,28 @@ class AutoencoderEngine(nn.Module):
             audio_channels = 2  # default conservative
         self.audio_channels = int(audio_channels)
 
-        # default loss config
+        # usa il loss_config passato dal chiamante
         if loss_config is None:
-            warn(f"AutoencoderEngine: loss config is None, using default MRSTFT + L1")
-            scales = [2048, 1024, 512, 256, 128, 64, 32]
-            hop_sizes, win_lengths = [], []
-            overlap = 0.75
-            for s in scales:
-                hop_sizes.append(int(s * (1 - overlap)))
-                win_lengths.append(s)
-            loss_config = {
-                "spectral": {
-                    "type": "mrstft",
-                    "config": {"fft_sizes": scales, "hop_sizes": hop_sizes, "win_lengths": win_lengths, "perceptual_weighting": True},
-                    "weights": {"mrstft": 1.0}
-                },
-                "time": {"type": "l1", "config": {}, "weights": {"l1": 0.0}}
-            }
-        # ensure we have a dict (guarda contro input non validi)
+            loss_config = {}
         if not isinstance(loss_config, dict):
             warn("AutoencoderEngine: provided loss_config is not a dict — treating as empty config")
             loss_config = {}
         self.loss_config = loss_config
         # use discriminator only if present and truthy
         self.use_disc = bool(self.loss_config.get("discriminator"))
-
-        # reconstruction losses: spectral può non essere presente nella config -> protegge l'accesso
+ 
+         # reconstruction losses: spectral può non essere presente nella config -> protegge l'accesso
         spectral_cfg = self.loss_config.get("spectral")
         if spectral_cfg and isinstance(spectral_cfg, dict):
-            stft_loss_args = spectral_cfg.get("config", {}) or {}
-            # usa SD-STFT solo per segnali stereo
-            if self.audio_channels == 2:
-                self.sdstft = auraloss.SumAndDifferenceSTFTLoss(sample_rate=sample_rate, **stft_loss_args)
-                self.lrstft = auraloss.MultiResolutionSTFTLoss(sample_rate=sample_rate, **stft_loss_args)
-            else:
-                self.sdstft = auraloss.MultiResolutionSTFTLoss(sample_rate=sample_rate, **stft_loss_args)
+            # JSON corrente: "spectral": { "mse": { "config": {...} }, "weights": {...} }
+            mse_block = spectral_cfg.get("mse", {}) or {}
+            configs_mse = mse_block.get("config", {}) or {}
+            self.sdstft = PerceptuallyWeightedComplexMSE(**configs_mse)
         else:
 
             self.sdstft = None
-            self.lrstft = None
+        # per evitare AttributeError in rami opzionali
+        self.lrstft = None
 
         # Discriminator
         self.discriminator = None
@@ -165,19 +149,19 @@ class AutoencoderEngine(nn.Module):
                     stft_w = mrstft_weight * 0.25
                     gen_loss_modules += [
                         MSELoss(key_a='teacher_latents', key_b='latents', weight=stft_w, name='latent_distill_loss', decay=stft_loss_decay),
-                        AuralossLoss(self.sdstft, target_key='reals', input_key='decoded', name='mrstft_loss', weight=stft_w, decay=stft_loss_decay),
-                        AuralossLoss(self.sdstft, input_key='decoded', target_key='teacher_decoded', name='mrstft_loss_distill', weight=stft_w, decay=stft_loss_decay),
-                        AuralossLoss(self.sdstft, target_key='reals', input_key='own_latents_teacher_decoded', name='mrstft_loss_own_latents_teacher', weight=stft_w, decay=stft_loss_decay),
-                        AuralossLoss(self.sdstft, target_key='reals', input_key='teacher_latents_own_decoded', name='mrstft_loss_teacher_latents_own', weight=stft_w, decay=stft_loss_decay),
+                        AuralossLoss(self.sdstft, target_key='reals', input_key='decoded', name='pwc_mse_loss', weight=stft_w, decay=stft_loss_decay),
+                        AuralossLoss(self.sdstft, input_key='decoded', target_key='teacher_decoded', name='pwc_mse_loss_distill', weight=stft_w, decay=stft_loss_decay),
+                        AuralossLoss(self.sdstft, target_key='reals', input_key='own_latents_teacher_decoded', name='pwc_mse_loss_own_latents_teacher', weight=stft_w, decay=stft_loss_decay),
+                        AuralossLoss(self.sdstft, target_key='reals', input_key='teacher_latents_own_decoded', name='pwc_mse_loss_teacher_latents_own', weight=stft_w, decay=stft_loss_decay),
                     ]
             else:
                 if mrstft_weight > 0:
-                    gen_loss_modules.append(AuralossLoss(self.sdstft, target_key='reals', input_key='decoded', name='mrstft_loss', weight=mrstft_weight, decay=stft_loss_decay))
+                    gen_loss_modules.append(AuralossLoss(self.sdstft, target_key='reals', input_key='decoded', name='pwc_mse_loss', weight=mrstft_weight, decay=stft_loss_decay))
                     if self.audio_channels == 2 and self.lrstft is not None:
                         half_w = mrstft_weight / 2.0
                         gen_loss_modules += [
-                            AuralossLoss(self.lrstft, target_key='reals_left',  input_key='decoded_left', name='stft_loss_left', weight=half_w, decay=stft_loss_decay),
-                            AuralossLoss(self.lrstft, target_key='reals_right', input_key='decoded_right', name='stft_loss_right', weight=half_w, decay=stft_loss_decay),
+                            AuralossLoss(self.lrstft, target_key='reals_left',  input_key='decoded_left', name='pwc_mse_loss_left', weight=half_w, decay=stft_loss_decay),
+                            AuralossLoss(self.lrstft, target_key='reals_right', input_key='decoded_right', name='pwc_mse_loss_right', weight=half_w, decay=stft_loss_decay),
                         ]
 
         if "mrmel" in self.loss_config:
