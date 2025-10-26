@@ -108,9 +108,10 @@ class AutoEncoder(nn.Module):
                 warnings.warn("VAEBottleneck active but unable to deduce enc_dim/dec_in for check. Ensure encoder.dimension=2*C and decoder.input_size=C. if using VAE bottleneck.")
         elif isinstance(self.bottleneck, SkipBottleneck):
             if (enc_dim is not None) and (dec_in is not None):
-                assert enc_dim == dec_in, (
+                assert enc_dim == dec_in or dec_in % enc_dim == 0, (
                     f"Config mismatch with SkipBottleneck: encoder channels={enc_dim} "
-                    f"must be {dec_in}."
+                    f"must be either {dec_in} or n*{dec_in}. "
+                    f"Tip: set encoder.dimension=C and decoder.input_size=C or encoder.dimension=n*C and decoder.input_size=C."
                 )
         else:
             if (enc_dim is not None) and (dec_in is not None):
@@ -192,17 +193,16 @@ class AutoEncoder(nn.Module):
             raise ValueError(f"Unsupported spec shape {tuple(S.shape)}")
         
         S = to_complex(spec)  # [B, C, F, T] or [B, F, T]
-        if "n_fft" not in kwargs:
-            raise ValueError("istft requires 'n_fft'")
 
-        n_fft      = kwargs["n_fft"]
+        n_fft      = kwargs.get("n_fft")
         hop_length = kwargs.get("hop_length")
         win_length = kwargs.get("win_length")
         window     = kwargs.get("window")
         center     = bool(kwargs.get("center", True))
+        target_length = kwargs.get("length", None) 
         normalized = bool(kwargs.get("normalized", False))
         onesided   = kwargs.get("onesided", None)
-
+        
         # window coerente
         if window is None and win_length is not None:
             real_dtype = torch.float32 if S.dtype == torch.complex64 else torch.float64
@@ -212,15 +212,12 @@ class AutoEncoder(nn.Module):
         F = S.shape[-2]
         if onesided is None:
             onesided = (F == n_fft//2 + 1)
-        # opzionale: assert di coerenza
-        assert (onesided and F == n_fft//2 + 1) or ((not onesided) and F == n_fft), \
-            f"Incoerenza: F={F}, n_fft={n_fft}, onesided={onesided}"
+
 
         # lunghezza
         T = S.shape[-1]
-        length = kwargs.get("length")
-        if length is None and center:
-            length = hop_length*(T-1) + (win_length or n_fft)
+        if target_length is None and center:
+            target_length = hop_length*(T-1) + (win_length or n_fft)
 
         # collassa canali nel batch
         if S.dim() == 4:  # [B, C, F, T]
@@ -228,12 +225,12 @@ class AutoEncoder(nn.Module):
             Sbc = S.reshape(B*C, F, T).contiguous()
             y = torch.istft(Sbc, n_fft=n_fft, hop_length=hop_length, win_length=win_length,
                             window=window, center=center, normalized=normalized,
-                            onesided=onesided, length=length, return_complex=False)
+                            onesided=onesided, length=target_length, return_complex=False)
             return y.reshape(B, C, -1)
         elif S.dim() == 3:  # [B, F, T]
             return torch.istft(S, n_fft=n_fft, hop_length=hop_length, win_length=win_length,
                             window=window, center=center, normalized=normalized,
-                            onesided=onesided, length=length, return_complex=False)
+                            onesided=onesided, length=target_length, return_complex=False)
         else:
             raise RuntimeError(f"Unexpected complex shape {S.shape}")
 

@@ -60,9 +60,10 @@ class SkipBottleneck(Bottleneck):
         if self.target_channels is not None:
             cx = x.shape[1]
 
-            if cx != self.target_channels:
+            if self.target_channels % cx != 0:
                 raise AssertionError(
-                    f"SkipBottleneck: encoder channels={cx} must be target={self.target_channels} "
+                    f"SkipBottleneck: encoder channels={cx} must be uquals or multiple of "
+                    f"decoder target={self.target_channels} "
                     f"to bypass VAE."
                 )
         if return_info:

@@ -15,6 +15,22 @@ def warn(msg):   console.print(msg, style="bold yellow")
 def err(msg):    console.print(msg, style="bold red")
 def info(msg):   console.print(msg, style="cyan")
 
+def get_dbmax(
+    audio,       # torch tensor of (multichannel) audio
+    ):
+    "finds the loudest value in the entire clip and puts that into dB (full scale)"
+    return 20*torch.log10(torch.flatten(audio.abs()).max()).cpu().numpy()
+
+
+def is_silence(
+    audio,       # torch tensor of (multichannel) audio
+    thresh=-62,  # threshold in dB below which we declare to be silence
+    ):
+    "checks if entire clip is 'silence' below some dB threshold"
+    dBmax = get_dbmax(audio)
+    return dBmax < thresh
+
+
 class OnTheFlySTFTDataset(Dataset):
     """
     Load audio files recursively, resample to target sample rate, optionally keep stereo,
@@ -33,7 +49,7 @@ class OnTheFlySTFTDataset(Dataset):
         self, 
         audio_dir: str | os.PathLike,
         *,
-        target_frames: int,
+        length: int,
         sample_rate: int,
         n_fft: int,
         hop_length: int,
@@ -56,8 +72,9 @@ class OnTheFlySTFTDataset(Dataset):
             raise FileNotFoundError(f"Audio directory not found: {self.audio_dir}")
 
         self.extensions = tuple((ext.lower() for ext in (extensions or [".wav", ".flac", ".mp3", ".ogg", ".m4a"])))
+        
+        self.length = int(length)
 
-        self.target_frames = int(target_frames)
         self.sample_rate = int(sample_rate)
         self.n_fft = int(n_fft)
         self.hop_length = int(hop_length)
@@ -75,7 +92,7 @@ class OnTheFlySTFTDataset(Dataset):
         self.audio_channels: int = 2 if self.stereo else 1
         self.spec_channels: int = (self.audio_channels * 2) if self.cac else self.audio_channels
 
-        self.segment_samples = (self.target_frames - 1) * self.hop_length
+        self.segment_samples = (self.length - 1) * self.hop_length
         self.min_acceptable_len = int(self.segment_samples * (1.0 - self.max_pad_ratio))
 
         candidate_files = sorted(
@@ -177,17 +194,19 @@ class OnTheFlySTFTDataset(Dataset):
             sr = self.sample_rate
         return wav, sr
 
-    def _random_crop_or_pad(self, wav: torch.Tensor) -> torch.Tensor:
+    def _random_crop_or_pad(self, wav: torch.Tensor, generator: Optional[torch.Generator] = None) -> torch.Tensor:
         """
         Input: wav (C, N). Returns a segment (C, segment_samples).
         - If N >= segment_samples: random crop without padding.
         - If min_acceptable_len <= N < segment_samples: symmetric zero-padding, allowed up to max_pad_ratio.
         - Else: raise.
+        Accepts optional generator to allow reproducible alternate crops.
         """
+        gen = generator or self._rng
         cur_len = wav.shape[-1]
         if cur_len >= self.segment_samples:
             max_start = cur_len - self.segment_samples
-            start = int(torch.randint(low=0, high=max_start + 1, size=(1,), generator=self._rng).item())
+            start = int(torch.randint(low=0, high=max_start + 1, size=(1,), generator=gen).item())
             return wav[..., start:start + self.segment_samples]
         elif cur_len >= self.min_acceptable_len:
             pad_needed = self.segment_samples - cur_len
@@ -221,18 +240,21 @@ class OnTheFlySTFTDataset(Dataset):
         return wav  # fallback conservativo
 
     
-    def _load_segment_or_full(self, path: Path) -> tuple[torch.Tensor, int]:
+    def _load_segment_or_full(self, path: Path, generator: Optional[torch.Generator] = None) -> tuple[torch.Tensor, int]:
         """
         MP3: prova a decodificare solo il segmento via frame_offset/num_frames.
         Altrimenti, fallback a load completo + crop.
         Altri formati: usa load completo + crop.
+
+        Accepts optional generator to make the chosen start reproducible/controllable.
         """
+        gen = generator or self._rng
         suffix = path.suffix.lower()
 
         # se non abbiamo un probe affidabile, fallback semplice
         if self._probe_fn is None or suffix != ".mp3":
             wav, sr = self._load_waveform(path)    # load completo
-            seg = self._random_crop_or_pad(wav)    # crop/pad
+            seg = self._random_crop_or_pad(wav, generator=gen)    # crop/pad (use gen)
             return seg.to(torch.float32), sr
 
         # qui: MP3 con probe disponibile
@@ -241,17 +263,17 @@ class OnTheFlySTFTDataset(Dataset):
         except Exception:
             # Ultimo fallback
             wav, sr = self._load_waveform(path)
-            seg = self._random_crop_or_pad(wav)
+            seg = self._random_crop_or_pad(wav, generator=gen)
             return seg.to(torch.float32), sr
 
         # se troppo corto rispetto alla tua soglia, lascia che venga filtrato prima
         if total_frames < self.segment_samples:
             raise RuntimeError("MP3 too short; should have been filtered earlier.")
 
-        # offset casuale nello spazio dei frame della sorgente
+        # offset casuale nello spazio dei frame della sorgente (usa il generator passato)
         start = int(torch.randint(
             0, total_frames - self.segment_samples + 1,
-            (1,), generator=self._rng
+            (1,), generator=gen
         ).item())
 
         wav, sr = torchaudio.load(
@@ -273,15 +295,53 @@ class OnTheFlySTFTDataset(Dataset):
 
     def __getitem__(self, index: int) -> torch.Tensor:
         path = self.files[index]
-        if path.suffix.lower() == ".mp3":
-            # già croppato dal loader
-            seg, _ = self._load_segment_or_full(path)  # (C, segment_samples)
+        suffix = path.suffix.lower()
+        wav = None
+
+        if suffix == ".mp3":
+            # già croppato dal loader (usa self._rng)
+            seg, _ = self._load_segment_or_full(path)
         else:
             wav, _ = self._load_waveform(path)         # (C, N)
             seg = self._random_crop_or_pad(wav)        # (C, segment_samples)
         
-        
         seg = seg.contiguous()
+
+        # If the segment is silence, try several different random crops of the SAME file
+        # using different generator seeds. If still silent after attempts, pick another file.
+        if is_silence(seg):
+            #warn(f"Found silence in file: {path}, trying to resample segment.")
+            if len(self) <= 1:
+                pass
+            else:
+                max_tries = 1
+                found = False
+                for _ in range(max_tries):
+                    # derive a fresh seed from the dataset RNG so overall sampling stays reproducible
+                    seed_val = int(torch.randint(0, 2**31 - 1, (1,), generator=self._rng).item())
+                    gen = torch.Generator()
+                    gen.manual_seed(seed_val)
+                    try:
+                        if suffix == ".mp3":
+                            candidate, _sr = self._load_segment_or_full(path, generator=gen)
+                        else:
+                            # use the already-loaded full waveform with a different crop seed
+                            candidate = self._random_crop_or_pad(wav, generator=gen)
+                    except RuntimeError:
+                        # shouldn't really happen for valid files, skip this attempt
+                        continue
+                    if not is_silence(candidate):
+                        seg = candidate
+                        found = True
+                        break
+
+                if not found:
+                    # fallback: return a different file item (reproducible draw)
+                    new_idx = int(torch.randint(0, len(self), (1,), generator=self._rng).item())
+                    if new_idx == index and len(self) > 1:
+                        new_idx = (new_idx + 1) % len(self)
+                    return self[new_idx]
+
         orig_waveform = seg
         S = self._stft(seg)  # (C, F, T), complex if power=None
 

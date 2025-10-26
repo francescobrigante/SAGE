@@ -43,7 +43,10 @@ def project_down(tokens,     # batched high-dimensional data with dims (b,d,n)
             ):
     "this projects to lower dimenions, grabbing the first _`proj_dims`_ dimensions"
     method = method.lower()
-    A = rearrange(tokens, 'b d n -> (b n) d') # put all the vectors into the same d-dim space
+    if tokens.dim() == 4:
+        A = rearrange(tokens, 'b c f t -> (b f t) c') # put all the vectors into the same d-dim space
+    elif tokens.dim() ==3:
+        A = rearrange(tokens, 'b d n -> (b n) d')
     if A.shape[-1] > proj_dims: 
         if method=='umap':
             from umap import UMAP
@@ -266,8 +269,8 @@ def tokens_spectrogram_image(
         debug=False,           # print debugging info
     ):
     "for visualizing embeddings in a spectrogram-like way"
-    batch_size, dim, samples = tokens.shape
-    embeddings = rearrange(tokens, 'b d n -> (b n) d')  # expand batches in time
+    batch_size, dim, frequency, time = tokens.shape if tokens.dim()==4 else (tokens.shape[0], tokens.shape[1], 1, tokens.shape[2])
+    embeddings = rearrange(tokens, 'b c f t -> (b f t) c')  if tokens.dim()==4 else rearrange (tokens, 'b d n -> (b n) d')# expand batches in time
     vmin, vmax = None, None
     if symmetric:
         vmax = torch.abs(embeddings).max()
@@ -285,7 +288,7 @@ def tokens_spectrogram_image(
     ax.set_ylabel(ylabel)
     ax.set_xlabel('time frame (samples, in batches)')
     if mark_batches:
-        intervals = np.arange(batch_size)*samples
+        intervals = np.arange(batch_size)*time
         if debug: print("intervals = ",intervals)
         ax.vlines(intervals, -10, dim+10, color='black', linestyle='dashed', linewidth=1)
 
