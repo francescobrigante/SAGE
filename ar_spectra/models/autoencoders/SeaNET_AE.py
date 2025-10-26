@@ -10,6 +10,26 @@ from ar_spectra.modules.normed_modules.conv import SConvTranspose1d, SConvTransp
 from ar_spectra.modules.normed_modules.lstm import SLSTM
 from ar_spectra.modules.activations import get_activation
 
+# Frequency packing and unpacking modules (UNORIGINAL CLASSES)  
+# AR-SPECTRA NOTE: These are only used in SeaNET_AE to convert between (B, C, F, T) and (B, C*F, T)
+class PackFreqIntoChannels(nn.Module):
+    def __init__(self, f_bins: int):
+        super().__init__()
+        self.f = f_bins
+    def forward(self, x):  # x: (B, C, F, T)
+        B, C, F, T = x.shape
+        assert F == self.f, f"Expected F={self.f}, got {F}"
+        return x.permute(0, 1, 2, 3).reshape(B, C * F, T)  # (B, C*F, T)
+
+class UnpackFreqFromChannels(nn.Module):
+    def __init__(self, f_bins: int):
+        super().__init__()
+        self.f = f_bins
+    def forward(self, z):  # z: (B, C*F, T)
+        B, CF, T = z.shape
+        assert CF % self.f == 0, f"Channels {CF} not divisible by F={self.f}"
+        C = CF // self.f
+        return z.view(B, C, self.f, T)  # (B, C, F, T)
 
 class SEANetResnetBlock2d(nn.Module):
     """Residual block from SEANet model.
@@ -108,6 +128,7 @@ class SEANetEncoder2d(nn.Module):
             (streamable) convolution as the skip connection in the residual network blocks.
         compress (int): Reduced dimensionality in residual branches (from Demucs v3).
         lstm (int): Number of LSTM layers at the end of the encoder.
+        latent_fbins (int): Number of frequency bins to pack into channels at the bottleneck.
     """
     def __init__(self, input_size: int = 1, dimension: int = 128, n_filters: int = 32, n_residual_layers: int = 1,
                  ratios: tp.List[tp.Tuple[int, int]] = [(4, 1), (4, 1), (4, 2), (4, 1)],
@@ -115,7 +136,7 @@ class SEANetEncoder2d(nn.Module):
                  norm: str = 'weight_norm', norm_params: tp.Dict[str, tp.Any] = {}, kernel_size: int = 7,
                  last_kernel_size: int = 7, residual_kernel_size: int = 3, dilation_base: int = 2, causal: bool = False,
                  pad_mode: str = 'reflect', true_skip: bool = False, compress: int = 2,
-                 seq_model: str = "lstm", seq_layer_num: int = 2, res_seq=True, conv_group_ratio: int = -1):
+                 seq_model: str = "lstm", seq_layer_num: int = 2, res_seq=True, conv_group_ratio: int = -1, latent_fbins: int = 1,):
         super().__init__()
         self.channels = input_size
         self.dimension = dimension
@@ -124,6 +145,7 @@ class SEANetEncoder2d(nn.Module):
         del ratios
         self.n_residual_layers = n_residual_layers
         self.hop_length = np.prod([x[1] for x in self.ratios])
+        self.latent_fbins = latent_fbins
 
         # act = getattr(nn, activation)
         mult = 1
@@ -158,14 +180,14 @@ class SEANetEncoder2d(nn.Module):
             mult *= 2
 
         # squeeze shape for subsequent models
-        model += [ReshapeModule(dim=2)]
+        model += [PackFreqIntoChannels(latent_fbins)]  
 
         if seq_model == 'lstm':
-            model += [SLSTM(mult * n_filters, num_layers=seq_layer_num, skip=res_seq)]
+            model += [SLSTM(mult * n_filters * latent_fbins, num_layers=seq_layer_num, skip=res_seq)]
         elif seq_model == "transformer":
             from ar_spectra.modules.normed_modules.transformer import TransformerEncoder
-            model += [TransformerEncoder(mult * n_filters,
-                                         output_size=mult * n_filters,
+            model += [TransformerEncoder(mult * n_filters * latent_fbins,
+                                         output_size=mult * n_filters * latent_fbins,
                                          num_blocks=seq_layer_num,
                                          input_layer=None,
                                          causal_mode="causal" if causal else "None",
@@ -175,8 +197,8 @@ class SEANetEncoder2d(nn.Module):
 
         model += [
             # act(**activation_params),
-            get_activation(activation, **{**activation_params, "channels": mult * n_filters}),
-            SConv1d(mult * n_filters, dimension,
+            get_activation(activation, **{**activation_params, "channels": mult * n_filters * latent_fbins}),
+            SConv1d(mult * n_filters * latent_fbins, dimension,
                     kernel_size=last_kernel_size,
                     norm=norm, norm_kwargs=norm_params,
                     causal=causal, pad_mode=pad_mode)
@@ -226,6 +248,7 @@ class SEANetDecoder2d(nn.Module):
         lstm (int): Number of LSTM layers at the end of the encoder.
         trim_right_ratio (float): Ratio for trimming at the right of the transposed convolution under the causal setup.
             If equal to 1.0, it means that all the trimming is done at the right.
+        latent_fbins (int): Number of frequency bins packed into channels at the bottleneck.
     """
     def __init__(self, input_size: int = 128, channels: int = 1, n_filters: int = 32, n_residual_layers: int = 1,
                  ratios: tp.List[tp.Tuple[int, int]] = [(4, 1), (4, 1), (4, 2), (4, 1)],
@@ -236,7 +259,7 @@ class SEANetDecoder2d(nn.Module):
                  pad_mode: str = 'reflect', true_skip: bool = False, compress: int = 2,
                  seq_model: str = 'lstm', seq_layer_num: int = 2, trim_right_ratio: float = 1.0, res_seq=True,
                  last_out_padding: tp.List[tp.Union[int, int]] = [(0, 1), (0, 0)],
-                 tr_conv_group_ratio: int = -1, conv_group_ratio: int = -1):
+                 tr_conv_group_ratio: int = -1, conv_group_ratio: int = -1, latent_fbins: int = 1,):
         super().__init__()
         self.dimension = input_size
         self.channels = channels
@@ -245,20 +268,21 @@ class SEANetDecoder2d(nn.Module):
         del ratios
         self.n_residual_layers = n_residual_layers
         self.hop_length = np.prod([x[1] for x in self.ratios])
+        self.latent_fbins = latent_fbins
 
         # act = getattr(nn, activation)
         mult = int(2 ** len(self.ratios))
         model: tp.List[nn.Module] = [
-            SConv1d(input_size, mult * n_filters, kernel_size, norm=norm, norm_kwargs=norm_params,
-                    causal=causal, pad_mode=pad_mode)
+            SConv1d(input_size, mult * n_filters * latent_fbins, kernel_size, norm=norm, norm_kwargs=norm_params,
+                    causal=causal, pad_mode=pad_mode),
         ]
-
+        
         if seq_model == "lstm":
-            model += [SLSTM(mult * n_filters, num_layers=seq_layer_num, skip=res_seq)]
+            model += [SLSTM(mult * n_filters * latent_fbins, num_layers=seq_layer_num, skip=res_seq)]
         elif seq_model == "transformer":
             from ar_spectra.modules.normed_modules.transformer import TransformerEncoder
-            model += [TransformerEncoder(mult * n_filters,
-                                         output_size=mult * n_filters,
+            model += [TransformerEncoder(mult * n_filters * latent_fbins,
+                                         output_size=mult * n_filters * latent_fbins,
                                          num_blocks=seq_layer_num,
                                          input_layer=None,
                                          causal_mode="causal" if causal else "None",
@@ -266,7 +290,8 @@ class SEANetDecoder2d(nn.Module):
         else:
             pass
 
-        model += [ReshapeModule(dim=2)]
+        #model += [ReshapeModule(dim=2)]
+        model += [UnpackFreqFromChannels(latent_fbins)]
 
         # Upsample to raw audio scale
         for i, (freq_ratio, time_ratio) in enumerate(self.ratios):
@@ -315,5 +340,6 @@ class SEANetDecoder2d(nn.Module):
 
     def forward(self, z):
         # z : (B, C, T)  [channels-first]
-        y = self.model(z)           
+        y = self.model(z)      
+        #print("Decoder output shape:", y.shape)     
         return y

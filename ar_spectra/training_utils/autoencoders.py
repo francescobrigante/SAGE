@@ -328,6 +328,30 @@ class AutoencoderValDemoCallback(pl.Callback):
         right = pad - left
         return F.pad(x, (left, right), mode="constant", value=0.0)
 
+    @staticmethod
+    def _resolve_istft_kwargs(training_params: dict, override_params: dict) -> dict:
+        """
+        - Parte dai parametri di training (dataset.kwargs)
+        - Applica override; se un valore è "auto", usa quello di training
+        - Filtra solo le chiavi ISTFT supportate
+        """
+        allowed = {"n_fft", "hop_length", "win_length", "center", "normalized", "window", "length", "onesided"}
+        base = {k: v for k, v in (training_params or {}).items() if k in allowed}
+        for k, v in (override_params or {}).items():
+            if k not in allowed:
+                continue
+            if isinstance(v, str) and v.lower() == "auto":
+                # tieni il valore di training (se esiste), altrimenti non impostare
+                if k not in base:
+                    base.pop(k, None)
+                continue
+            base[k] = v
+        # rimuovi eventuali "auto" residui
+        for k in list(base.keys()):
+            if isinstance(base[k], str) and base[k].lower() == "auto":
+                base.pop(k, None)
+        return base
+
     @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx: int = 0):
         # logga solo sul primo batch di ogni epoca, con frequenza every_n_epochs
@@ -355,13 +379,29 @@ class AutoencoderValDemoCallback(pl.Callback):
             latents = pl_module.autoencoder.encode(encoder_input)
             sp_decoded = pl_module.autoencoder.decode(latents)
 
-            istft_kwargs = dict(getattr(pl_module, "stft_params", {}) or {})
-            istft_kwargs.update(self.istft_params or {})
+            # accept either pl_module.stft_params or the engine fallback pl_module.engine.stft_params
+            training_stft = dict(
+                getattr(pl_module, "stft_params", None)
+                or getattr(getattr(pl_module, "engine", None), "stft_params", {})
+                or {}
+            )
+            istft_kwargs = self._resolve_istft_kwargs(training_stft, self.istft_params)
+
 
             try:
                 decoded = pl_module.autoencoder.istft(sp_decoded, **istft_kwargs)
-            except Exception:
-                decoded = pl_module.autoencoder.istft(sp_decoded)
+                encoder_input_istft = pl_module.autoencoder.istft(encoder_input, **istft_kwargs)
+            # TODO: specifica eccezioni ISTFT
+            except Exception as e:
+                # fallback: prova con i parametri di training, che dovrebbero essere coerenti
+                warn(f"Validation demo ISTFT failed with demo params ({e.__class__.__name__}: {e}). Retrying with training params.")
+                fallback_kwargs = self._resolve_istft_kwargs(training_stft, {})
+                decoded = pl_module.autoencoder.istft(sp_decoded, **fallback_kwargs)
+                encoder_input_istft = pl_module.autoencoder.istft(encoder_input, **fallback_kwargs)
+            except Exception as e:
+                decoded = pl_module.autoencoder.istft(sp_decoded, self.istft_params)
+                encoder_input_istft = pl_module.autoencoder.istft(encoder_input, **self.istft_params)
+                
 
             # allinea a reals e applica target length opzionale
             from .autoencoders import trim_to_shortest  # reuse helper
@@ -378,11 +418,14 @@ class AutoencoderValDemoCallback(pl.Callback):
             if target_len != decoded.shape[-1]:
                 decoded = self._crop_or_pad(decoded, target_len)
                 reals_wav = self._crop_or_pad(reals_wav, target_len)
+                input_encoder_istft = self._crop_or_pad(encoder_input_istft, target_len)
 
             # interleave reals e fakes per salvataggio
             from einops import rearrange
             reals_fakes = rearrange([reals_wav, decoded], 'i b d n -> (b i) d n')
             reals_fakes = rearrange(reals_fakes, 'b d n -> d (b n)')
+            encoder_input_istft = rearrange([reals_wav, input_encoder_istft], 'i b d n -> (b i) d n')
+            encoder_input_istft = rearrange(encoder_input_istft, 'b d n -> d (b n)')
 
             # path di salvataggio
             try:
@@ -392,11 +435,16 @@ class AutoencoderValDemoCallback(pl.Callback):
                     getattr(getattr(trainer.logger, "experiment", None), "id", "offline"), "media")
                 os.makedirs(data_dir, exist_ok=True)
                 filename = os.path.join(data_dir, f'{self.save_basename}_ep{epoch:04d}.wav')
+                filename_input_encoder_istft = os.path.join(data_dir, f'{self.save_basename}_input_encoder_istft_ep{epoch:04d}.wav')
             except Exception:
                 filename = f'{self.save_basename}_ep{epoch:04d}.wav'
+                filename_input_encoder_istft = f'{self.save_basename}_input_encoder_istft_ep{epoch:04d}.wav'
+                
 
             # Salva in float32 per evitare clipping
             wav_f32 = reals_fakes.detach().to(torch.float32).cpu()
+            wav_input_encoder_istft_f32 = encoder_input_istft.detach().to(torch.float32).cpu()
+            torchaudio.save(filename_input_encoder_istft, wav_input_encoder_istft_f32, sr, encoding="PCM_F")
             torchaudio.save(filename, wav_f32, sr, encoding="PCM_F")
 
             # logging
@@ -404,6 +452,7 @@ class AutoencoderValDemoCallback(pl.Callback):
             from ..interface.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 
             log_audio(trainer.logger, 'val/recon', filename, sr)
+            log_audio(trainer.logger, 'val/input_encoder_istft', filename_input_encoder_istft, sr)
             lat_to_log = latents[0] if isinstance(latents, (tuple, list)) else latents
             log_point_cloud(trainer.logger, 'val/embeddings_3dpca', lat_to_log)
             log_image(trainer.logger, 'val/embeddings_spec', tokens_spectrogram_image(lat_to_log))

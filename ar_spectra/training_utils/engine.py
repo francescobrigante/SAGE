@@ -51,28 +51,27 @@ class AutoencoderEngine(nn.Module):
     - configure_optimizers() -> ottimizzatori + scheduler dal config
     Nessun backward/step/logging qui dentro.
     """
-    def __init__(
-        self,
-        autoencoder: AutoEncoder,
-        sample_rate: int = 48000,
-        loss_config: Optional[dict] = None,
-        eval_loss_config: Optional[dict] = None,
-        optimizer_configs: Optional[dict] = None,
-        warmup_steps: int = 0,
-        warmup_mode: Literal["adv", "full"] = "adv",
-        encoder_freeze_on_warmup: bool = False,
-        force_input_mono: bool = False,
-        latent_mask_ratio: float = 0.0,
-        teacher_model: Optional[AutoEncoder] = None,
-        audio_channels: Optional[int] = None,
-        stft_params: Optional[dict] = None,
-    ):
+    def __init__(self, 
+                 autoencoder: AutoEncoder,
+                 sample_rate: int = 48000,
+                 loss_config: Optional[dict] = None,
+                 eval_loss_config: Optional[dict] = None,
+                 optimizer_configs: Optional[dict] = None,
+                 warmup_steps: int = 0,
+                 warmup_mode: Literal["adv", "full"] = "adv",
+                 encoder_freeze_on_warmup: bool = False,
+                 force_input_mono: bool = False,
+                 latent_mask_ratio: float = 0.0,
+                 teacher_model: Optional[AutoEncoder] = None,
+                 audio_channels: Optional[int] = None,
+                 stft_params: Optional[dict] = None,
+                 ):
         super().__init__()
         self.autoencoder = autoencoder
         self.teacher_model = teacher_model
         self.sample_rate = sample_rate
-        # Params STFT/istft fallback (es. n_fft, hop_length, win_length, center, normalized)
-        self.stft_params = stft_params or {}
+        self.stft_params = stft_params or {}   # training params
+        self.val_stft_params = None            # eval params injected by train.py
 
         # training policy
         self.warmup_steps = warmup_steps
@@ -216,6 +215,48 @@ class AutoencoderEngine(nn.Module):
             return None
         return self.teacher_model.encode(encoder_input, return_info=False)
 
+    def _resolve_istft_kwargs(self, override: Optional[dict] = None) -> dict:
+        # training path (unchanged): base = training, override replaces
+        allowed = {"n_fft", "hop_length", "win_length", "center", "normalized", "window", "onesided", "length"}
+        base = {k: v for k, v in (self.stft_params or {}).items() if k in allowed}
+        if override:
+            for k, v in override.items():
+                if k not in allowed:
+                    continue
+                if isinstance(v, str) and v.lower() == "auto":
+                    if k not in base:
+                        base.pop(k, None)
+                    continue
+                base[k] = v
+        for k in list(base.keys()):
+            if isinstance(base[k], str) and base[k].lower() == "auto":
+                base.pop(k, None)
+        return base
+
+    def _resolve_eval_istft_kwargs(self) -> dict:
+        """
+        Validation: usa come base i parametri dell'eval; se un campo è 'auto' o mancante,
+        fallback ai parametri di training.
+        """
+        allowed = {"n_fft", "hop_length", "win_length", "center", "normalized", "window", "onesided", "length"}
+        train_base = {k: v for k, v in (self.stft_params or {}).items() if k in allowed}
+        eval_raw = getattr(self, "val_stft_params", None) or {}
+        eval_clean = {}
+        for k, v in eval_raw.items():
+            if k not in allowed:
+                continue
+            if isinstance(v, str) and v.lower() == "auto":
+                continue  # lascia il fallback al training
+            eval_clean[k] = v
+        # fallback prima, poi override con eval pulito (eval ha priorità)
+        out = dict(train_base)
+        out.update(eval_clean)
+        # ripulisci eventuali 'auto' avanzati (da training unlikely)
+        for k in list(out.keys()):
+            if isinstance(out[k], str) and out[k].lower() == "auto":
+                out.pop(k, None)
+        return out
+
     def compute(self, batch: Tuple[torch.Tensor, torch.Tensor], global_step: int) -> Dict[str, Any]:
         """
         batch: (sp_reals, orig_waveforms)
@@ -256,20 +297,16 @@ class AutoencoderEngine(nn.Module):
         # Decode STFT -> waveform
         sp_decoded = self.autoencoder.decode(latents)
         # Prima proviamo senza params (se l'istft interna è in grado di gestire spec complessi)
-        try:
-            #print("the shape of sp_decoded is:", sp_decoded.shape)
-            decoded = self.autoencoder.istft(sp_decoded)
-        except ValueError as e:
-            # fallback: prova a passare i parametri STFT presi dalla configurazione del dataset
-            if self.stft_params:
-                decoded = self.autoencoder.istft(sp_decoded, **self.stft_params)
-            else:
-                # rialza con messaggio più informativo
-                raise ValueError(
-                    "autoencoder.istft failed and no stft params available for fallback. "
-                    "Pass 'stft_params' (containing at least 'n_fft') to AutoencoderEngine "
-                    "or include them in the dataset config."
-                ) from e
+
+        # fallback: usa parametri di training risolti/filtrati
+        istft_kwargs = self._resolve_istft_kwargs()
+        if istft_kwargs:
+            decoded = self.autoencoder.istft(sp_decoded, **istft_kwargs)
+        else:
+            raise ValueError(
+                "autoencoder.istft failed and no usable istft params available. "
+                "Ensure 'n_fft' (e correlati) are present in the dataset kwargs or resolved from config."
+            )
         decoded, orig_waveforms = trim_to_shortest(decoded, orig_waveforms)
 
         loss_info["decoded"] = decoded
@@ -345,20 +382,15 @@ class AutoencoderEngine(nn.Module):
 
         latents, _ = self.autoencoder.encode(encoder_input, return_info=True)
         sp_decoded = self.autoencoder.decode(latents)
-        try:
-            #print("the shape of sp_decoded is:", sp_decoded.shape)
-            decoded = self.autoencoder.istft(sp_decoded)
-        except ValueError as e:
-            # fallback: prova a passare i parametri STFT presi dalla configurazione del dataset
-            if self.stft_params:
-                decoded = self.autoencoder.istft(sp_decoded, **self.stft_params)
-            else:
-                # rialza con messaggio più informativo
-                raise ValueError(
-                    "autoencoder.istft failed and no stft params available for fallback. "
-                    "Pass 'stft_params' (containing at least 'n_fft') to AutoencoderEngine "
-                    "or include them in the dataset config."
-                ) from e
+        
+        istft_kwargs = self._resolve_eval_istft_kwargs()
+        if istft_kwargs:
+            decoded = self.autoencoder.istft(sp_decoded, **istft_kwargs)
+        else:
+            raise ValueError(
+                "autoencoder.istft failed and no usable istft params available. "
+                "Ensure ISTFT params are present in eval/train kwargs."
+            )
         decoded, orig_waveforms = trim_to_shortest(decoded, orig_waveforms)
 
         val_loss_dict: Dict[str, float] = {}
