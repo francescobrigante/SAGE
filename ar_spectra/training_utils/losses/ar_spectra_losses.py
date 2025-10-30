@@ -66,6 +66,7 @@ class PerceptuallyWeightedComplexMSE(nn.Module):
             of {'avg', 'ref'}.
             - 'avg': Normalizes by the arithmetic mean of the magnitudes, `d = 0.5 * (|\hat{S}| + |S|)`.
             - 'ref': Normalizes by the magnitude of the reference signal, `d = |S|`.
+            - 'none': No normalization applied (d = 1), yielding classic MSE when p=2.
             Defaults to "avg".
         p (float, optional): The exponent for the p-norm. `p=2.0` corresponds to a
             squared error, while `p=1.0` corresponds to an absolute error. Defaults to 2.0.
@@ -91,10 +92,10 @@ class PerceptuallyWeightedComplexMSE(nn.Module):
     def __init__(
         self,
         *,
-        normalize: str = "avg",
+        normalize: str = "none",
         p: float = 2.0,
         eps: float = 1e-7,
-        reduction: str = "mean",
+        reduction: str = "mean", 
         dim: Optional[Sequence[int]] = None,
         keepdim: bool = False,
         bin_weighted: bool = False,
@@ -103,7 +104,10 @@ class PerceptuallyWeightedComplexMSE(nn.Module):
     ):
         super().__init__()
         if normalize not in {"avg", "ref"}:
-            raise ValueError(f"normalize must be 'avg' or 'ref', but got {normalize}.")
+            # allow disabling normalization to obtain classic MSE
+            if normalize != "none":
+                raise ValueError(f"normalize must be 'avg', 'ref' or 'none', but got {normalize}.")
+        # 'none' => no normalization (d = 1)
         if bin_ref not in {"avg", "ref"}:
             raise ValueError(f"bin_ref must be 'avg' or 'ref', but got {bin_ref}.")
         if reduction not in {"none", "mean", "sum"}:
@@ -139,10 +143,11 @@ class PerceptuallyWeightedComplexMSE(nn.Module):
 
         # Normalization denominator
         if self.normalize == "avg":
-            d = 0.5 * (abs_hat + abs_ref)
-        else:  # "ref"
-            d = abs_ref
-        d = d + self.eps
+            d = 0.5 * (abs_hat + abs_ref) + self.eps
+        elif self.normalize == "ref":
+            d = abs_ref + self.eps
+        else:  # "none"
+            d = torch.ones_like(abs_ref)  # no normalization -> classic MSE when p=2
 
         loss_tensor = (error_mag / d).pow(self.p)
 

@@ -15,6 +15,8 @@ from rich.console import Console
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from ar_spectra.training_utils.get_model_config import extract_model_config
 import wandb
+import time
+from pytorch_lightning.callbacks import Callback
 console = Console()  
 
 def ok(msg):     console.print(msg, style="bold green")
@@ -227,7 +229,7 @@ def main():
             batch_size=eval_batch_size,
             num_workers=num_workers,
             pin_memory=eval_pin_memory,
-            shuffle=False,
+            shuffle=bool(dl_eval_cfg.get("shuffle", False)),
             drop_last=False,
             persistent_workers=(dl_eval_cfg.get("persistent_workers", False) if num_workers > 0 else False),
             prefetch_factor=int(dl_eval_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
@@ -275,6 +277,7 @@ def main():
     optimizer_spec = cfg.get("optimizer", None)
     scheduler_spec = cfg.get("scheduler", None)
 
+    # build wrapper Lightning
     wrapper = AutoencoderTrainingWrapper(
         autoencoder=autoenc,
         sample_rate=int(cfg["train_dataset"]["kwargs"].get("sample_rate", 44100)),
@@ -294,6 +297,10 @@ def main():
     )
     ok(f"Instantiated AutoEncoder and Lightning wrapper.")
 
+    # Send eval params to the engine for validation only
+    eval_stft_params = (cfg.get("eval_dataset", {}) or {}).get("kwargs", {}) or {}
+    wrapper.engine.val_stft_params = eval_stft_params
+
     # logger (W&B opzionale)
     wandb_cfg = (cfg.get("wandb", {}) or {})
     use_wandb = bool(wandb_cfg.get("use_wandb", False))
@@ -305,12 +312,22 @@ def main():
             log_model=False,  # evita upload pesanti
             settings=wandb.Settings(_service_wait=7)
         )
+        try:
+            run = logger.experiment
+            # aggiungi la config esatta del parser al config del run
+            run.config.update({"parsed_config": cfg}, allow_val_change=True)
+            # salva anche il JSON del config nel run (file upload)
+            cfg_path = Path("wandb_parsed_config.json")
+            cfg_path.write_text(json.dumps(cfg, indent=2))
+            run.save(str(cfg_path), base_path=str(cfg_path.parent))
+        except Exception as e:
+            warn(f"W&B config upload skipped ({type(e).__name__}: {e})")
 
     # Callback e checkpoint
     ckpt_dir = Path(cfg.get("trainer", {}).get("ckpt_dir", "checkpoints/seanet_stft"))
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     callbacks = [
-        ModelInfoLogger(filename="model_info.json", max_module_lines=768, log_structure=False), 
+        ModelInfoLogger(filename="model_info.json", max_module_lines=768, log_structure=cfg.get("trainer", {}).get("log_model_structure", False)),
         ModelCheckpoint(
             dirpath=str(ckpt_dir),
             filename="epoch_{epoch:03d}",
@@ -328,18 +345,19 @@ def main():
     # Demo (validation) dal config opzionale
     demo_cfg = cfg.get("demo", {}) or {}
     if eval_dl is not None:
+        # Passa direttamente i parametri del dataset di training
         callbacks.append(
             AutoencoderValDemoCallback(
                 every_n_epochs=int(demo_cfg.get("every_n_epochs", 1)),
                 max_demos=int(demo_cfg.get("max_demos", 8)),
                 sample_rate=int(cfg["train_dataset"]["kwargs"].get("sample_rate", 44100)),
-                istft_params=demo_cfg.get("istft_params", None),
-                target_seconds=demo_cfg.get("target_seconds", None),
-                target_samples=demo_cfg.get("target_samples", None),
+                istft_params=demo_cfg.get("istft_params", {}),
+                target_seconds=float(demo_cfg.get("target_seconds", 1.0)),
                 save_basename=str(demo_cfg.get("save_basename", "recon_val")),
             )
         )
 
+    
     # Profiler: PyTorch Profiler -> TensorBoard
     prof_logdir = Path(cfg.get("trainer", {}).get("profiler_dir", "lightning_profiler"))
     prof_logdir.mkdir(parents=True, exist_ok=True)
@@ -378,7 +396,8 @@ def main():
     epochs = int(cfg.get("trainer", {}).get("epochs", 50))
     accelerator = "gpu" if torch.cuda.is_available() else "cpu"
     devices = args.num_gpus 
-    precision = 32  # tensori complessi -> niente AMP
+    precision = "bf16-mixed"  # tensori complessi -> niente AMP
+
 
     trainer = Trainer(
         accelerator=accelerator,
@@ -390,7 +409,7 @@ def main():
         callbacks=callbacks,
         enable_model_summary=True,
         log_every_n_steps=int(cfg.get("trainer", {}).get("log_interval", 1)),
-        num_sanity_val_steps=0,
+        num_sanity_val_steps=1,
         gradient_clip_val=0.0,
         detect_anomaly=False,
         profiler=profiler,

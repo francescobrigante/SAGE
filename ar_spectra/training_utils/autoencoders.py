@@ -335,7 +335,8 @@ class AutoencoderValDemoCallback(pl.Callback):
         - Applica override; se un valore è "auto", usa quello di training
         - Filtra solo le chiavi ISTFT supportate
         """
-        allowed = {"n_fft", "hop_length", "win_length", "center", "normalized", "window", "length", "onesided"}
+        # NOTE: do not rely on passing 'length' here anymore; ISTFT length will be handled elsewhere/ignored if not present
+        allowed = {"n_fft", "hop_length", "win_length", "center", "normalized", "window",}
         base = {k: v for k, v in (training_params or {}).items() if k in allowed}
         for k, v in (override_params or {}).items():
             if k not in allowed:
@@ -356,9 +357,13 @@ class AutoencoderValDemoCallback(pl.Callback):
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx: int = 0):
         # logga solo sul primo batch di ogni epoca, con frequenza every_n_epochs
         epoch = int(trainer.current_epoch)
-        if batch_idx != 0 or (epoch % self.every_n_epochs) != 0 or self._last_logged_epoch == epoch:
+        is_sanity = getattr(trainer, "sanity_checking", False)
+        if batch_idx != 0 or (epoch % self.every_n_epochs) != 0 or (self._last_logged_epoch == epoch and not is_sanity):
             return
-        self._last_logged_epoch = epoch
+        # non marca l'epoca come "già loggata" se siamo nel sanity-check,
+        # così il logging reale alla fine dell'epoca può ancora avvenire.
+        if not is_sanity:
+            self._last_logged_epoch = epoch
 
         sp_reals, reals_wav = batch
         sp_reals = sp_reals.to(pl_module.device, non_blocking=True)
@@ -391,6 +396,8 @@ class AutoencoderValDemoCallback(pl.Callback):
             try:
                 decoded = pl_module.autoencoder.istft(sp_decoded, **istft_kwargs)
                 encoder_input_istft = pl_module.autoencoder.istft(encoder_input, **istft_kwargs)
+                encoder_input_bis = encoder_input_istft
+
             # TODO: specifica eccezioni ISTFT
             except Exception as e:
                 # fallback: prova con i parametri di training, che dovrebbero essere coerenti
@@ -398,11 +405,13 @@ class AutoencoderValDemoCallback(pl.Callback):
                 fallback_kwargs = self._resolve_istft_kwargs(training_stft, {})
                 decoded = pl_module.autoencoder.istft(sp_decoded, **fallback_kwargs)
                 encoder_input_istft = pl_module.autoencoder.istft(encoder_input, **fallback_kwargs)
+                encoder_input_bis = encoder_input_istft
+
             except Exception as e:
                 decoded = pl_module.autoencoder.istft(sp_decoded, self.istft_params)
                 encoder_input_istft = pl_module.autoencoder.istft(encoder_input, **self.istft_params)
-                
-
+                encoder_input_bis = encoder_input_istft
+            
             # allinea a reals e applica target length opzionale
             from .autoencoders import trim_to_shortest  # reuse helper
             decoded, reals_wav = trim_to_shortest(decoded.detach(), reals_wav.detach())
@@ -436,16 +445,32 @@ class AutoencoderValDemoCallback(pl.Callback):
                 os.makedirs(data_dir, exist_ok=True)
                 filename = os.path.join(data_dir, f'{self.save_basename}_ep{epoch:04d}.wav')
                 filename_input_encoder_istft = os.path.join(data_dir, f'{self.save_basename}_input_encoder_istft_ep{epoch:04d}.wav')
+
             except Exception:
                 filename = f'{self.save_basename}_ep{epoch:04d}.wav'
                 filename_input_encoder_istft = f'{self.save_basename}_input_encoder_istft_ep{epoch:04d}.wav'
                 
 
             # Salva in float32 per evitare clipping
-            wav_f32 = reals_fakes.detach().to(torch.float32).cpu()
+            # Pre-normalize per evitare clipping: scala se il picco supera 1.0
+            eps = 1e-9
+            # assicurati che tutti i tensori stiano sullo stesso device prima di fare torch.stack()
+            device = getattr(pl_module, "device", None) or (reals_wav.device if torch.is_tensor(reals_wav) else torch.device("cpu"))
+            peak_real = (reals_wav.abs().max().detach().to(device) if torch.is_tensor(reals_wav) else torch.tensor(0.0, device=device))
+            peak_dec = (decoded.abs().max().detach().to(device) if torch.is_tensor(decoded) else torch.tensor(0.0, device=device))
+            peak_enc = (encoder_input_istft.abs().max().detach().to(device) if torch.is_tensor(encoder_input_istft) else torch.tensor(0.0, device=device))
+            global_peak = float(torch.max(torch.stack([peak_real, peak_dec, peak_enc, torch.tensor(eps, device=device)])).item())
+            if global_peak > 1.0:
+                scale = 1.0 / global_peak
+                reals_fakes = reals_fakes * scale
+                encoder_input_istft = encoder_input_istft * scale
+
+            # Converti a float32 per il salvataggio
+            wav_reals_fakes_f32 = reals_fakes.detach().to(torch.float32).cpu()
             wav_input_encoder_istft_f32 = encoder_input_istft.detach().to(torch.float32).cpu()
-            torchaudio.save(filename_input_encoder_istft, wav_input_encoder_istft_f32, sr, encoding="PCM_F")
-            torchaudio.save(filename, wav_f32, sr, encoding="PCM_F")
+            # use float PCM (no int quantization). Values already scaled to <=1.0
+            torchaudio.save(filename_input_encoder_istft, wav_input_encoder_istft_f32, sr, encoding="PCM_F", bits_per_sample=32)
+            torchaudio.save(filename, wav_reals_fakes_f32, sr, encoding="PCM_F", bits_per_sample=32)
 
             # logging
             from .utils import log_audio, log_image, log_point_cloud

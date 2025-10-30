@@ -1,25 +1,26 @@
 {
-  "seed": 42,
+  "seed": 94,
   "device": "cuda",
   "train_dataset": {
     "class": "ar_spectra.dataset.OnTheFlySTFTDataset",
     "kwargs": {
       "audio_dir": "/home/cerovaz/repos/data/jamendo_full/train",
-      "target_frames": 512,
+      "target_frames": 128,
       "sample_rate": 44100,
-      "n_fft": 512,
-      "hop_length": 128,
-      "win_length": 512,
+      "n_fft": 2048,
+      "hop_length": 512,
+      "win_length": 2048,
       "center": true,
       "normalized": false,
       "extensions": [".mp3"],
-      "stereo": true,
+      "stereo": false,
       "cac": true,
-      "skip_broken_files": true
+      "skip_broken_files": true,
+      "skip_criteria": ["sample_rate"]  
     }
   },
   "train_dataloader": {
-    "batch_size": 64,
+    "batch_size": 8,
     "num_workers": 8,
     "prefetch_factor": 8,
     "pin_memory": "false",
@@ -31,21 +32,23 @@
     "class": "ar_spectra.dataset.OnTheFlySTFTDataset",
     "kwargs": {
       "audio_dir": "/home/cerovaz/repos/data/jamendo_full/eval",
-      "target_frames": 512,
+      "target_frames": 128,
       "sample_rate": 44100,
-      "n_fft": 512,
-      "hop_length": 256,
-      "win_length": 512,
+      "n_fft": 2048,
+      "hop_length": 512,
+      "win_length": 2048,
       "center": true,
       "normalized": false,
       "extensions": [".mp3"],
-      "stereo": true,
+      "stereo": false,
       "cac": true,
-      "skip_broken_files": true
+      "skip_broken_files": true,
+      "skip_criteria": ["sample_rate"]  
+
     }
   },
   "eval_dataloader": {
-    "batch_size": 64,
+    "batch_size": 8,
     "num_workers": 8,
     "prefetch_factor": 8,
     "pin_memory": "false",
@@ -53,20 +56,22 @@
     "shuffle": false,
     "pin_memory_device": "cuda"
   },
-  "model": {
+    "model": {
     "autoencoder": { "return_latent": false},
     "encoder": {
       "class": "ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d",
       "kwargs": {
         "input_size": "auto",
         "dimension": 128,
-        "n_filters": 8,
+        "n_filters": 64,
         "n_residual_layers": 1,
-        "ratios": [[4,1],[4,1],[4,2],[4,1]],
+        "ratios": [[16,1],[4,4],[4,1]],
         "activation": "ELU",
         "norm": "time_group_norm",
         "norm_params": { "num_groups": 1 },
-        "causal": false
+        "causal": false,
+        "latent_fbins": 4,
+        "dilation_base": 2
       }
     },
     "decoder": {
@@ -74,13 +79,15 @@
       "kwargs": {
         "channels": "auto",
         "input_size": 128,
-        "n_filters": 8,
+        "n_filters": 64,
         "n_residual_layers": 1,
-        "ratios": [[4,1],[4,1],[4,2],[4,1]],
+        "ratios": [[16,1],[4,4],[4,1]],
         "activation": "ELU",
         "norm": "time_group_norm",
         "norm_params": { "num_groups": 1 },
-        "causal": false
+        "causal": false,
+        "latent_fbins": 4,
+        "dilation_base": 2
       }
     },
     "bottleneck": {
@@ -90,14 +97,14 @@
   },
   "optimizer": {
     "type": "AdamW",
-    "config": { "lr": 0.0002, "weight_decay": 0.01 }
+    "config": { "lr": 0.0003, "weight_decay": 1e-3 }
   },
   "scheduler": {
     "type": "InverseLR",
     "config": {
-      "inv_gamma": 200000,
+      "inv_gamma": 30000,
       "power": 0.5,
-      "warmup": 0.999
+      "warmup": 0.995
     }
   },
   "trainer": {
@@ -106,32 +113,40 @@
     "log_interval": 1,
     "ckpt_dir": "checkpoints/seanet_stft",
     "profile": false,
-    "check_val_every_n_epoch": 1
+    "check_val_every_n_epoch": 1,
+    "log_model_structure": true
   },
   "wandb": {
     "project": "ICML_2026",
     "name": "SEANet_STFT",
     "use_wandb": true
   },
+  "eval_loss_config": {
+    "sisdr": {
+      "zero_mean": true,
+      "reduction": "mean"
+    }
+  },
   "demo": {
     "every_n_epochs": 1,
-    "max_demos": 6,
-    "target_seconds": 1.0,
+    "max_demos": 7,
+    "target_seconds": 1,
     "istft_params": {
-      "n_fft": 512,
-      "hop_length": 256,
-      "win_length": 512,
+      "sample_rate": 44100,
+      "n_fft": 2048,
+      "hop_length": 512,
+      "win_length": 2048,
+      "target_frames": 128,
       "center": true,
       "normalized": false
     },
     "save_basename": "recon_val"
   },
   "loss_config": {
-    "bottleneck": { "weights": { "kl": 1e-4 } },
     "spectral": {
       "mse": {
         "config": {
-          "normalize": "avg",
+          "normalize": "none",
           "p": 2.0,
           "reduction": "mean",
           "bin_weighted": false

@@ -217,7 +217,8 @@ class AutoencoderEngine(nn.Module):
 
     def _resolve_istft_kwargs(self, override: Optional[dict] = None) -> dict:
         # training path (unchanged): base = training, override replaces
-        allowed = {"n_fft", "hop_length", "win_length", "center", "normalized", "window", "onesided", "length"}
+        # Do not require/expect 'length' here anymore. If present, it will be ignored.
+        allowed = {"n_fft", "hop_length", "win_length", "center", "normalized", "window", "onesided"}
         base = {k: v for k, v in (self.stft_params or {}).items() if k in allowed}
         if override:
             for k, v in override.items():
@@ -238,7 +239,8 @@ class AutoencoderEngine(nn.Module):
         Validation: usa come base i parametri dell'eval; se un campo è 'auto' o mancante,
         fallback ai parametri di training.
         """
-        allowed = {"n_fft", "hop_length", "win_length", "center", "normalized", "window", "onesided", "length"}
+        # Keep eval/training ISTFT keys minimal; 'length' is not required and will be ignored if supplied
+        allowed = {"n_fft", "hop_length", "win_length", "center", "normalized", "window", "onesided"}
         train_base = {k: v for k, v in (self.stft_params or {}).items() if k in allowed}
         eval_raw = getattr(self, "val_stft_params", None) or {}
         eval_clean = {}
