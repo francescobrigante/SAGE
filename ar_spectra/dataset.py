@@ -47,9 +47,8 @@ class OnTheFlySTFTDataset(Dataset):
 
     def __init__(
         self, 
-        audio_dir: str | os.PathLike,
         *,
-        length: int,
+        audio_dir: str | os.PathLike,
         sample_rate: int,
         n_fft: int,
         hop_length: int,
@@ -64,7 +63,13 @@ class OnTheFlySTFTDataset(Dataset):
         cac: bool = False,  # complex-as-channels
         seed: int = 42,
         dtype: torch.dtype = torch.complex64,
-        skip_broken_files: bool = True,
+        skip_broken_files: Union[bool, Sequence[str]] = True,
+        skip_criteria: Optional[Sequence[str]] = None,
+        max_t_retries: int = 2,
+        max_replacements: int = 8,
+        # NEW: target_length in frames (preferred). Kept `length` as legacy alias.
+        length: Optional[int] = None,
+        target_frames: Optional[int] = None,
     ):
         super().__init__()
         self.audio_dir = Path(audio_dir).expanduser().resolve()
@@ -72,8 +77,6 @@ class OnTheFlySTFTDataset(Dataset):
             raise FileNotFoundError(f"Audio directory not found: {self.audio_dir}")
 
         self.extensions = tuple((ext.lower() for ext in (extensions or [".wav", ".flac", ".mp3", ".ogg", ".m4a"])))
-        
-        self.length = int(length)
 
         self.sample_rate = int(sample_rate)
         self.n_fft = int(n_fft)
@@ -86,13 +89,36 @@ class OnTheFlySTFTDataset(Dataset):
         self.max_pad_ratio = float(max_pad_ratio)
         self.stereo = bool(stereo)
         self.cac = bool(cac)
-        self.skip_broken_files = bool(skip_broken_files)
+        self.max_t_retries = int(max_t_retries)
+        self.max_replacements = int(max_replacements)
 
-        # Channels info
-        self.audio_channels: int = 2 if self.stereo else 1
-        self.spec_channels: int = (self.audio_channels * 2) if self.cac else self.audio_channels
+        # --- Gestione granulare dello skip ---
+        if isinstance(skip_broken_files, bool):
+            if skip_broken_files:
+                # Comportamento legacy: skippa per sr E canali
+                self.skip_criteria = skip_criteria
+            else:
+                self.skip_criteria = set()
+        else: # È una sequenza di stringhe
+            self.skip_criteria = {crit.lower() for crit in skip_broken_files}
 
-        self.segment_samples = (self.length - 1) * self.hop_length
+        # channels info
+        self.audio_channels = 2 if self.stereo else 1
+        self.spec_channels = 2 * self.audio_channels if self.cac else self.audio_channels
+        
+        # Resolve target frames length (support legacy `length` and preferred `target_frames`)
+        frames = None
+        if target_frames is not None:
+            frames = int(target_frames)
+        elif length is not None:
+            frames = int(length)
+        else:
+            raise ValueError("OnTheFlySTFTDataset requires 'target_frames' (frames). Provide target_frames in dataset kwargs.")
+        self.target_frames = frames
+
+        # number of samples in time domain for the requested spectrogram frames:
+        # segment_samples = (frames - 1) * hop_length
+        self.segment_samples = (self.target_frames - 1) * self.hop_length
         self.min_acceptable_len = int(self.segment_samples * (1.0 - self.max_pad_ratio))
 
         candidate_files = sorted(
@@ -111,8 +137,13 @@ class OnTheFlySTFTDataset(Dataset):
             for p in candidate_files:
                 try:
                     src_sr, num_frames, num_channels = self._probe_fn(p)
-                    # Se vogliamo skippare file con SR o canali diversi, filtra qui:
-                    if self.skip_broken_files and (src_sr != self.sample_rate or num_channels != self.audio_channels):
+
+                    # Controllo granulare per lo skip
+                    if "sample_rate" in self.skip_criteria and src_sr != self.sample_rate:
+                        mismatched_count += 1
+                        continue
+                    
+                    if "channels" in self.skip_criteria and num_channels != self.audio_channels:
                         mismatched_count += 1
                         continue
                     # altrimenti includi il file se la sua lunghezza stimata è accettabile
@@ -124,7 +155,7 @@ class OnTheFlySTFTDataset(Dataset):
                     continue
         # Emit a single warning if abbiamo escluso file per mismatch (solo se ne abbiamo esclusi)
         if mismatched_count > 0:
-            warn(f"Excluded {mismatched_count} file(s) because sample rate or channel count did not match the dataset config.")
+            warn(f"Excluded {mismatched_count} file(s) due to mismatch with skip_criteria: {list(self.skip_criteria)}")
 
         if not self.files:
             raise RuntimeError(
@@ -163,12 +194,12 @@ class OnTheFlySTFTDataset(Dataset):
 
     def _load_waveform(self, path: Path) -> tuple[torch.Tensor, int]:
         wav, sr = torchaudio.load(str(path), normalize=True)  # (C, N)
-
-        # If the channels do not match the required configuration, warn once
-        # (only in the first epoch) and adapt the waveform accordingly.
+        
+        # Se i canali non corrispondono e non stiamo skippando per 'channels',
+        # avvisa una volta (solo alla prima epoca) e adatta la forma d'onda.
         file_channels = int(wav.size(0))
         expected = 2 if self.stereo else 1
-        if file_channels != expected and not self.skip_broken_files:
+        if file_channels != expected and "channels" not in self.skip_criteria:
             if (self._warned_channel_mismatch==0) and (self._epoch == 0):
                 got = f"{file_channels} canale{'i' if file_channels>1 else ''}"
                 want = "stereo" if self.stereo else "mono"
@@ -188,8 +219,10 @@ class OnTheFlySTFTDataset(Dataset):
                 wav = wav.repeat(2, 1)  # duplicate mono -> stereo
 
         wav = wav.to(torch.float32)
-        if sr != self.sample_rate:
-            warn(f"Resampling from {sr} Hz to {self.sample_rate} Hz for file: {path}")
+        # Resample solo se il sample rate è diverso E non stiamo skippando per 'sample_rate'
+        if sr != self.sample_rate and "sample_rate" not in self.skip_criteria:
+            if self._epoch == 0: # Avvisa solo alla prima epoca per evitare spam
+                warn(f"Resampling from {sr} Hz to {self.sample_rate} Hz for file: {path}")
             wav = torchaudio.functional.resample(wav, sr, self.sample_rate)
             sr = self.sample_rate
         return wav, sr
@@ -285,86 +318,134 @@ class OnTheFlySTFTDataset(Dataset):
         wav = self._match_channels(wav).to(torch.float32)
 
         # In teoria, con skip_broken_files=True SR e canali sono già allineati.
-        # Manteniamo un resample difensivo solo se richiesto.
-        if sr != self.sample_rate and not self.skip_broken_files:
+        # Manteniamo un resample difensivo se il controllo non è attivo.
+        if sr != self.sample_rate and "sample_rate" not in self.skip_criteria:
             wav = torchaudio.functional.resample(wav, sr, self.sample_rate)
             sr = self.sample_rate
 
         return wav, sr
 
-
     def __getitem__(self, index: int) -> torch.Tensor:
-        path = self.files[index]
-        suffix = path.suffix.lower()
-        wav = None
+        # Minimal control: a few retries on the same file if T mismatches, otherwise skip to a different index
+        MAX_T_RETRIES = self.max_t_retries       # re-crop attempts on the same file when T != target_frames
+        MAX_REPLACEMENTS = self.max_replacements   # max consecutive skips to different indices before failing
 
-        if suffix == ".mp3":
-            # già croppato dal loader (usa self._rng)
-            seg, _ = self._load_segment_or_full(path)
-        else:
-            wav, _ = self._load_waveform(path)         # (C, N)
-            seg = self._random_crop_or_pad(wav)        # (C, segment_samples)
-        
-        seg = seg.contiguous()
+        replacements = 0
+        while replacements <= MAX_REPLACEMENTS:
+            path = self.files[index]
+            suffix = path.suffix.lower()
+            wav = None
 
-        # If the segment is silence, try several different random crops of the SAME file
-        # using different generator seeds. If still silent after attempts, pick another file.
-        if is_silence(seg):
-            #warn(f"Found silence in file: {path}, trying to resample segment.")
-            if len(self) <= 1:
-                pass
-            else:
-                max_tries = 1
-                found = False
-                for _ in range(max_tries):
-                    # derive a fresh seed from the dataset RNG so overall sampling stays reproducible
+            # Segment extraction: MP3 may be loaded by offset; other formats load full then crop
+            try:
+                if suffix == ".mp3":
+                    seg, _ = self._load_segment_or_full(path)
+                else:
+                    wav, _ = self._load_waveform(path)      # (C, N)
+                    seg = self._random_crop_or_pad(wav)     # (C, segment_samples)
+            except Exception:
+                # Problematic file: pick a different index
+                index = int(torch.randint(0, len(self), (1,), generator=self._rng).item())
+                replacements += 1
+                continue
+
+            seg = seg.contiguous()
+
+            # If the segment is silence, try a few alternative crops from the SAME file
+            # using different generator seeds. If still silent, pick another file.
+            if is_silence(seg):
+                if len(self) > 1:
+                    max_tries = 1
+                    found = False
+                    for _ in range(max_tries):
+                        seed_val = int(torch.randint(0, 2**31 - 1, (1,), generator=self._rng).item())
+                        gen = torch.Generator(); gen.manual_seed(seed_val)
+                        try:
+                            if suffix == ".mp3":
+                                candidate, _sr = self._load_segment_or_full(path, generator=gen)
+                            else:
+                                if wav is None:
+                                    wav, _ = self._load_waveform(path)
+                                candidate = self._random_crop_or_pad(wav, generator=gen)
+                        except RuntimeError:
+                            continue
+                        if not is_silence(candidate):
+                            seg = candidate
+                            found = True
+                            break
+                    if not found:
+                        new_idx = int(torch.randint(0, len(self), (1,), generator=self._rng).item())
+                        if new_idx == index and len(self) > 1:
+                            new_idx = (new_idx + 1) % len(self)
+                        index = new_idx
+                        replacements += 1
+                        continue
+                # If dataset has size 1, keep seg as-is (no alternative)
+
+            orig_waveform = seg
+            S = self._stft(seg)  # (C, F, T), complex if power=None
+
+            # Ensure complex dtype
+            if not torch.is_complex(S):
+                if S.dim() >= 4 and S.size(-1) == 2:
+                    S = torch.view_as_complex(S.contiguous())
+                else:
+                    S = S.to(torch.complex64)
+            S = S.to(self.dtype)
+
+            # Time-length guard: if T != target_frames, retry a few re-crops on the SAME file, else skip file
+            target_T = self.target_frames
+            if S.shape[-1] != target_T:
+                t_retries = 0
+                success = False
+                while t_retries < MAX_T_RETRIES:
                     seed_val = int(torch.randint(0, 2**31 - 1, (1,), generator=self._rng).item())
-                    gen = torch.Generator()
-                    gen.manual_seed(seed_val)
+                    gen = torch.Generator(); gen.manual_seed(seed_val)
                     try:
                         if suffix == ".mp3":
-                            candidate, _sr = self._load_segment_or_full(path, generator=gen)
+                            seg2, _ = self._load_segment_or_full(path, generator=gen)
                         else:
-                            # use the already-loaded full waveform with a different crop seed
-                            candidate = self._random_crop_or_pad(wav, generator=gen)
-                    except RuntimeError:
-                        # shouldn't really happen for valid files, skip this attempt
+                            if wav is None:
+                                wav, _ = self._load_waveform(path)
+                            seg2 = self._random_crop_or_pad(wav, generator=gen)
+                    except Exception:
+                        t_retries += 1
                         continue
-                    if not is_silence(candidate):
-                        seg = candidate
-                        found = True
+
+                    S2 = self._stft(seg2)
+                    if not torch.is_complex(S2):
+                        if S2.dim() >= 4 and S2.size(-1) == 2:
+                            S2 = torch.view_as_complex(S2.contiguous())
+                        else:
+                            S2 = S2.to(torch.complex64)
+                    S2 = S2.to(self.dtype)
+
+                    if S2.shape[-1] == target_T:
+                        S = S2.contiguous()
+                        orig_waveform = seg2.contiguous()
+                        success = True
                         break
+                    t_retries += 1
 
-                if not found:
-                    # fallback: return a different file item (reproducible draw)
-                    new_idx = int(torch.randint(0, len(self), (1,), generator=self._rng).item())
-                    if new_idx == index and len(self) > 1:
-                        new_idx = (new_idx + 1) % len(self)
-                    return self[new_idx]
+                if not success:
+                    # Skip this file and move to another index
+                    index = int(torch.randint(0, len(self), (1,), generator=self._rng).item())
+                    replacements += 1
+                    continue
 
-        orig_waveform = seg
-        S = self._stft(seg)  # (C, F, T), complex if power=None
-
-        if not torch.is_complex(S):
-            # Safety: convert (C, F, T, 2) -> complex if transform returned separate real/imag
-            if S.dim() >= 4 and S.size(-1) == 2:
-                S = torch.view_as_complex(S.contiguous())
+            # Final formatting: complex-as-channels or complex tensor
+            if self.cac:
+                S_ri = torch.stack((S.real, S.imag), dim=1)  # (C,2,F,T)
+                S = S_ri.flatten(0, 1).contiguous()         # (2C,F,T)
+                S = S.to(self._real_dtype_for(self.dtype))
             else:
-                S = S.to(torch.complex64)
+                S = S.contiguous()
 
-        S = S.to(self.dtype)
+            orig_waveform = orig_waveform.contiguous()
+            return S, orig_waveform
 
-        if self.cac:
-            # (C,F,T) complex -> (C,2,F,T) -> (2C,F,T) float
-            S_ri = torch.stack((S.real, S.imag), dim=1)
-            S = S_ri.flatten(0, 1).contiguous()  # nuovo storage
-            S = S.to(self._real_dtype_for(self.dtype))
-        else:
-            # mantieni complesso ma assicurati storage nuovo
-            S = S.contiguous()
+        raise RuntimeError("Too many consecutive invalid samples in the dataset. Check dataset or STFT parameters.")
 
-        orig_waveform = orig_waveform.contiguous()
-        return S, orig_waveform
 
     def _pick_probe_fn(self):
         # torchaudio.info se esiste
@@ -392,4 +473,3 @@ class OnTheFlySTFTDataset(Dataset):
 
         # nessun probe veloce disponibile
         return None
-

@@ -203,6 +203,8 @@ class AutoEncoder(nn.Module):
         normalized = bool(kwargs.get("normalized", False))
         onesided   = kwargs.get("onesided", None)
         
+        if normalized is None:
+            normalized = False
         # window coerente
         if window is None and win_length is not None:
             real_dtype = torch.float32 if S.dtype == torch.complex64 else torch.float64
@@ -225,12 +227,12 @@ class AutoEncoder(nn.Module):
             Sbc = S.reshape(B*C, F, T).contiguous()
             y = torch.istft(Sbc, n_fft=n_fft, hop_length=hop_length, win_length=win_length,
                             window=window, center=center, normalized=normalized,
-                            onesided=onesided, length=target_length, return_complex=False)
+                            onesided=onesided, return_complex=False)
             return y.reshape(B, C, -1)
         elif S.dim() == 3:  # [B, F, T]
             return torch.istft(S, n_fft=n_fft, hop_length=hop_length, win_length=win_length,
                             window=window, center=center, normalized=normalized,
-                            onesided=onesided, length=target_length, return_complex=False)
+                            onesided=onesided, return_complex=False)
         else:
             raise RuntimeError(f"Unexpected complex shape {S.shape}")
 

@@ -136,7 +136,7 @@ class SEANetEncoder2d(nn.Module):
                  norm: str = 'weight_norm', norm_params: tp.Dict[str, tp.Any] = {}, kernel_size: int = 7,
                  last_kernel_size: int = 7, residual_kernel_size: int = 3, dilation_base: int = 2, causal: bool = False,
                  pad_mode: str = 'reflect', true_skip: bool = False, compress: int = 2,
-                 seq_model: str = "lstm", seq_layer_num: int = 2, res_seq=True, conv_group_ratio: int = -1, latent_fbins: int = 1,):
+                 seq_model: str = "lstm", seq_layer_num: int = 2, res_seq=True, conv_group_ratio: int = -1, latent_fbins: int = 1, double_final_conv: bool = False):
         super().__init__()
         self.channels = input_size
         self.dimension = dimension
@@ -146,6 +146,7 @@ class SEANetEncoder2d(nn.Module):
         self.n_residual_layers = n_residual_layers
         self.hop_length = np.prod([x[1] for x in self.ratios])
         self.latent_fbins = latent_fbins
+        self.double_final_conv = double_final_conv
 
         # act = getattr(nn, activation)
         mult = 1
@@ -194,15 +195,29 @@ class SEANetEncoder2d(nn.Module):
                                          skip=res_seq)]
         else:
             pass
-
-        model += [
-            # act(**activation_params),
+        
+        
+        if mult * n_filters * latent_fbins > dimension and self.double_final_conv:
+            model += [
             get_activation(activation, **{**activation_params, "channels": mult * n_filters * latent_fbins}),
-            SConv1d(mult * n_filters * latent_fbins, dimension,
-                    kernel_size=last_kernel_size,
+            
+            SConv1d(mult * n_filters * latent_fbins, 2*dimension, kernel_size=last_kernel_size,
+                    norm=norm, norm_kwargs=norm_params,
+                    causal=causal, pad_mode=pad_mode),
+            SConv1d(2*dimension, dimension, kernel_size=last_kernel_size,
                     norm=norm, norm_kwargs=norm_params,
                     causal=causal, pad_mode=pad_mode)
-        ]
+            ]
+
+        else:   
+            model += [
+                # act(**activation_params),
+                get_activation(activation, **{**activation_params, "channels": mult * n_filters * latent_fbins}),
+                SConv1d(mult * n_filters * latent_fbins, dimension,
+                        kernel_size=last_kernel_size,
+                        norm=norm, norm_kwargs=norm_params,
+                        causal=causal, pad_mode=pad_mode)
+            ]
 
         self.model = nn.Sequential(*model)
 
@@ -214,7 +229,6 @@ class SEANetEncoder2d(nn.Module):
         return self.dimension
 
     def forward(self, x):
-
         if x.dim() == 3:
             x = x.unsqueeze(1)
         # returns latents channels-first (B, C, T)
@@ -259,7 +273,7 @@ class SEANetDecoder2d(nn.Module):
                  pad_mode: str = 'reflect', true_skip: bool = False, compress: int = 2,
                  seq_model: str = 'lstm', seq_layer_num: int = 2, trim_right_ratio: float = 1.0, res_seq=True,
                  last_out_padding: tp.List[tp.Union[int, int]] = [(0, 1), (0, 0)],
-                 tr_conv_group_ratio: int = -1, conv_group_ratio: int = -1, latent_fbins: int = 1,):
+                 tr_conv_group_ratio: int = -1, conv_group_ratio: int = -1, latent_fbins: int = 1, double_final_conv: bool = False):
         super().__init__()
         self.dimension = input_size
         self.channels = channels
@@ -269,13 +283,24 @@ class SEANetDecoder2d(nn.Module):
         self.n_residual_layers = n_residual_layers
         self.hop_length = np.prod([x[1] for x in self.ratios])
         self.latent_fbins = latent_fbins
+        self.double_final_conv = double_final_conv
 
         # act = getattr(nn, activation)
         mult = int(2 ** len(self.ratios))
-        model: tp.List[nn.Module] = [
-            SConv1d(input_size, mult * n_filters * latent_fbins, kernel_size, norm=norm, norm_kwargs=norm_params,
-                    causal=causal, pad_mode=pad_mode),
-        ]
+        if mult * n_filters * latent_fbins > 2*input_size and self.double_final_conv:
+            model: tp.List[nn.Module] = [
+                SConv1d(input_size, 2*input_size, kernel_size, norm=norm, norm_kwargs=norm_params,
+                        causal=causal, pad_mode=pad_mode),
+                SConv1d(2*input_size, mult * n_filters * latent_fbins, kernel_size, norm=norm, norm_kwargs=norm_params,
+                        causal=causal, pad_mode=pad_mode),
+            ]
+            
+        
+        else:
+            model: tp.List[nn.Module] = [
+                SConv1d(input_size, mult * n_filters * latent_fbins, kernel_size, norm=norm, norm_kwargs=norm_params,
+                        causal=causal, pad_mode=pad_mode),
+            ]
         
         if seq_model == "lstm":
             model += [SLSTM(mult * n_filters * latent_fbins, num_layers=seq_layer_num, skip=res_seq)]
