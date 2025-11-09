@@ -101,29 +101,46 @@ def logger_project_name(logger) -> str:
     elif isinstance(logger, CometLogger):
         return logger.name
 
-def log_metric(logger, key, value, step=None):
+def log_metric(logger, key, value, step=None, commit=None):
     from pytorch_lightning.loggers import WandbLogger, CometLogger
     if isinstance(logger, WandbLogger):
-        logger.experiment.log({key: value})
+        kwargs = {}
+        if step is not None:
+            kwargs["step"] = int(step)
+        if commit is not None:
+            kwargs["commit"] = bool(commit)
+        logger.experiment.log({key: value}, **kwargs)
     elif isinstance(logger, CometLogger):
         logger.experiment.log_metrics({key: value}, step=step)
 
-def log_audio(logger, key, audio_path, sample_rate, caption=None):
+def log_audio(logger, key, audio_path, sample_rate, caption=None, step=None):
+    from pytorch_lightning.loggers import WandbLogger, CometLogger
     if isinstance(logger, WandbLogger):
-        logger.experiment.log({key: wandb.Audio(audio_path, sample_rate=sample_rate, caption=caption)})
+        kwargs = {}
+        if step is not None:
+            kwargs["step"] = int(step)
+        logger.experiment.log({key: wandb.Audio(audio_path, sample_rate=sample_rate, caption=caption)}, **kwargs)
     elif isinstance(logger, CometLogger):
         logger.experiment.log_audio(audio_path, file_name=key, sample_rate=sample_rate)
 
-def log_image(logger, key, img_data):
+def log_image(logger, key, img_data, step=None):
+    from pytorch_lightning.loggers import WandbLogger, CometLogger
     if isinstance(logger, WandbLogger):
-        logger.experiment.log({key: wandb.Image(img_data)})
+        kwargs = {}
+        if step is not None:
+            kwargs["step"] = int(step)
+        logger.experiment.log({key: wandb.Image(img_data)}, **kwargs)
     elif isinstance(logger, CometLogger):
         logger.experiment.log_image(img_data, name=key)
 
-def log_point_cloud(logger, key, tokens, caption=None):
+def log_point_cloud(logger, key, tokens, caption=None, step=None):
+    from pytorch_lightning.loggers import WandbLogger, CometLogger
     if isinstance(logger, WandbLogger):
         point_cloud = pca_point_cloud(tokens)
-        logger.experiment.log({key: point_cloud})
+        kwargs = {}
+        if step is not None:
+            kwargs["step"] = int(step)
+        logger.experiment.log({key: point_cloud}, **kwargs)
     elif isinstance(logger, CometLogger):
         point_cloud = pca_point_cloud(tokens, rgb_float=True, output_type="points")
-        #logger.experiment.log_points_3d(scene_name=key, points=point_cloud)
+        # (eventuale integrazione Comet se necessario)

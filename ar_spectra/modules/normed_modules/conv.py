@@ -1,22 +1,19 @@
-
-
 """Convolutional layers wrappers and utilities."""
 
 import math
 import typing as tp
 import warnings
-
 import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.utils import spectral_norm, weight_norm
 from ar_spectra.modules.complex_weight_norm import ComplexWeightNorm
-
+import complextorch.nn as cplx
 from .norm import ConvLayerNorm
 
-
 CONV_NORMALIZATIONS = frozenset(['none', 'weight_norm', 'spectral_norm',
-                                 'time_layer_norm', 'layer_norm', 'time_group_norm'])
+                                 'time_layer_norm', 'layer_norm', 'time_group_norm', 
+                                 "complex_batch_norm"])
 
 # self.conv = apply_parametrization_norm(nn.Conv1d(*args, **kwargs), norm)
 def apply_parametrization_norm(module: nn.Module, norm: str = 'none', is_complex: bool = False) -> nn.Module:
@@ -41,9 +38,9 @@ def get_norm_module(module: nn.Module, causal: bool = False, norm: str = 'none',
     module is causal, or return an error if the normalization doesn't support causal evaluation.
     """
     assert norm in CONV_NORMALIZATIONS
-    if is_complex:
-        raise NotImplementedError("Normalization for complex weights is not implemented yet.")
-    
+    if norm == "complex_batch_norm":
+        assert is_complex, "complex_batch_norm only makes sense for complex weights"
+        return cplx.BatchNorm2d(module.out_channels, **norm_kwargs)
     if norm == 'layer_norm':
         assert isinstance(module, nn.modules.conv._ConvNd)
         return ConvLayerNorm(module.out_channels, **norm_kwargs)

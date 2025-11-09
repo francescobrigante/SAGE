@@ -188,7 +188,7 @@ def print_stats(t, print=print, name="tensor"):
         stats = dict(shape=getattr(t, "shape", None), type=type(t).__name__)
     print(f"{name} stats: {stats}")
     
-def mel_spectrogram(waveform, power=2.0, sample_rate=48000, db=False, n_fft=1024, n_mels=128, debug=False):
+def mel_spectrogram(waveform, power=2.0, sample_rate=44100, db=False, n_fft=1024, n_mels=256, debug=False):
     "calculates data array for mel spectrogram (in however many channels)"
     win_length = None
     hop_length = n_fft//2 # 512
@@ -249,7 +249,7 @@ def spectrogram_image(
         im = im.crop((b,b, im.size[0]-b, im.size[1]-b))
     return im
 
-def audio_spectrogram_image(waveform, power=2.0, sample_rate=48000, print=print, db=False, db_range=[35,120], justimage=False, log=False, figsize=(5, 4)):
+def audio_spectrogram_image(waveform, power=2.0, sample_rate=44100, print=print, db=False, db_range=[35,120], justimage=False, log=False, figsize=(5, 4)):
     "Wrapper for calling above two routines at once, does Mel scale; Modified from PyTorch tutorial https://pytorch.org/tutorials/beginner/audio_feature_extractions_tutorial.html"
     melspec = mel_spectrogram(waveform, power=power, db=db, sample_rate=sample_rate, debug=log)
     melspec = melspec[0] # TODO: only left channel for now

@@ -28,3 +28,13 @@ def get_activation(activation: str = None, channels=None, **kwargs):
     else:
         act = getattr(nn, activation)
         return act(**kwargs)
+
+def _build_activation(name: str, ch: int, params: dict):
+    if name is None:
+        return nn.Identity()
+    try:
+        # get_activation gestisce 'snake', per altri ignora 'channels'
+        return get_activation(name, channels=ch, **params)
+    except (AttributeError, TypeError):
+        # Fallback sicuro
+        return nn.Identity()

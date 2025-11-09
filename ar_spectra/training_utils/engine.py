@@ -10,7 +10,7 @@ from .losses import (
     L1Loss, LossWithTarget, MSELoss, HubertLoss, 
 )
 from .losses import auraloss as auraloss
-from .losses.ar_spectra_losses import PerceptuallyWeightedComplexMSE
+from .losses.ar_spectra_losses import ComplexSpectralConvergence, MultiResSpectralConvergence, ComplexMSE
 from .utils import create_optimizer_from_config, create_scheduler_from_config
 from rich.console import Console
 console = Console()  
@@ -107,13 +107,36 @@ class AutoencoderEngine(nn.Module):
          # reconstruction losses: spectral può non essere presente nella config -> protegge l'accesso
         spectral_cfg = self.loss_config.get("spectral")
         if spectral_cfg and isinstance(spectral_cfg, dict):
-            # JSON corrente: "spectral": { "mse": { "config": {...} }, "weights": {...} }
-            mse_block = spectral_cfg.get("mse", {}) or {}
-            configs_mse = mse_block.get("config", {}) or {}
-            self.sdstft = PerceptuallyWeightedComplexMSE(**configs_mse)
+            # JSON corrente: "spectral": { "stft_mse": { "config": {...} }, "weights": {...} }
+            stft_mse_block = spectral_cfg.get("stft_mse", {}) or {}
+            configs_stft_mse = stft_mse_block.get("config", {}) or {}
+            self.stft_mse = ComplexMSE(**configs_stft_mse)
         else:
 
-            self.sdstft = None
+            self.stft_mse = None
+
+        if spectral_cfg and isinstance(spectral_cfg, dict):
+            # JSON: "spectral": { "<one-of> mrstft_stable_audio | mrstft | mrstft_sc": { "config": {...} }, "weights": {...} }
+            # select one of the possible mrstft losses
+            mr_keys = [k for k in ("mrstft_stable_audio", "mrstft", "mrstft_sc") if k in spectral_cfg]
+            assert len(mr_keys) <= 1, (
+                "loss_config.spectral: you need to specify at most one of the keys:"
+                "'mrstft_stable_audio', 'mrstft', 'mrstft_sc'. "
+                f"Found: {mr_keys}"
+            )
+            if len(mr_keys) == 0:
+                self.mrstft = None
+            else:
+                chosen = mr_keys[0]
+                mrstft_block = spectral_cfg.get(chosen, {}) or {}
+                # accetta sia {"config": {...}} sia dizionario piatto
+                configs_mrstft = mrstft_block.get("config", mrstft_block) or {}
+                if chosen in ("mrstft_stable_audio", "mrstft"):
+                    # Variante auraloss classica
+                    self.mrstft = auraloss.MultiResolutionSTFTLoss(**configs_mrstft)
+                elif chosen == "mrstft_sc":
+                    # Variante basata su Spectral Convergence
+                    self.mrstft = MultiResSpectralConvergence(**configs_mrstft)
         # per evitare AttributeError in rami opzionali
         self.lrstft = None
 
@@ -140,28 +163,33 @@ class AutoencoderEngine(nn.Module):
             ]
 
         stft_loss_decay = spectral_cfg.get('decay', 1.0) if spectral_cfg else 1.0
-        # se ho spectral configurata, aggiungo i corrispondenti loss (altrimenti salto)
-        if spectral_cfg and self.sdstft is not None:
-            mrstft_weight = spectral_cfg.get('weights', {}).get('mrstft', 0.0)
-            if self.teacher_model is not None:
-                if mrstft_weight > 0:
-                    stft_w = mrstft_weight * 0.25
-                    gen_loss_modules += [
-                        MSELoss(key_a='teacher_latents', key_b='latents', weight=stft_w, name='latent_distill_loss', decay=stft_loss_decay),
-                        AuralossLoss(self.sdstft, target_key='reals', input_key='decoded', name='pwc_mse_loss', weight=stft_w, decay=stft_loss_decay),
-                        AuralossLoss(self.sdstft, input_key='decoded', target_key='teacher_decoded', name='pwc_mse_loss_distill', weight=stft_w, decay=stft_loss_decay),
-                        AuralossLoss(self.sdstft, target_key='reals', input_key='own_latents_teacher_decoded', name='pwc_mse_loss_own_latents_teacher', weight=stft_w, decay=stft_loss_decay),
-                        AuralossLoss(self.sdstft, target_key='reals', input_key='teacher_latents_own_decoded', name='pwc_mse_loss_teacher_latents_own', weight=stft_w, decay=stft_loss_decay),
-                    ]
-            else:
-                if mrstft_weight > 0:
-                    gen_loss_modules.append(AuralossLoss(self.sdstft, target_key='reals', input_key='decoded', name='pwc_mse_loss', weight=mrstft_weight, decay=stft_loss_decay))
-                    if self.audio_channels == 2 and self.lrstft is not None:
-                        half_w = mrstft_weight / 2.0
-                        gen_loss_modules += [
-                            AuralossLoss(self.lrstft, target_key='reals_left',  input_key='decoded_left', name='pwc_mse_loss_left', weight=half_w, decay=stft_loss_decay),
-                            AuralossLoss(self.lrstft, target_key='reals_right', input_key='decoded_right', name='pwc_mse_loss_right', weight=half_w, decay=stft_loss_decay),
-                        ]
+        # if spectral is available, we add the spectral loss 
+        if spectral_cfg:
+            if self.stft_mse is not None:
+                stft_mse_weight = spectral_cfg['weights'].get('stft_mse', 0.0)
+                gen_loss_modules.append(
+                    LossWithTarget(
+                        self.stft_mse,
+                        input_key='sp_decoded',      # spettrogramma predetto
+                        target_key='encoder_input',  # spettrogramma target
+                        name='pwc_mse_loss',
+                        weight=stft_mse_weight,
+                        decay=stft_loss_decay,
+                    )
+                )
+            if self.mrstft is not None:
+                stft_mse_weight = spectral_cfg['weights'].get('mrstft', 0.0)
+                gen_loss_modules.append(
+                    LossWithTarget(
+                        self.mrstft,
+                        target_key='reals',
+                        input_key='decoded',
+                        name='mrstft_loss',
+                        weight=stft_mse_weight,
+                        decay=stft_loss_decay
+                    )
+                )
+                
 
         if "mrmel" in self.loss_config:
              mrmel_weight = self.loss_config["mrmel"]["weights"]["mrmel"]
@@ -208,6 +236,13 @@ class AutoencoderEngine(nn.Module):
                 self.eval_losses["sisdr"] = auraloss.SISDRLoss(**eval_loss_config["sisdr"])
             if "mel" in eval_loss_config:
                 self.eval_losses["mel"] = auraloss.MelSTFTLoss(self.sample_rate, **eval_loss_config["mel"])
+                
+        ok("AutoencoderEngine: initialized with train losses: " +
+           f"gen: {[type(l).__name__ for l in gen_loss_modules]}, " +
+           (f"disc: {[type(l).__name__ for l in self.losses_disc.modules()]}" if self.use_disc else "no disc"))
+        ok(f"AutoencoderEngine: initialized with eval losses: {list(self.eval_losses.keys())}")
+        # Log dettagliato dei parametri delle loss
+        self._log_losses_summary()
 
     @torch.no_grad()
     def _encode_teacher_if_needed(self, encoder_input):
@@ -275,8 +310,8 @@ class AutoencoderEngine(nn.Module):
         encoder_input = sp_reals
         if self.force_input_mono and encoder_input.shape[1] > 1:
             encoder_input = encoder_input.mean(dim=1, keepdim=True)
-        loss_info["encoder_input"] = encoder_input
-        loss_info["reals"] = orig_waveforms
+        loss_info["encoder_input"] = encoder_input  # spettrogramma GT
+        loss_info["reals"] = orig_waveforms         # waveform GT
 
         warmed_up = (global_step >= self.warmup_steps)
 
@@ -297,7 +332,7 @@ class AutoencoderEngine(nn.Module):
             loss_info["latents"] = latents
 
         # Decode STFT -> waveform
-        sp_decoded = self.autoencoder.decode(latents)
+        sp_decoded = self.autoencoder.decode(latents)   # spettrogramma predetto
         # Prima proviamo senza params (se l'istft interna è in grado di gestire spec complessi)
 
         # fallback: usa parametri di training risolti/filtrati
@@ -309,10 +344,13 @@ class AutoencoderEngine(nn.Module):
                 "autoencoder.istft failed and no usable istft params available. "
                 "Ensure 'n_fft' (e correlati) are present in the dataset kwargs or resolved from config."
             )
+
+        # allinea alle waveform reali (non usare l’inversione dell’input)
         decoded, orig_waveforms = trim_to_shortest(decoded, orig_waveforms)
 
-        loss_info["decoded"] = decoded
-        loss_info["reals"] = orig_waveforms
+        loss_info["decoded"] = decoded              # waveform predetta
+        loss_info["reals"] = orig_waveforms         # waveform GT
+        loss_info["sp_decoded"] = sp_decoded        # spettrogramma predetto
 
         # decoded/reals shape attesa: (B, C_audio, N)
         if self.audio_channels == 2:
@@ -428,3 +466,47 @@ class AutoencoderEngine(nn.Module):
                 sched_gen = create_scheduler_from_config(self.optimizer_configs['autoencoder']['scheduler'], opt_gen)
                 return [opt_gen], [sched_gen]
             return [opt_gen]
+
+    def _extract_hparams(self, module: nn.Module) -> dict:
+        # Estrae solo attributi semplici stampabili
+        simple = {}
+        for k, v in vars(module).items():
+            if k.startswith("_"):
+                continue
+            if isinstance(v, (int, float, bool, str, type(None))):
+                simple[k] = v
+            elif isinstance(v, (list, tuple)) and all(isinstance(x, (int, float, bool, str)) for x in v):
+                simple[k] = v
+        return simple
+
+    def _log_losses_summary(self):
+        ok("===== Loss setup summary =====")
+        # Generator losses
+        spectral_cfg = self.loss_config.get("spectral", {}) or {}
+        if self.stft_mse is not None:
+            ok(f"- PerceptuallyWeightedComplexMSE: {self._extract_hparams(self.stft_mse)}")
+        if self.mrstft is not None:
+            try:
+                params = self._extract_hparams(self.mrstft)
+            except Exception:
+                params = {}
+            ok(f"- {type(self.mrstft).__name__}: {params}")
+        if spectral_cfg:
+            ok(f"- Spectral weights: {spectral_cfg.get('weights', {})}")
+
+        if "time" in self.loss_config:
+            ok(f"- Time-domain weights: {self.loss_config['time'].get('weights', {})}")
+        if "mrmel" in self.loss_config:
+            ok(f"- MR-Mel weight: {self.loss_config['mrmel'].get('weights', {})}")
+        if "hubert" in self.loss_config:
+            ok(f"- HuBERT weight/decay: {self.loss_config['hubert'].get('weights', {})}, decay={self.loss_config['hubert'].get('decay', 1.0)}")
+
+        if self.use_disc:
+            dcfg = self.loss_config.get("discriminator", {})
+            ok(f"- Discriminator: type={dcfg.get('type')}, weights={dcfg.get('weights', {})}")
+
+        # Eval losses
+        if len(self.eval_losses) > 0:
+            for name, mod in self.eval_losses.items():
+                ok(f"- Eval {name}: {type(mod).__name__}")
+        ok("===== End loss summary =====")

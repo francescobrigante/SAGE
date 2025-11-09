@@ -16,7 +16,7 @@
       "stereo": false,
       "cac": true,
       "skip_broken_files": true,
-      "skip_criteria": ["sample_rate"]  
+      "skip_criteria": ["sample_rate"]
     }
   },
   "train_dataloader": {
@@ -43,8 +43,7 @@
       "stereo": false,
       "cac": true,
       "skip_broken_files": true,
-      "skip_criteria": ["sample_rate"]  
-
+      "skip_criteria": ["sample_rate"]
     }
   },
   "eval_dataloader": {
@@ -56,16 +55,16 @@
     "shuffle": false,
     "pin_memory_device": "cuda"
   },
-    "model": {
-    "autoencoder": { "return_latent": false},
+  "model": {
+    "autoencoder": { "return_latent": false },
     "encoder": {
-      "class": "ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d",
+      "class": "ar_spectra.models.autoencoders.SeaNET_next_AE.SEANetEncoder2d",
       "kwargs": {
         "input_size": "auto",
         "dimension": 128,
         "n_filters": 64,
-        "n_residual_layers": 1,
-        "ratios": [[16,1],[4,4],[4,1]],
+        "n_residual_layers": 2,
+        "ratios": [[16,4],[4,1],[4,1]],
         "activation": "ELU",
         "norm": "time_group_norm",
         "norm_params": { "num_groups": 1 },
@@ -75,13 +74,13 @@
       }
     },
     "decoder": {
-      "class": "ar_spectra.models.autoencoders.SeaNET_AE.SEANetDecoder2d",
+      "class": "ar_spectra.models.autoencoders.SeaNET_next_AE.SEANetDecoder2d",
       "kwargs": {
         "channels": "auto",
         "input_size": 128,
         "n_filters": 64,
-        "n_residual_layers": 1,
-        "ratios": [[16,1],[4,4],[4,1]],
+        "n_residual_layers": 2,
+        "ratios": [[16,4],[4,1],[4,1]],
         "activation": "ELU",
         "norm": "time_group_norm",
         "norm_params": { "num_groups": 1 },
@@ -114,17 +113,30 @@
     "ckpt_dir": "checkpoints/seanet_stft",
     "profile": false,
     "check_val_every_n_epoch": 1,
-    "log_model_structure": true
+    "save_every_n_epochs": 5,
+    "log_model_structure": false
   },
   "wandb": {
     "project": "ICML_2026",
-    "name": "SEANet_STFT",
+    "name": "SEANet_STFT_losses",
     "use_wandb": true
   },
   "eval_loss_config": {
     "sisdr": {
       "zero_mean": true,
       "reduction": "mean"
+    },
+    "stft": {
+      "sample_rate": 44100,
+      "fft_size": 2048,
+      "hop_size": 512,
+      "win_length": 2048
+    },
+    "mel": {
+      "fft_size": 2048,
+      "hop_size": 512,
+      "win_length": 2048,
+      "n_mels": 128
     }
   },
   "demo": {
@@ -133,7 +145,7 @@
     "target_seconds": 1,
     "istft_params": {
       "sample_rate": 44100,
-      "n_fft": 2048,
+      "fft_size": 2048,
       "hop_length": 512,
       "win_length": 2048,
       "target_frames": 128,
@@ -144,15 +156,12 @@
   },
   "loss_config": {
     "spectral": {
-      "mse": {
+      "stft_mse": {
         "config": {
-          "normalize": "none",
-          "p": 2.0,
-          "reduction": "mean",
-          "bin_weighted": false
+          "reduction": "mean"
         }
       },
-      "weights": { "mrstft": 1.0 }
+      "weights": { "stft_mse": 1.0}
     }
   }
 }
