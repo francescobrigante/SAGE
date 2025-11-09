@@ -8,8 +8,78 @@ import torch
 from ar_spectra.modules.normed_modules.conv import SConv1d, SConv2d
 from ar_spectra.modules.normed_modules.conv import SConvTranspose1d, SConvTranspose2d
 from ar_spectra.modules.normed_modules.lstm import SLSTM
-from ar_spectra.modules.activations import get_activation
+from ar_spectra.modules.activations import get_activation, _build_activation
 
+
+class EuleroResidualBlock(nn.Module):
+    def __init__(
+        self,
+        ch: int,
+        dilation: tp.Union[int, tp.Tuple[int, int]] = (1, 1),
+        activation: str = "ELU",
+        activation_params: tp.Optional[dict] = None
+    ):
+        super().__init__()
+        if isinstance(dilation, int):
+            dilation = (dilation, dilation)
+
+        activation_params = activation_params or {}
+
+        # Depthwise (dilated) branch
+        self.dw_dil = nn.Conv2d(
+            ch, ch, 3,
+            padding=dilation,
+            dilation=dilation,
+            groups=ch,
+            bias=False,
+            padding_mode="reflect"
+        )
+        self.norm_dil = nn.GroupNorm(1, ch)
+
+        # Depthwise (standard) branch
+        self.dw_std = nn.Conv2d(
+            ch, ch, 3,
+            padding=1,
+            groups=ch,
+            bias=False,
+            padding_mode="reflect"
+        )
+        self.norm_std = nn.GroupNorm(1, ch)
+
+        # Point-wise fuse
+        self.pw = nn.Conv2d(ch, ch, 1, bias=False)
+
+        # Attivazioni robuste
+        self.gateA = self._build_activation(activation, ch, activation_params)
+        self.gateB = self._build_activation(activation, ch, activation_params)
+
+        # Fattore di scala residuale
+        self.res_scale = nn.Parameter(torch.tensor(0.1, dtype=torch.float32), requires_grad=True)
+
+
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Ordine: conv -> norm -> activation (più comune)
+        dil_branch = self.gateA(self.norm_dil(self.dw_dil(x)))
+        std_branch = self.gateB(self.norm_std(self.dw_std(x)))
+        y = self.pw(dil_branch + std_branch)
+        return x + self.res_scale * y
+
+class EuleroResidualStack(nn.Module):
+
+    def __init__(self, ch, dilations=(1, 2, 5, 7)):
+        super().__init__()
+        blocks = []
+        for d in dilations:
+            blocks.append(EuleroResidualBlock(ch, dilation=d))
+        self.blocks = nn.Sequential(*blocks)
+
+    def forward(self, x):
+        for blk in self.blocks:
+            x = blk(x)
+        return x
+
+    
 # Frequency packing and unpacking modules (UNORIGINAL CLASSES)  
 # AR-SPECTRA NOTE: These are only used in SeaNET_AE to convert between (B, C, F, T) and (B, C*F, T)
 class PackFreqIntoChannels(nn.Module):

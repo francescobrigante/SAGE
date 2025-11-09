@@ -36,7 +36,6 @@ def trim_to_shortest(a, b):
         return a, b[:,:,:a.shape[-1]]
     return a, b
 
-
 def fold_channels_into_batch(x):
     x = rearrange(x, 'b c ... -> (b c) ...')
     return x
@@ -270,11 +269,15 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             for k, v in loss_dict.items():
                 sum_loss_dict[k] = sum_loss_dict.get(k, 0.0) + v
 
+        # all_gather deve eseguire su tutti i rank; logga solo su rank 0
+        current_step = int(self.global_step)
+        is_main = bool(getattr(self.trainer, "is_global_zero", True))
         for k, v in sum_loss_dict.items():
             avg = v / len(self.validation_step_outputs)
             avg = self.all_gather(torch.tensor(avg, device=self.device)).mean().item()
             from .utils import log_metric
-            log_metric(self.logger, f"val/{k}", avg)
+            if is_main:
+                log_metric(self.logger, f"val/{k}", avg, step=current_step)
         self.validation_step_outputs.clear()
 
     def export_model(self, path, use_safetensors=False):
@@ -284,7 +287,6 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             save_model(model, path)
         else:
             torch.save({"state_dict": model.state_dict()}, path)
-
 
 
 class AutoencoderValDemoCallback(pl.Callback):
@@ -342,7 +344,7 @@ class AutoencoderValDemoCallback(pl.Callback):
             if k not in allowed:
                 continue
             if isinstance(v, str) and v.lower() == "auto":
-                # tieni il valore di training (se esiste), altrimenti non impostare
+                # tiene il valore di training (se esiste), altrimenti non impostare
                 if k not in base:
                     base.pop(k, None)
                 continue
@@ -476,9 +478,11 @@ class AutoencoderValDemoCallback(pl.Callback):
             from .utils import log_audio, log_image, log_point_cloud
             from ..interface.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 
-            log_audio(trainer.logger, 'val/recon', filename, sr)
-            log_audio(trainer.logger, 'val/input_encoder_istft', filename_input_encoder_istft, sr)
+            step = int(trainer.global_step)
+            log_audio(trainer.logger, 'val/recon', filename, sr, step=step)
+            log_audio(trainer.logger, 'val/input_encoder_istft', filename_input_encoder_istft, sr, step=step)
             lat_to_log = latents[0] if isinstance(latents, (tuple, list)) else latents
-            log_point_cloud(trainer.logger, 'val/embeddings_3dpca', lat_to_log)
-            log_image(trainer.logger, 'val/embeddings_spec', tokens_spectrogram_image(lat_to_log))
-            log_image(trainer.logger, 'val/recon_melspec_left', audio_spectrogram_image(reals_fakes))
+            log_point_cloud(trainer.logger, 'val/embeddings_3dpca', lat_to_log, step=step)
+            log_image(trainer.logger, 'val/embeddings_spec', tokens_spectrogram_image(lat_to_log), step=step)
+            log_image(trainer.logger, 'val/recon_melspec_left', audio_spectrogram_image(reals_fakes), step=step)
+
