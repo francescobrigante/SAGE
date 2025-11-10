@@ -3,7 +3,7 @@ from typing import Optional
 from typing import Tuple
 import torch
 from typeguard import check_argument_types
-from models.autoencoders.AbsEncoder import AbsEncoder
+from ...models.autoencoders.AbsEncoder import AbsEncoder
 from ..attention import MultiHeadedAttention
 from ..embedding import PositionalEncoding
 from ..layer_norm import LayerNorm
@@ -19,7 +19,7 @@ from ..subsampling import (
     TooShortUttError,
     check_short_utt,
 )
-from models.autoencoders.TransformerEncoder import EncoderLayer
+from ...models.autoencoders.TransformerEncoder import EncoderLayer
 
 
 class TransformerEncoder(torch.nn.Module):
