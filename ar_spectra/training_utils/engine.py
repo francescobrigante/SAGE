@@ -294,6 +294,30 @@ class AutoencoderEngine(nn.Module):
                 out.pop(k, None)
         return out
 
+    def _align_freq_bins(self, s_hat: torch.Tensor, s_ref: torch.Tensor) -> torch.Tensor:
+        """
+        Rende compatibili i tensori spettrali lungo l'asse delle frequenze:
+        - se differenza di 1 bin, aggiunge/toglie l'ultimo bin (Nyquist)
+        - altrimenti solleva errore
+        Supporta tensori complessi o reali; assume F è l'asse -2.
+        """
+        Fh = s_hat.shape[-2]
+        Fr = s_ref.shape[-2]
+        if Fh == Fr:
+            return s_hat
+        if abs(Fh - Fr) == 1:
+            if Fh < Fr:
+                pad_shape = list(s_hat.shape)
+                pad_shape[-2] = 1
+                pad = torch.zeros(pad_shape, dtype=s_hat.dtype, device=s_hat.device)
+                return torch.cat([s_hat, pad], dim=-2)  # ripristina Nyquist
+            else:
+                return s_hat[..., :Fr, :]  # rimuove Nyquist extra
+        raise ValueError(
+            f"Spectrogram freq dim mismatch > 1: pred {Fh} vs target {Fr}. "
+            "Controlla n_fft/hop oppure normalizza l'output del decoder."
+        )
+
     def compute(self, batch: Tuple[torch.Tensor, torch.Tensor], global_step: int) -> Dict[str, Any]:
         """
         batch: (sp_reals, orig_waveforms)
@@ -333,12 +357,18 @@ class AutoencoderEngine(nn.Module):
 
         # Decode STFT -> waveform
         sp_decoded = self.autoencoder.decode(latents)   # spettrogramma predetto
-        # Prima proviamo senza params (se l'istft interna è in grado di gestire spec complessi)
+        # Allinea la dimensione in frequenza per le loss spettrali
+        try:
+            sp_decoded_aligned = self._align_freq_bins(sp_decoded, encoder_input)
+        except Exception as e:
+            # fallback conservativo: mantieni l'originale ma segnala chiaramente
+            err(f"Failed to align spectrogram F dimension ({e}).")
+            sp_decoded_aligned = sp_decoded
 
-        # fallback: usa parametri di training risolti/filtrati
+        # ISTFT
         istft_kwargs = self._resolve_istft_kwargs()
         if istft_kwargs:
-            decoded = self.autoencoder.istft(sp_decoded, **istft_kwargs)
+            decoded = self.autoencoder.istft(sp_decoded_aligned, **istft_kwargs)
         else:
             raise ValueError(
                 "autoencoder.istft failed and no usable istft params available. "
@@ -350,7 +380,7 @@ class AutoencoderEngine(nn.Module):
 
         loss_info["decoded"] = decoded              # waveform predetta
         loss_info["reals"] = orig_waveforms         # waveform GT
-        loss_info["sp_decoded"] = sp_decoded        # spettrogramma predetto
+        loss_info["sp_decoded"] = sp_decoded_aligned  # usa il tensore allineato per le loss
 
         # decoded/reals shape attesa: (B, C_audio, N)
         if self.audio_channels == 2:

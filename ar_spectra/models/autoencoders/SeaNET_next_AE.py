@@ -11,6 +11,75 @@ from ar_spectra.modules.normed_modules.lstm import SLSTM
 from ar_spectra.modules.activations import get_activation, _build_activation
 
 
+class EuleroResidualBlock(nn.Module):
+    def __init__(
+        self,
+        ch: int,
+        dilation: tp.Union[int, tp.Tuple[int, int]] = (1, 1),
+        activation: str = "ELU",
+        activation_params: tp.Optional[dict] = None
+    ):
+        super().__init__()
+        if isinstance(dilation, int):
+            dilation = (dilation, dilation)
+
+        activation_params = activation_params or {}
+
+        # Depthwise (dilated) branch
+        self.dw_dil = nn.Conv2d(
+            ch, ch, 3,
+            padding=dilation,
+            dilation=dilation,
+            groups=ch,
+            bias=False,
+            padding_mode="reflect"
+        )
+        self.norm_dil = nn.GroupNorm(1, ch)
+
+        # Depthwise (standard) branch
+        self.dw_std = nn.Conv2d(
+            ch, ch, 3,
+            padding=1,
+            groups=ch,
+            bias=False,
+            padding_mode="reflect"
+        )
+        self.norm_std = nn.GroupNorm(1, ch)
+
+        # Point-wise fuse
+        self.pw = nn.Conv2d(ch, ch, 1, bias=False)
+
+        # Attivazioni robuste
+        self.gateA = _build_activation(activation, ch, activation_params)
+        self.gateB = _build_activation(activation, ch, activation_params)
+
+        # Fattore di scala residuale
+        self.res_scale = nn.Parameter(torch.tensor(0.1, dtype=torch.float32), requires_grad=True)
+
+
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Ordine: conv -> norm -> activation (più comune)
+        dil_branch = self.gateA(self.norm_dil(self.dw_dil(x)))
+        std_branch = self.gateB(self.norm_std(self.dw_std(x)))
+        y = self.pw(dil_branch + std_branch)
+        return x + self.res_scale * y
+
+class EuleroResidualStack(nn.Module):
+
+    def __init__(self, ch, dilations=(1, 2, 5, 7)):
+        super().__init__()
+        blocks = []
+        for d in dilations:
+            blocks.append(EuleroResidualBlock(ch, dilation=d))
+        self.blocks = nn.Sequential(*blocks)
+
+    def forward(self, x):
+        for blk in self.blocks:
+            x = blk(x)
+        return x
+
+    
 # Frequency packing and unpacking modules (UNORIGINAL CLASSES)  
 # AR-SPECTRA NOTE: These are only used in SeaNET_AE to convert between (B, C, F, T) and (B, C*F, T)
 class PackFreqIntoChannels(nn.Module):
@@ -158,15 +227,9 @@ class SEANetEncoder2d(nn.Module):
         # Downsample to raw audio scale
         for freq_ratio, time_ratio in self.ratios: # CHANGED from: for i, ratio in enumerate(self.ratios):
             # Add residual layers
-            for j in range(n_residual_layers): # This is always 1, parameter never gets changed from default anywhere
-                model += [
-                    SEANetResnetBlock2d(mult * n_filters,
-                                        kernel_sizes=[(residual_kernel_size, residual_kernel_size), (1, 1)],
-                                        dilations=[(1, dilation_base ** j), (1, 1)],
-                                        norm=norm, norm_params=norm_params,
-                                        activation=activation, activation_params=activation_params,
-                                        causal=causal, pad_mode=pad_mode, compress=compress, true_skip=true_skip,
-                                        conv_group_ratio=conv_group_ratio)]
+            dilations = [1, (3,3), (3,5), (3,7), 1] * ((n_residual_layers + 3) // 4)
+            model += [EuleroResidualStack(mult * n_filters, dilations=dilations[:n_residual_layers])
+                    ]
 
             # Add downsampling layers
             model += [
@@ -296,6 +359,7 @@ class SEANetDecoder2d(nn.Module):
                         causal=causal, pad_mode=pad_mode),
             ]
             
+        
         else:
             model: tp.List[nn.Module] = [
                 SConv1d(input_size, mult * n_filters * latent_fbins, kernel_size, norm=norm, norm_kwargs=norm_params,
@@ -333,15 +397,9 @@ class SEANetDecoder2d(nn.Module):
                                  groups=mult * n_filters // 2 // tr_conv_group_ratio if tr_conv_group_ratio > 0 else 1),
             ]
             # Add residual layers
-            for j in range(n_residual_layers):
-                model += [
-                    SEANetResnetBlock2d(mult * n_filters // 2,
-                                        kernel_sizes=[(residual_kernel_size, residual_kernel_size), (1, 1)],
-                                        dilations=[(1, dilation_base ** j), (1, 1)],
-                                        activation=activation, activation_params=activation_params,
-                                        norm=norm, norm_params=norm_params, causal=causal,
-                                        pad_mode=pad_mode, compress=compress, true_skip=true_skip,
-                                        conv_group_ratio=conv_group_ratio)]
+            dilations = [1, (3,3), (3,5), (3,7), 1] * ((n_residual_layers + 3) // 4)
+            model += [EuleroResidualStack(mult * n_filters//2, dilations=dilations[:n_residual_layers])
+                    ]
             mult //= 2
 
         # Add final layers

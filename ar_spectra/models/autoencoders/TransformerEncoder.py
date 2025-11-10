@@ -10,8 +10,8 @@ from typing import Tuple
 import torch
 from torch import nn
 import logging
-from models.autoencoders.AbsEncoder import AbsEncoder
-from modules.attention import (
+from ar_spectra.models.autoencoders.AbsEncoder import AbsEncoder
+from ar_spectra.modules.attention import (
     MultiHeadedAttention,
     RelPositionMultiHeadedAttention,  # noqa: H301
     LegacyRelPositionMultiHeadedAttention,  # noqa: H301

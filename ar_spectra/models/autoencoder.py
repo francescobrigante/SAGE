@@ -174,6 +174,14 @@ class AutoEncoder(nn.Module):
         return decoded
           
         
+    def _maybe_add_nyquist(self, S: torch.Tensor, n_fft: int, onesided: bool) -> torch.Tensor:
+        F = S.shape[-2]
+        if n_fft is not None and onesided and F == n_fft // 2:
+            pad_shape = list(S.shape); pad_shape[-2] = 1
+            nyq = torch.zeros(pad_shape, dtype=S.dtype, device=S.device)
+            return torch.cat([S, nyq], dim=-2)
+        return S
+
     def istft(self, spec: torch.Tensor, **kwargs):
         def to_complex(S: torch.Tensor) -> torch.Tensor:
             if torch.is_complex(S):
@@ -191,7 +199,7 @@ class AutoEncoder(nn.Module):
                 S_ri = S.reshape(C, 2, F, T).permute(0,2,3,1).contiguous()
                 return torch.view_as_complex(S_ri)
             raise ValueError(f"Unsupported spec shape {tuple(S.shape)}")
-        
+
         S = to_complex(spec)  # [B, C, F, T] or [B, F, T]
 
         n_fft      = kwargs.get("n_fft")
@@ -213,7 +221,12 @@ class AutoEncoder(nn.Module):
         # deduci onesided se non passato
         F = S.shape[-2]
         if onesided is None:
-            onesided = (F == n_fft//2 + 1)
+            if n_fft is not None and (F == n_fft // 2 or F == n_fft // 2 + 1):
+                onesided = True
+            else:
+                onesided = (n_fft is not None and F == n_fft // 2 + 1)
+        # ripristina Nyquist solo quando serve
+        S = self._maybe_add_nyquist(S, n_fft, onesided)
 
 
         # lunghezza
