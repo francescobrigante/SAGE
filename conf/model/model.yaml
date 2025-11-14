@@ -1,0 +1,37 @@
+# Model configuration (encoder/decoder/bottleneck) from original JSON
+model:
+  autoencoder:
+    return_latent: false
+    force_input_mono: false
+    latent_mask_ratio: 0.0
+  encoder:
+    class: ar_spectra.models.autoencoders.SeaNET_next_AE.SEANetEncoder2d
+    kwargs:
+      input_size: auto           # will be patched at runtime
+      dimension: 128
+      n_filters: 64
+      n_residual_layers: 2
+      ratios: [[4,2],[1,2],[4,2]]
+      activation: ELU
+      norm: time_group_norm
+      norm_params: { num_groups: 1 }
+      causal: false
+      latent_fbins: 64
+      dilation_base: 2
+  decoder:
+    class: ar_spectra.models.autoencoders.SeaNET_next_AE.SEANetDecoder2d
+    kwargs:
+      channels: auto             # will be patched at runtime
+      input_size: 128
+      n_filters: 64
+      n_residual_layers: 2
+      ratios: [[4,2],[1,2],[4,2]]
+      activation: ELU
+      norm: time_group_norm
+      norm_params: { num_groups: 1 }
+      causal: false
+      latent_fbins: 64
+      dilation_base: 2
+  bottleneck:
+    class: ar_spectra.models.bottlenecks.VAEBottleneck
+    skip_bottleneck: true
