@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import torch
 import hydra
+from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
@@ -123,11 +124,10 @@ class DatasetEpochSetter(pl.Callback):
             self.dataset.set_epoch(trainer.current_epoch)
 
 class ModelInfoLogger(pl.Callback):
-    """
-    Logga info e struttura del modello all'inizio del training usando extract_model_config:
-    - stampa a terminale
-    - salva un JSON su disco
-    - logga su W&B (se attivo)
+    """Log model info and structure at the beginning of training.
+    - prints summary to console
+    - saves a JSON with parameter counts and module list
+    - logs (optionally) to Weights & Biases
     """
     def __init__(self, filename: str = "model_info.json", max_module_lines: int = 512, log_structure: bool = True ):
         super().__init__()
@@ -137,14 +137,14 @@ class ModelInfoLogger(pl.Callback):
 
     @rank_zero_only
     def on_fit_start(self, trainer, pl_module):
-        # estrae info dal modello core (autoencoder dentro il wrapper)
+        # Extract info from the core model (autoencoder inside wrapper)
         model = getattr(pl_module, "autoencoder", pl_module)
         info = extract_model_config(model)
 
-        # limita quante righe della struttura stampare
+        # Limit how many module lines to display
         modules = info.get("modules", [])[: self.max_module_lines]
 
-        # stampa su console (info + struttura)
+        # Console output: parameter summary + structure
         console.rule("[bold cyan]Model info")
         console.print(f"params total/trainable: {info.get('num_parameters_total')}/{info.get('num_parameters_trainable')}")
         console.rule("[bold cyan]Model structure")
@@ -153,7 +153,7 @@ class ModelInfoLogger(pl.Callback):
             console.print("[MODEL SUMMARY]\n", model_cfg["repr"])
         console.rule()
 
-        # salva JSON su disco
+        # Save JSON to disk
         try:
             # prova a usare la cartella di logging; fallback alla root di lavoro
             base_dir = Path(getattr(trainer.logger, "save_dir", "") or trainer.default_root_dir or ".")
@@ -169,15 +169,15 @@ class ModelInfoLogger(pl.Callback):
         if isinstance(trainer.logger, WandbLogger):
             try:
                 run = trainer.logger.experiment
-                # aggiorna la config con l'info completa
+                # Update run config with full model info
                 run.config.update({"model_info": info}, allow_val_change=True)
-                # logga anche la struttura come testo preformattato
+                # Log structure as preformatted text
                 run.log(
                     {"model/structure": model_cfg["repr"]},
                     step=int(getattr(trainer, "global_step", 0)),
                     commit=False,  # do not create a new step yet
                 )
-                # carica il JSON come file del run
+                # Upload JSON artifact
                 if out_path is not None:
                     run.save(str(out_path), base_path=str(base_dir))
             except Exception as e:
@@ -185,17 +185,18 @@ class ModelInfoLogger(pl.Callback):
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig):
-    """Hydra entrypoint. Fallback a JSON se trainer.use_json=true."""
-    # Fallback legacy JSON
-    if cfg.trainer.get("use_json", False):
+    """Hydra entrypoint. Falls back to a monolithic JSON when trainer.use_json=true."""
+    # Determine configuration mode (Hydra vs legacy JSON)
+    is_json_mode = cfg.trainer.get("use_json", False)
+    if is_json_mode:
         legacy_path = cfg.trainer.get("json_path")
         if not legacy_path:
-            raise ValueError("trainer.use_json=true ma trainer.json_path è vuoto")
+            raise ValueError("trainer.use_json=true but trainer.json_path is empty")
         legacy_cfg = load_json(legacy_path)
-        ok(f"Caricato legacy JSON: {legacy_path}")
+        ok(f"Loaded legacy JSON: {legacy_path}")
         unified = legacy_cfg
     else:
-        # Ricostruisci dizionario unico come prima
+        # Rebuild unified experiment dictionary
         unified = {
             "seed": int(cfg.trainer.seed),
             "device": cfg.device if hasattr(cfg, "device") else cfg.trainer.get("device", "cuda"),
@@ -212,7 +213,7 @@ def main(cfg: DictConfig):
             "eval_loss_config": OmegaConf.to_container(cfg.trainer.get("eval_loss_config", {}), resolve=True),
             "loss_config": OmegaConf.to_container(cfg.trainer.get("loss_config", {}), resolve=True),
         }
-        ok("Composizione Hydra completata")
+        ok("Hydra composition complete")
 
     cfg = unified
     seed = int(cfg.get("seed", 42))
@@ -269,7 +270,7 @@ def main(cfg: DictConfig):
         eval_dl = None
         warn("Eval dataset and dataloader not provided; training will proceed without evaluation.")
 
-    # Inferisci canali dal dataset/prime batch (per settare 'auto' in config modello)
+    # Infer channel counts from dataset or first batch (for 'auto' placeholders)
     ds_spec_ch = getattr(train_ds, "spec_channels", None)
     ds_audio_ch = getattr(train_ds, "audio_channels", None)
     cac = bool(cfg.get("train_dataset", {}).get("kwargs", {}).get("cac", False))
@@ -288,7 +289,7 @@ def main(cfg: DictConfig):
         model_channels = int(Cx)
         audio_channels = (model_channels // 2) if cac else model_channels
 
-    # Patching config modello 'auto'
+    # Resolve 'auto' placeholders in model encoder/decoder configuration
     model_cfg = cfg["model"]
     enc_kwargs = model_cfg["encoder"].setdefault("kwargs", {})
     dec_kwargs = model_cfg["decoder"].setdefault("kwargs", {})
@@ -301,13 +302,13 @@ def main(cfg: DictConfig):
     if "out_channels" in dec_kwargs:
         set_auto(dec_kwargs, "out_channels", model_channels)
 
-    # build modello e wrapper Lightning
+    # Build model and Lightning wrapper
     autoenc = AutoEncoder.from_config(model_cfg)
-    # optimizer/scheduler specs will be consumed inside the LightningModule
+    # Optimizer/scheduler specs are passed through to the wrapper
     optimizer_spec = cfg.get("optimizer", None)
     scheduler_spec = cfg.get("scheduler", None)
 
-    # build wrapper Lightning
+    # Instantiate Lightning training wrapper
     wrapper = AutoencoderTrainingWrapper(
         autoencoder=autoenc,
         sample_rate=int(cfg["train_dataset"]["kwargs"].get("sample_rate", 44100)),
@@ -327,11 +328,11 @@ def main(cfg: DictConfig):
     )
     ok(f"Instantiated AutoEncoder and Lightning wrapper.")
 
-    # Send eval params to the engine for validation only
+    # Provide eval STFT params to engine for validation phase
     eval_stft_params = (cfg.get("eval_dataset", {}) or {}).get("kwargs", {}) or {}
     wrapper.engine.val_stft_params = eval_stft_params
 
-    # logger (W&B opzionale)
+    # Optional Weights & Biases logger
     wandb_cfg = (cfg.get("wandb", {}) or {})
     use_wandb = bool(wandb_cfg.get("use_wandb", False))
     logger = None
@@ -344,16 +345,38 @@ def main(cfg: DictConfig):
         )
         try:
             run = logger.experiment
-            # aggiungi la config esatta del parser al config del run
+            # Update run config with parsed configuration
             run.config.update({"parsed_config": cfg}, allow_val_change=True)
-            # salva anche il JSON del config nel run (file upload)
-            cfg_path = Path("wandb_parsed_config.json")
-            cfg_path.write_text(json.dumps(cfg, indent=2))
-            run.save(str(cfg_path), base_path=str(cfg_path.parent))
+            if is_json_mode:
+                # Legacy JSON mode: save original experiment JSON + parsed unified config
+                cfg_path = Path("wandb_parsed_config.json")
+                cfg_path.write_text(json.dumps(cfg, indent=2))
+                run.save(str(cfg_path), base_path=str(cfg_path.parent))
+                legacy_path_obj = Path(legacy_path)
+                if legacy_path_obj.exists():
+                    # Copy original JSON into run directory
+                    legacy_copy = Path(f"wandb_legacy_experiment.json")
+                    legacy_copy.write_text(legacy_path_obj.read_text())
+                    run.save(str(legacy_copy), base_path=str(legacy_copy.parent))
+            else:
+                # Hydra mode: save core YAML configuration files
+                original_cwd = Path(get_original_cwd())
+                hydra_files = [
+                    original_cwd / "conf" / "config.yaml",
+                    original_cwd / "conf" / "data" / "data.yaml",
+                    original_cwd / "conf" / "model" / "model.yaml",
+                    original_cwd / "conf" / "trainer" / "trainer.yaml",
+                ]
+                for f in hydra_files:
+                    if f.exists():
+                        # Copy YAML into run directory
+                        dst = Path(f"wandb_{f.name}")
+                        dst.write_text(f.read_text())
+                        run.save(str(dst), base_path=str(dst.parent))
         except Exception as e:
             warn(f"W&B config upload skipped ({type(e).__name__}: {e})")
 
-    # Callback e checkpoint
+    # Callbacks and checkpointing
     ckpt_dir = Path(cfg.get("trainer", {}).get("ckpt_dir", "checkpoints/seanet_stft"))
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     callbacks = [
@@ -372,7 +395,7 @@ def main(cfg: DictConfig):
         DatasetEpochSetter(train_ds),
     ]
 
-    # Demo (validation) dal config opzionale
+    # Optional validation demo callback
     demo_cfg = cfg.get("demo", {}) or {}
     if eval_dl is not None:
         # Passa direttamente i parametri del dataset di training
@@ -388,7 +411,7 @@ def main(cfg: DictConfig):
         )
 
     
-    # Profiler: PyTorch Profiler -> TensorBoard
+    # Optional PyTorch Profiler (TensorBoard output)
     prof_logdir = Path(cfg.get("trainer", {}).get("profiler_dir", "lightning_profiler"))
     prof_logdir.mkdir(parents=True, exist_ok=True)
     use_profiler = bool(cfg.get("trainer", {}).get("profile", False))
@@ -406,8 +429,7 @@ def main(cfg: DictConfig):
             profile_dataloader=True,     # evita profiling DataLoader
         )
 
-    # Trainer
-    #Set multi-GPU strategy if specified
+    # Trainer setup: strategy, devices, precision
     hydra_strategy = cfg.get("trainer", {}).get("strategy", "auto")
     hydra_num_gpus = int(cfg.get("trainer", {}).get("num_gpus", 1))
     if hydra_strategy:

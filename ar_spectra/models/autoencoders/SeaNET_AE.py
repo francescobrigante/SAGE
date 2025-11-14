@@ -52,7 +52,7 @@ class SEANetResnetBlock2d(nn.Module):
                  activation: str = 'ELU', activation_params: dict = {'alpha': 1.0},
                  norm: str = 'weight_norm', norm_params: tp.Dict[str, tp.Any] = {}, causal: bool = False,
                  pad_mode: str = 'reflect', compress: int = 2, true_skip: bool = True,
-                 conv_group_ratio: int = -1):
+                 conv_group_ratio: int = -1, is_complex: bool = False):
         super().__init__()
         assert len(kernel_sizes) == len(dilations), 'Number of kernel sizes should match number of dilations'
         # act = getattr(nn, activation)
@@ -68,7 +68,8 @@ class SEANetResnetBlock2d(nn.Module):
                 SConv2d(in_chs, out_chs, kernel_size=kernel_size, dilation=dilation,
                         norm=norm, norm_kwargs=norm_params,
                         causal=causal, pad_mode=pad_mode,
-                        groups=min(in_chs, out_chs) // 2 // conv_group_ratio if conv_group_ratio > 0 else 1),
+                        groups=min(in_chs, out_chs) // 2 // conv_group_ratio if conv_group_ratio > 0 else 1,
+                        is_complex=is_complex),
             ]
         self.block = nn.Sequential(*block)
         self.shortcut: nn.Module
@@ -78,7 +79,7 @@ class SEANetResnetBlock2d(nn.Module):
         else:
             self.shortcut = SConv2d(dim, dim, kernel_size=(1, 1), norm=norm, norm_kwargs=norm_params,
                                     causal=causal, pad_mode=pad_mode,
-                                    groups=dim // 2 // conv_group_ratio if conv_group_ratio > 0 else 1)
+                                    groups=dim // 2 // conv_group_ratio if conv_group_ratio > 0 else 1, is_complex=is_complex)
 
     def forward(self, x):
         #print("x shape in SEANetResnetBlock2d:", x.shape)
@@ -136,8 +137,9 @@ class SEANetEncoder2d(nn.Module):
                  activation: str = 'ELU', activation_params: dict = {'alpha': 1.0},
                  norm: str = 'weight_norm', norm_params: tp.Dict[str, tp.Any] = {}, kernel_size: int = 7,
                  last_kernel_size: int = 7, residual_kernel_size: int = 3, dilation_base: int = 2, causal: bool = False,
-                 pad_mode: str = 'reflect', true_skip: bool = False, compress: int = 2,
-                 seq_model: str = "lstm", seq_layer_num: int = 2, res_seq=True, conv_group_ratio: int = -1, latent_fbins: int = 1, double_final_conv: bool = False):
+                 pad_mode: str = 'reflect', true_skip: bool = False, compress: int = 2, seq_model: str = "lstm", 
+                 seq_layer_num: int = 2, res_seq=True, conv_group_ratio: int = -1, latent_fbins: int = 1, 
+                 double_final_conv: bool = False, is_complex: bool = False):
         super().__init__()
         self.channels = input_size
         self.dimension = dimension
@@ -148,12 +150,12 @@ class SEANetEncoder2d(nn.Module):
         self.hop_length = np.prod([x[1] for x in self.ratios])
         self.latent_fbins = latent_fbins
         self.double_final_conv = double_final_conv
-
+        self.is_complex = is_complex
         # act = getattr(nn, activation)
         mult = 1
         model: tp.List[nn.Module] = [
             SConv2d(input_size, mult * n_filters, kernel_size, norm=norm, norm_kwargs=norm_params,
-                    causal=causal, pad_mode=pad_mode)
+                    causal=causal, pad_mode=pad_mode, is_complex=is_complex)
         ]
         # Downsample to raw audio scale
         for freq_ratio, time_ratio in self.ratios: # CHANGED from: for i, ratio in enumerate(self.ratios):
@@ -166,7 +168,7 @@ class SEANetEncoder2d(nn.Module):
                                         norm=norm, norm_params=norm_params,
                                         activation=activation, activation_params=activation_params,
                                         causal=causal, pad_mode=pad_mode, compress=compress, true_skip=true_skip,
-                                        conv_group_ratio=conv_group_ratio)]
+                                        conv_group_ratio=conv_group_ratio, is_complex=is_complex)]
 
             # Add downsampling layers
             model += [
@@ -177,26 +179,29 @@ class SEANetEncoder2d(nn.Module):
                         stride=(freq_ratio, time_ratio),
                         norm=norm, norm_kwargs=norm_params,
                         causal=causal, pad_mode=pad_mode,
-                        groups=mult * n_filters // 2 // conv_group_ratio if conv_group_ratio > 0 else 1),
+                        groups=mult * n_filters // 2 // conv_group_ratio if conv_group_ratio > 0 else 1, is_complex=is_complex),
             ]
             mult *= 2
 
         # squeeze shape for subsequent models
         model += [PackFreqIntoChannels(latent_fbins)]  
-
-        if seq_model == 'lstm':
-            model += [SLSTM(mult * n_filters * latent_fbins, num_layers=seq_layer_num, skip=res_seq)]
-        elif seq_model == "transformer":
-            from ar_spectra.modules.normed_modules.transformer import TransformerEncoder
-            model += [TransformerEncoder(mult * n_filters * latent_fbins,
-                                         output_size=mult * n_filters * latent_fbins,
-                                         num_blocks=seq_layer_num,
-                                         input_layer=None,
-                                         causal_mode="causal" if causal else "None",
-                                         skip=res_seq)]
-        else:
-            pass
+        if not self.is_complex:
+            if seq_model == 'lstm':
+                model += [SLSTM(mult * n_filters * latent_fbins, num_layers=seq_layer_num, skip=res_seq)]
+            elif seq_model == "transformer":
+                from ar_spectra.modules.normed_modules.transformer import TransformerEncoder
+                model += [TransformerEncoder(mult * n_filters * latent_fbins,
+                                            output_size=mult * n_filters * latent_fbins,
+                                            num_blocks=seq_layer_num,
+                                            input_layer=None,
+                                            causal_mode="causal" if causal else "None",
+                                            skip=res_seq)]
+            else:
+                pass
         
+        else:
+            # For complex data, we do not use any sequential model at the bottleneck
+            pass
         
         if mult * n_filters * latent_fbins > dimension and self.double_final_conv:
             model += [
@@ -204,10 +209,10 @@ class SEANetEncoder2d(nn.Module):
             
             SConv1d(mult * n_filters * latent_fbins, 2*dimension, kernel_size=last_kernel_size,
                     norm=norm, norm_kwargs=norm_params,
-                    causal=causal, pad_mode=pad_mode),
+                    causal=causal, pad_mode=pad_mode, is_complex=is_complex),
             SConv1d(2*dimension, dimension, kernel_size=last_kernel_size,
                     norm=norm, norm_kwargs=norm_params,
-                    causal=causal, pad_mode=pad_mode)
+                    causal=causal, pad_mode=pad_mode, is_complex=is_complex)
             ]
 
         else:   
@@ -217,7 +222,7 @@ class SEANetEncoder2d(nn.Module):
                 SConv1d(mult * n_filters * latent_fbins, dimension,
                         kernel_size=last_kernel_size,
                         norm=norm, norm_kwargs=norm_params,
-                        causal=causal, pad_mode=pad_mode)
+                        causal=causal, pad_mode=pad_mode, is_complex=is_complex)
             ]
 
         self.model = nn.Sequential(*model)
@@ -274,7 +279,8 @@ class SEANetDecoder2d(nn.Module):
                  pad_mode: str = 'reflect', true_skip: bool = False, compress: int = 2,
                  seq_model: str = 'lstm', seq_layer_num: int = 2, trim_right_ratio: float = 1.0, res_seq=True,
                  last_out_padding: tp.List[tp.Union[int, int]] = [(0, 1), (0, 0)],
-                 tr_conv_group_ratio: int = -1, conv_group_ratio: int = -1, latent_fbins: int = 1, double_final_conv: bool = False):
+                 tr_conv_group_ratio: int = -1, conv_group_ratio: int = -1, latent_fbins: int = 1, 
+                 double_final_conv: bool = False, is_complex: bool = False):
         super().__init__()
         self.dimension = input_size
         self.channels = channels
@@ -285,36 +291,41 @@ class SEANetDecoder2d(nn.Module):
         self.hop_length = np.prod([x[1] for x in self.ratios])
         self.latent_fbins = latent_fbins
         self.double_final_conv = double_final_conv
+        self.is_complex = is_complex
 
         # act = getattr(nn, activation)
         mult = int(2 ** len(self.ratios))
         if mult * n_filters * latent_fbins > 2*input_size and self.double_final_conv:
             model: tp.List[nn.Module] = [
                 SConv1d(input_size, 2*input_size, kernel_size, norm=norm, norm_kwargs=norm_params,
-                        causal=causal, pad_mode=pad_mode),
+                        causal=causal, pad_mode=pad_mode, is_complex=is_complex),
                 SConv1d(2*input_size, mult * n_filters * latent_fbins, kernel_size, norm=norm, norm_kwargs=norm_params,
-                        causal=causal, pad_mode=pad_mode),
+                        causal=causal, pad_mode=pad_mode, is_complex=is_complex),
             ]
             
         else:
             model: tp.List[nn.Module] = [
                 SConv1d(input_size, mult * n_filters * latent_fbins, kernel_size, norm=norm, norm_kwargs=norm_params,
-                        causal=causal, pad_mode=pad_mode),
+                        causal=causal, pad_mode=pad_mode, is_complex=is_complex),
             ]
         
-        if seq_model == "lstm":
-            model += [SLSTM(mult * n_filters * latent_fbins, num_layers=seq_layer_num, skip=res_seq)]
-        elif seq_model == "transformer":
-            from ar_spectra.modules.normed_modules.transformer import TransformerEncoder
-            model += [TransformerEncoder(mult * n_filters * latent_fbins,
-                                         output_size=mult * n_filters * latent_fbins,
-                                         num_blocks=seq_layer_num,
-                                         input_layer=None,
-                                         causal_mode="causal" if causal else "None",
-                                         skip=res_seq)]
+        if not self.is_complex:
+            if seq_model == "lstm":
+                model += [SLSTM(mult * n_filters * latent_fbins, num_layers=seq_layer_num, skip=res_seq)]
+            elif seq_model == "transformer":
+                from ar_spectra.modules.normed_modules.transformer import TransformerEncoder
+                model += [TransformerEncoder(mult * n_filters * latent_fbins,
+                                            output_size=mult * n_filters * latent_fbins,
+                                            num_blocks=seq_layer_num,
+                                            input_layer=None,
+                                            causal_mode="causal" if causal else "None",
+                                            skip=res_seq)]
+            else:
+                pass
         else:
+            # For complex data, we do not use any sequential model at the bottleneck
             pass
-
+        
         #model += [ReshapeModule(dim=2)]
         model += [UnpackFreqFromChannels(latent_fbins)]
 
@@ -330,8 +341,8 @@ class SEANetDecoder2d(nn.Module):
                                  norm=norm, norm_kwargs=norm_params,
                                  causal=causal, trim_right_ratio=trim_right_ratio,
                                  out_padding=last_out_padding if i == len(self.ratios) - 1 else 0,
-                                 groups=mult * n_filters // 2 // tr_conv_group_ratio if tr_conv_group_ratio > 0 else 1),
-            ]
+                                 groups=mult * n_filters // 2 // tr_conv_group_ratio if tr_conv_group_ratio > 0 else 1, 
+                                 is_complex=is_complex),]
             # Add residual layers
             for j in range(n_residual_layers):
                 model += [
@@ -341,7 +352,7 @@ class SEANetDecoder2d(nn.Module):
                                         activation=activation, activation_params=activation_params,
                                         norm=norm, norm_params=norm_params, causal=causal,
                                         pad_mode=pad_mode, compress=compress, true_skip=true_skip,
-                                        conv_group_ratio=conv_group_ratio)]
+                                        conv_group_ratio=conv_group_ratio, is_complex=is_complex)]
             mult //= 2
 
         # Add final layers
@@ -349,7 +360,7 @@ class SEANetDecoder2d(nn.Module):
             # act(**activation_params),
             get_activation(activation, **{**activation_params, "channels": n_filters}),
             SConv2d(n_filters, channels, last_kernel_size, norm=norm, norm_kwargs=norm_params,
-                    causal=causal, pad_mode=pad_mode)
+                    causal=causal, pad_mode=pad_mode, is_complex=is_complex)
         ]
         # Add optional final activation to decoder (eg. tanh)
         if final_activation is not None: # This is always None
