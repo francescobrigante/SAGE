@@ -1,0 +1,10 @@
+# Top-level Hydra composition file
+# You can override any group from CLI, e.g.:
+#   python train.py trainer.epochs=10 data.train_dataloader.batch_size=4
+# Legacy fallback: set trainer.use_json=true trainer.json_path=ar_spectra/config/experiments/SEANet_STFT.json
+
+defaults:
+  - data: data
+  - model: model
+  - trainer: trainer
+  - _self_

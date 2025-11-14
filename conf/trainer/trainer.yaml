@@ -1,0 +1,64 @@
+# Trainer + optimization + logging + losses + seed/device
+seed: 94
+device: cuda
+
+optimizer:
+  type: AdamW
+  config:
+    lr: 0.0003
+    weight_decay: 0.001
+
+scheduler:
+  type: InverseLR
+  config:
+    inv_gamma: 30000
+    power: 0.5
+    warmup: 0.995
+
+trainer:
+  epochs: 100
+  amp: false
+  log_interval: 1
+  ckpt_dir: checkpoints/seanet_stft
+  profile: false
+  check_val_every_n_epoch: 1
+  save_every_n_epochs: 5
+  log_model_structure: false
+  warmup_steps: 0
+  warmup_mode: adv
+  encoder_freeze_on_warmup: false
+  profiler_dir: lightning_profiler
+  val_check_interval: null
+  strategy: auto
+  num_gpus: 1
+
+wandb:
+  project: ICML_2026
+  name: SEANet_STFT_losses
+  use_wandb: true
+
+eval_loss_config:
+  sisdr:
+    zero_mean: true
+    reduction: mean
+  stft:
+    sample_rate: 44100
+    fft_size: 2048
+    hop_size: 512
+    win_length: 2048
+  mel:
+    fft_size: 2048
+    hop_size: 512
+    win_length: 2048
+    n_mels: 128
+
+loss_config:
+  spectral:
+    stft_mse:
+      config:
+        reduction: mean
+    weights: { stft_mse: 1.0 }
+
+# Legacy fallback controls
+use_json: false
+json_path: null

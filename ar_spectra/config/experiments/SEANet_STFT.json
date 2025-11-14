@@ -64,12 +64,12 @@
         "dimension": 128,
         "n_filters": 64,
         "n_residual_layers": 2,
-        "ratios": [[16,4],[4,1],[4,1]],
+        "ratios": [[4,2],[1,2],[4,2]],
         "activation": "ELU",
         "norm": "time_group_norm",
         "norm_params": { "num_groups": 1 },
         "causal": false,
-        "latent_fbins": 4,
+        "latent_fbins": 64,
         "dilation_base": 2
       }
     },
@@ -80,12 +80,12 @@
         "input_size": 128,
         "n_filters": 64,
         "n_residual_layers": 2,
-        "ratios": [[16,4],[4,1],[4,1]],
+        "ratios": [[4,2],[1,2],[4,2]],
         "activation": "ELU",
         "norm": "time_group_norm",
         "norm_params": { "num_groups": 1 },
         "causal": false,
-        "latent_fbins": 4,
+        "latent_fbins": 64,
         "dilation_base": 2
       }
     },

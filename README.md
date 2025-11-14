@@ -106,7 +106,7 @@ dec = SEANetDecoder2d(input_size=64)
 ae = AutoEncoder(encoder=enc, decoder=dec)
 ```
 
-## 5) From a model config dict (recommended with experiment JSON)
+## 5) From a model config dict 
 
 ```python
 from ar_spectra.models.autoencoder import AutoEncoder
@@ -128,5 +128,139 @@ To prevent silent shape mismatches, the constructor validates channels:
 - Without a VAE bottleneck: encoder output channels must equal decoder input channels.
 - With VAEBottleneck: encoder channels must be 2 × decoder input (mean + logvar).
 - With SkipBottleneck: encoder channels must equal decoder input.
+
+---
+
+## 🔧 Training Configuration and Execution
+
+Training is controlled by a hierarchical configuration composed from three groups: `data`, `model`, and `trainer`. Each group resides in the `conf/` directory.
+
+```
+conf/
+    config.yaml          # composition defaults
+    data/data.yaml       # datasets, dataloaders, demo parameters
+    model/model.yaml     # encoder, decoder, bottleneck specification
+    trainer/trainer.yaml # optimization, losses, logging, seed, device
+```
+
+### 1. Launching a Standard Training Run
+
+Run with default settings:
+
+```bash
+python train.py
+```
+
+### 2. Overriding Configuration Parameters
+
+Parameters can be overridden on the command line using dot notation. Examples:
+
+Set number of epochs and batch size:
+```bash
+python train.py trainer.trainer.epochs=50 data.train_dataloader.batch_size=16
+```
+
+Adjust learning rate and weight decay:
+```bash
+python train.py trainer.optimizer.config.lr=3e-4 trainer.optimizer.config.weight_decay=5e-4
+```
+
+Change encoder ratios and disable W&B logging:
+```bash
+python train.py model.model.encoder.kwargs.ratios='[[2,2],[2,2],[2,2]]' trainer.wandb.use_wandb=false
+```
+
+Enable distributed data parallel (if multiple GPUs available) and set checkpoint directory:
+```bash
+python train.py trainer.strategy=ddp trainer.num_gpus=2 trainer.trainer.ckpt_dir=checkpoints/run_ddp
+```
+
+### 3. Dataset & Loader Controls
+
+Key adjustable fields (group `data`):
+- `train_dataset.kwargs.*`: STFT parameters (`n_fft`, `hop_length`, `win_length`, `target_frames`, `sample_rate`).
+- `train_dataloader.batch_size`, `num_workers`, `prefetch_factor`: throughput tuning.
+- `train_dataloader.pin_memory`: boolean or the string `auto` (auto-estimation logic in `train.py`).
+- `eval_dataset` / `eval_dataloader`: analogous fields for validation.
+- `demo.*`: governs validation reconstruction logging frequency and ISTFT parameters.
+
+### 4. Model Adaptation
+
+In `model/model.yaml`, use literal numeric values or the sentinel `auto` for `encoder.kwargs.input_size` and `decoder.kwargs.channels`. These are resolved at runtime from the first batch (spectrogram channel count). This permits reusing the same file across datasets with differing channel layouts (e.g. complex vs. real, CAC formats).
+
+### 5. Optimization and Scheduling
+
+Fields (group `trainer`):
+- `optimizer.type`: optimizer identifier (e.g. `AdamW`).
+- `optimizer.config.lr`, `weight_decay`, `betas`, etc. according to optimizer signature.
+- `scheduler.type`: scheduler identifier, e.g. `InverseLR`.
+- `scheduler.config.*`: scheduler hyperparameters (`inv_gamma`, `power`, `warmup`).
+
+### 6. Loss Specification
+
+Loss blocks are nested under `loss_config`. Example spectral MSE:
+```yaml
+loss_config:
+    spectral:
+        stft_mse:
+            config:
+                reduction: mean
+        weights: { stft_mse: 1.0 }
+```
+Extend by adding new keys (e.g. `mrstft_sc`, `time`, `hubert`) following existing module expectations. Weights should be strictly positive for activation; zero omits a component.
+
+### 7. Logging and Checkpointing
+
+Controls:
+- `wandb.use_wandb`: enable/disable experiment logging.
+- `trainer.trainer.ckpt_dir`: output directory for checkpoints.
+- `trainer.trainer.save_every_n_epochs`: checkpoint frequency.
+- `trainer.trainer.log_interval`: logging step granularity.
+
+### 8. Device, Precision, and Strategy
+
+Relevant options:
+- `trainer.num_gpus`: number of GPU devices to request.
+- `trainer.strategy`: strategy identifier (`auto`, `ddp`, `deepspeed`, etc.).
+- `device` (in `trainer.yaml`): target device string (`cuda` or `cpu`).
+
+### 9. JSON Configuration Consumption
+
+An alternative configuration path: supply a monolithic JSON experiment file. Activate by setting:
+```bash
+python train.py trainer.use_json=true trainer.json_path=ar_spectra/config/experiments/SEANet_STFT.json
+```
+When `trainer.use_json=true`, all hierarchical overrides are ignored and the specified JSON is loaded directly. This supports archival reproduction and cross-framework benchmarks.
+
+### 10. Reproducibility Guidelines
+
+1. Fix `seed` for all comparative runs (`trainer.seed`).
+2. Maintain consistent STFT parameters between training and evaluation to avoid reconstruction bias.
+3. Record any external preprocessing transformations separate from configuration changes.
+4. Use distinct checkpoint directories per hyperparameter sweep branch.
+5. Validate channel auto-resolution once per dataset variant to prevent latent dimensional drift.
+
+### 11. Minimal Repro Example
+
+```bash
+python train.py \
+    trainer.trainer.epochs=5 \
+    data.train_dataloader.batch_size=12 \
+    trainer.optimizer.config.lr=3e-4 \
+    trainer.wandb.use_wandb=false
+```
+
+### 12. Extending Configuration Space
+
+To add a new encoder or dataset variant:
+```bash
+cp conf/model/model.yaml conf/model/encoder_alt.yaml
+cp conf/data/data.yaml conf/data/music_highres.yaml
+```
+Invoke with:
+```bash
+python train.py model=encoder_alt data=music_highres
+```
+All unspecified groups fall back to their default entries defined in `config.yaml`.
 
 ---

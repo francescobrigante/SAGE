@@ -1,6 +1,8 @@
-import argparse, json
+import json
 from pathlib import Path
 import torch
+import hydra
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer, seed_everything
@@ -135,14 +137,14 @@ class ModelInfoLogger(pl.Callback):
 
     @rank_zero_only
     def on_fit_start(self, trainer, pl_module):
-        # 1) Estrai info dal modello core (autoencoder dentro il wrapper)
+        # estrae info dal modello core (autoencoder dentro il wrapper)
         model = getattr(pl_module, "autoencoder", pl_module)
         info = extract_model_config(model)
 
-        # Limita quante righe della struttura stampare
+        # limita quante righe della struttura stampare
         modules = info.get("modules", [])[: self.max_module_lines]
 
-        # 2) Stampa su console (info + struttura)
+        # stampa su console (info + struttura)
         console.rule("[bold cyan]Model info")
         console.print(f"params total/trainable: {info.get('num_parameters_total')}/{info.get('num_parameters_trainable')}")
         console.rule("[bold cyan]Model structure")
@@ -151,7 +153,7 @@ class ModelInfoLogger(pl.Callback):
             console.print("[MODEL SUMMARY]\n", model_cfg["repr"])
         console.rule()
 
-        # Salva JSON su disco
+        # salva JSON su disco
         try:
             # prova a usare la cartella di logging; fallback alla root di lavoro
             base_dir = Path(getattr(trainer.logger, "save_dir", "") or trainer.default_root_dir or ".")
@@ -163,28 +165,56 @@ class ModelInfoLogger(pl.Callback):
             warn(f"ModelInfoLogger: not able to save JSON ({type(e).__name__}: {e})")
             out_path = None
 
-        # Logga su W&B (se presente)
+        # logga su W&B (se presente)
         if isinstance(trainer.logger, WandbLogger):
             try:
                 run = trainer.logger.experiment
                 # aggiorna la config con l'info completa
                 run.config.update({"model_info": info}, allow_val_change=True)
                 # logga anche la struttura come testo preformattato
-                run.log({"model/structure": model_cfg["repr"]})
+                run.log(
+                    {"model/structure": model_cfg["repr"]},
+                    step=int(getattr(trainer, "global_step", 0)),
+                    commit=False,  # do not create a new step yet
+                )
                 # carica il JSON come file del run
                 if out_path is not None:
                     run.save(str(out_path), base_path=str(base_dir))
             except Exception as e:
                 warn(f"ModelInfoLogger: W&B log skipped ({type(e).__name__}: {e})")
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True, help="Path to experiment JSON")
-    parser.add_argument("--strategy", type=str, default="auto", help="Training strategy (e.g. deepspeed)")
-    parser.add_argument("--num_gpus", type=int, default=1, help="Number of GPUs (used to pick default strategy)")
-    args = parser.parse_args()
+@hydra.main(version_base=None, config_path="conf", config_name="config")
+def main(cfg: DictConfig):
+    """Hydra entrypoint. Fallback a JSON se trainer.use_json=true."""
+    # Fallback legacy JSON
+    if cfg.trainer.get("use_json", False):
+        legacy_path = cfg.trainer.get("json_path")
+        if not legacy_path:
+            raise ValueError("trainer.use_json=true ma trainer.json_path è vuoto")
+        legacy_cfg = load_json(legacy_path)
+        ok(f"Caricato legacy JSON: {legacy_path}")
+        unified = legacy_cfg
+    else:
+        # Ricostruisci dizionario unico come prima
+        unified = {
+            "seed": int(cfg.trainer.seed),
+            "device": cfg.device if hasattr(cfg, "device") else cfg.trainer.get("device", "cuda"),
+            "train_dataset": OmegaConf.to_container(cfg.data.train_dataset, resolve=True),
+            "train_dataloader": OmegaConf.to_container(cfg.data.train_dataloader, resolve=True),
+            "eval_dataset": OmegaConf.to_container(cfg.data.get("eval_dataset", {}), resolve=True),
+            "eval_dataloader": OmegaConf.to_container(cfg.data.get("eval_dataloader", {}), resolve=True),
+            "demo": OmegaConf.to_container(cfg.data.get("demo", {}), resolve=True),
+            "model": OmegaConf.to_container(cfg.model.model, resolve=True),
+            "optimizer": OmegaConf.to_container(cfg.trainer.get("optimizer", {}), resolve=True),
+            "scheduler": OmegaConf.to_container(cfg.trainer.get("scheduler", {}), resolve=True),
+            "trainer": OmegaConf.to_container(cfg.trainer.trainer, resolve=True),
+            "wandb": OmegaConf.to_container(cfg.trainer.get("wandb", {}), resolve=True),
+            "eval_loss_config": OmegaConf.to_container(cfg.trainer.get("eval_loss_config", {}), resolve=True),
+            "loss_config": OmegaConf.to_container(cfg.trainer.get("loss_config", {}), resolve=True),
+        }
+        ok("Composizione Hydra completata")
 
-    cfg = load_json(args.config)
+    cfg = unified
     seed = int(cfg.get("seed", 42))
     seed_everything(seed, workers=True)
 
@@ -333,7 +363,7 @@ def main():
             filename="epoch_{epoch:03d}",
             save_top_k=-1,
             save_last=True,
-            every_n_epochs=1,
+            every_n_epochs=int(cfg.get("trainer", {}).get("save_every_n_epochs", 3)),  
             auto_insert_metric_name=False,
         ),
         LearningRateMonitor(logging_interval="step"),
@@ -378,8 +408,10 @@ def main():
 
     # Trainer
     #Set multi-GPU strategy if specified
-    if args.strategy:
-        if args.strategy == "deepspeed":
+    hydra_strategy = cfg.get("trainer", {}).get("strategy", "auto")
+    hydra_num_gpus = int(cfg.get("trainer", {}).get("num_gpus", 1))
+    if hydra_strategy:
+        if hydra_strategy == "deepspeed":
             from pytorch_lightning.strategies import DeepSpeedStrategy
             strategy = DeepSpeedStrategy(stage=2,
                                         contiguous_gradients=True,
@@ -389,14 +421,14 @@ def main():
                                         allgather_bucket_size=5e8,
                                         load_full_weights=True)
         else:
-            strategy = args.strategy
+            strategy = hydra_strategy
     else:
-        strategy = 'ddp_find_unused_parameters_true' if args.num_gpus > 1 else "auto"
+        strategy = 'ddp_find_unused_parameters_true' if hydra_num_gpus > 1 else "auto"
         
     epochs = int(cfg.get("trainer", {}).get("epochs", 50))
     accelerator = "gpu" if torch.cuda.is_available() else "cpu"
-    devices = args.num_gpus 
-    precision = "bf16-mixed"  # tensori complessi -> niente AMP
+    devices = hydra_num_gpus
+    precision = "32-true"  
 
 
     trainer = Trainer(
@@ -409,7 +441,7 @@ def main():
         callbacks=callbacks,
         enable_model_summary=True,
         log_every_n_steps=int(cfg.get("trainer", {}).get("log_interval", 1)),
-        num_sanity_val_steps=1,
+        num_sanity_val_steps=0,
         gradient_clip_val=0.0,
         detect_anomaly=False,
         profiler=profiler,
