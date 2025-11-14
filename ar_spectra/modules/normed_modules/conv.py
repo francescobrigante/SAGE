@@ -7,13 +7,12 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.utils import spectral_norm, weight_norm
-from ar_spectra.modules.complex_weight_norm import ComplexWeightNorm
 import complextorch.nn as cplx
-from .norm import ConvLayerNorm
+from .norm import ConvLayerNorm, ComplexWeightNorm, ComplexConvLayerNorm2d, ComplexConvLayerNorm1d, ComplexGroupNorm2d
 
 CONV_NORMALIZATIONS = frozenset(['none', 'weight_norm', 'spectral_norm',
                                  'time_layer_norm', 'layer_norm', 'time_group_norm', 
-                                 "complex_batch_norm"])
+                                 "batch_norm"])
 
 # self.conv = apply_parametrization_norm(nn.Conv1d(*args, **kwargs), norm)
 def apply_parametrization_norm(module: nn.Module, norm: str = 'none', is_complex: bool = False) -> nn.Module:
@@ -38,12 +37,10 @@ def get_norm_module(module: nn.Module, causal: bool = False, norm: str = 'none',
     module is causal, or return an error if the normalization doesn't support causal evaluation.
     """
     assert norm in CONV_NORMALIZATIONS
-    if norm == "complex_batch_norm":
-        assert is_complex, "complex_batch_norm only makes sense for complex weights"
-        return cplx.BatchNorm2d(module.out_channels, **norm_kwargs)
+    if norm == "batch_norm":
+        return cplx.BatchNorm2d(module.out_channels, **norm_kwargs) if is_complex else nn.BatchNorm2d(module.out_channels, **norm_kwargs)
     if norm == 'layer_norm':
-        assert isinstance(module, nn.modules.conv._ConvNd)
-        return ConvLayerNorm(module.out_channels, **norm_kwargs)
+        return ConvLayerNorm(module.out_channels, **norm_kwargs) if not is_complex else ComplexConvLayerNorm2d(module.out_channels, **norm_kwargs)
     elif norm == 'time_group_norm':
         if causal:
             raise ValueError("GroupNorm doesn't support causal evaluation.")
@@ -51,7 +48,7 @@ def get_norm_module(module: nn.Module, causal: bool = False, norm: str = 'none',
         num_groups = 1
         if "num_groups" in norm_kwargs:
             num_groups = norm_kwargs.pop("num_groups")
-        return nn.GroupNorm(num_groups, module.out_channels, **norm_kwargs)
+        return nn.GroupNorm(num_groups, module.out_channels, **norm_kwargs) if not is_complex else ComplexGroupNorm2d
     else:
         return nn.Identity()
 
