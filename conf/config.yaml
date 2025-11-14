@@ -5,6 +5,6 @@
 
 defaults:
   - data: data
-  - model: model
+  - model: SEANet_real_model
   - trainer: trainer
   - _self_

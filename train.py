@@ -219,6 +219,18 @@ def main(cfg: DictConfig):
     seed = int(cfg.get("seed", 42))
     seed_everything(seed, workers=True)
 
+    # Base directory centralized
+    runs_dir = Path(get_original_cwd()) / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Standard subdirectories
+    ckpt_dir = runs_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    profiler_dir = runs_dir / "profiler"
+    profiler_dir.mkdir(parents=True, exist_ok=True)
+    media_dir = runs_dir / "media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+
     torch.backends.cudnn.benchmark = True
 
     # Dataset
@@ -332,7 +344,7 @@ def main(cfg: DictConfig):
     eval_stft_params = (cfg.get("eval_dataset", {}) or {}).get("kwargs", {}) or {}
     wrapper.engine.val_stft_params = eval_stft_params
 
-    # Optional Weights & Biases logger
+    # W&B logger 
     wandb_cfg = (cfg.get("wandb", {}) or {})
     use_wandb = bool(wandb_cfg.get("use_wandb", False))
     logger = None
@@ -340,7 +352,8 @@ def main(cfg: DictConfig):
         logger = WandbLogger(
             project=wandb_cfg.get("project", "ICML_2026"),
             name=wandb_cfg.get("name", None),
-            log_model=False,  # evita upload pesanti
+            log_model=False,
+            save_dir=str(runs_dir / "wandb"),
             settings=wandb.Settings(_service_wait=7)
         )
         try:
@@ -376,17 +389,19 @@ def main(cfg: DictConfig):
         except Exception as e:
             warn(f"W&B config upload skipped ({type(e).__name__}: {e})")
 
-    # Callbacks and checkpointing
-    ckpt_dir = Path(cfg.get("trainer", {}).get("ckpt_dir", "checkpoints/seanet_stft"))
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    # Callbacks
     callbacks = [
-        ModelInfoLogger(filename="model_info.json", max_module_lines=768, log_structure=cfg.get("trainer", {}).get("log_model_structure", False)),
+        ModelInfoLogger(
+            filename="model_info.json",
+            max_module_lines=768,
+            log_structure=cfg.get("trainer", {}).get("log_model_structure", False)
+        ),
         ModelCheckpoint(
             dirpath=str(ckpt_dir),
             filename="epoch_{epoch:03d}",
             save_top_k=-1,
             save_last=True,
-            every_n_epochs=int(cfg.get("trainer", {}).get("save_every_n_epochs", 3)),  
+            every_n_epochs=int(cfg.get("trainer", {}).get("save_every_n_epochs", 3)),
             auto_insert_metric_name=False,
         ),
         LearningRateMonitor(logging_interval="step"),
@@ -411,54 +426,30 @@ def main(cfg: DictConfig):
         )
 
     
-    # Optional PyTorch Profiler (TensorBoard output)
-    prof_logdir = Path(cfg.get("trainer", {}).get("profiler_dir", "lightning_profiler"))
-    prof_logdir.mkdir(parents=True, exist_ok=True)
+    # Profiler
     use_profiler = bool(cfg.get("trainer", {}).get("profile", False))
     profiler = None
     if use_profiler:
         profiler = PyTorchProfiler(
-            dirpath=str(prof_logdir),
+            dirpath=str(profiler_dir),
             filename="pl_profile",
             activities=[torch_profiler.ProfilerActivity.CPU, torch_profiler.ProfilerActivity.CUDA],
             schedule=torch_profiler.schedule(wait=1, warmup=1, active=5, repeat=1),
-            on_trace_ready=torch_profiler.tensorboard_trace_handler(str(prof_logdir)),
-            record_shapes=False,          
-            profile_memory=False,       
-            with_stack=False,             
-            profile_dataloader=True,     # evita profiling DataLoader
+            on_trace_ready=torch_profiler.tensorboard_trace_handler(str(profiler_dir)),
+            record_shapes=False,
+            profile_memory=False,
+            with_stack=False,
+            profile_dataloader=True,
         )
 
-    # Trainer setup: strategy, devices, precision
-    hydra_strategy = cfg.get("trainer", {}).get("strategy", "auto")
-    hydra_num_gpus = int(cfg.get("trainer", {}).get("num_gpus", 1))
-    if hydra_strategy:
-        if hydra_strategy == "deepspeed":
-            from pytorch_lightning.strategies import DeepSpeedStrategy
-            strategy = DeepSpeedStrategy(stage=2,
-                                        contiguous_gradients=True,
-                                        overlap_comm=True,
-                                        reduce_scatter=True,
-                                        reduce_bucket_size=5e8,
-                                        allgather_bucket_size=5e8,
-                                        load_full_weights=True)
-        else:
-            strategy = hydra_strategy
-    else:
-        strategy = 'ddp_find_unused_parameters_true' if hydra_num_gpus > 1 else "auto"
-        
-    epochs = int(cfg.get("trainer", {}).get("epochs", 50))
-    accelerator = "gpu" if torch.cuda.is_available() else "cpu"
-    devices = hydra_num_gpus
-    precision = "32-true"  
-
-
+    # Trainer (imposta default_root_dir -> runs_dir)
     trainer = Trainer(
-        accelerator=accelerator,
-        devices=devices,
-        strategy=strategy,
-        max_epochs=epochs,
-        precision=precision,
+        default_root_dir=str(runs_dir),
+        accelerator=("gpu" if torch.cuda.is_available() else "cpu"),
+        devices=int(cfg.get("trainer", {}).get("num_gpus", 1)),
+        strategy=cfg.get("trainer", {}).get("strategy", "auto"),
+        max_epochs=int(cfg.get("trainer", {}).get("epochs", 50)),
+        precision="32-true",
         logger=logger,
         callbacks=callbacks,
         enable_model_summary=True,
@@ -471,7 +462,6 @@ def main(cfg: DictConfig):
         val_check_interval=cfg.get("trainer", {}).get("val_check_interval", None),
     )
 
-    # passa anche val_dataloaders
     trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl if eval_dl is not None else None)
 
 if __name__ == "__main__":

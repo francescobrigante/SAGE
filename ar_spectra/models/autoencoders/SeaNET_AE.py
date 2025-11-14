@@ -151,6 +151,7 @@ class SEANetEncoder2d(nn.Module):
         self.latent_fbins = latent_fbins
         self.double_final_conv = double_final_conv
         self.is_complex = is_complex
+        
         # act = getattr(nn, activation)
         mult = 1
         model: tp.List[nn.Module] = [
