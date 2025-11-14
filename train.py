@@ -35,7 +35,7 @@ def collate_stft(batch):
     assert all(x.shape == w0 for x in wavs), f"Wav shapes differ: {[x.shape for x in wavs]}"
     return torch.stack(Ss, 0), torch.stack(wavs, 0)
 
-# --- Auto pin-memory helpers ---
+# Auto pin-memory helpers 
 def _max_pinnable_mb() -> int:
     if not torch.cuda.is_available():
         return 0
