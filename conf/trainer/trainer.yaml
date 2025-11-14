@@ -35,7 +35,7 @@ trainer:
 wandb:
   project: ICML_2026
   name: SEANet_STFT_losses
-  use_wandb: true
+  use_wandb: false
 
 eval_loss_config:
   sisdr:

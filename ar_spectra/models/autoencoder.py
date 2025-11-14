@@ -392,6 +392,13 @@ class AutoEncoder(nn.Module):
         decoder_spec = cfg["decoder"]
         bottleneck_spec = cfg.get("bottleneck", None)
 
+        # It keeps only the keys supported by the AutoEncoder constructor
+        allowed_ae_keys = {"return_latent"}
+        unknown = set(ae_kwargs.keys()) - allowed_ae_keys
+        if unknown:
+            warn(f"AutoEncoder.from_config: ignoring unsupported autoencoder kwargs {sorted(unknown)}")
+        ae_kwargs = {k: v for k, v in ae_kwargs.items() if k in allowed_ae_keys}
+
         # Decide skip from JSON only (unique source of truth)
         skip_flag = False
         target_channels: Optional[int] = None
@@ -414,7 +421,6 @@ class AutoEncoder(nn.Module):
 
         if skip_flag:
             warn("Warning: bottleneck skipped; disable skip_bottleneck to undo this behavior.")
-            # Replace whatever bottleneck with SkipBottleneck
             bottleneck_inst = SkipBottleneck(target_channels=target_channels)
             return cls(encoder_spec, decoder_spec, bottleneck=bottleneck_inst, **ae_kwargs)
 

@@ -228,7 +228,7 @@ Relevant options:
 
 An alternative configuration path: supply a monolithic JSON experiment file. Activate by setting:
 ```bash
-python train.py trainer.use_json=true trainer.json_path=ar_spectra/config/experiments/SEANet_STFT.json
+python train.py trainer.use_json=true trainer.json_path=ar_spectra/conf/experiments/SEANet_STFT.json
 ```
 When `trainer.use_json=true`, all hierarchical overrides are ignored and the specified JSON is loaded directly. This supports archival reproduction and cross-framework benchmarks.
 

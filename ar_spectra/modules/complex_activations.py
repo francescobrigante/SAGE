@@ -228,11 +228,11 @@ class ComplexGELU1d(nn.Module):
         return x * gate
 
 
-class C_ELU(nn.Module):
+class CELU(nn.Module):
     """Elementwise ELU on real and imaginary parts.
 
     For z = a + i b:
-        C_ELU(z) = ELU(a) + i ELU(b).
+        CELU(z) = ELU(a) + i ELU(b).
     Useful as a simple complex extension of real-valued ELU.
     """
 
@@ -262,7 +262,7 @@ class Abs_SiLU(nn.Module):
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         if not torch.is_complex(z):
-            raise TypeError("Cplx_SiLU expects complex input.")
+            raise TypeError("abs_silu expects complex input.")
         mag = z.abs()
         gate = mag / (1.0 + torch.exp(-mag))
         return gate * z / (mag + 1e-8)
@@ -282,6 +282,6 @@ __all__ = [
     "ModReLU2dPerFreq",
     "ComplexGELU1d",
     "ComplexGELU2d",
-    "C_ELU",
+    "CELU",
     "Abs_SiLU",
 ]
