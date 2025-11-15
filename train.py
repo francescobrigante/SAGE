@@ -468,7 +468,7 @@ def main(cfg: DictConfig):
         callbacks=callbacks,
         enable_model_summary=True,
         log_every_n_steps=int(cfg.get("trainer", {}).get("log_interval", 1)),
-        num_sanity_val_steps=0,
+        num_sanity_val_steps=1,
         gradient_clip_val=0.0,
         detect_anomaly=False,
         profiler=profiler,

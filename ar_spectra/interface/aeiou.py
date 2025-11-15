@@ -7,7 +7,6 @@ from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
 import numpy as np
 from PIL import Image
-
 import torch
 
 import torchaudio.transforms as T
@@ -15,13 +14,32 @@ from einops import rearrange
 
 import numpy as np
 
+def _to_real_features(tokens: torch.Tensor) -> torch.Tensor:
+    """
+    If tokens are complex, convert to real by stacking [real, imag] along channel/feature dim.
+    Shapes handled:
+      - (B, D, N) -> (B, 2*D, N)
+      - (B, C, F, T) -> (B, 2*C, F, T)
+    """
+    if torch.is_complex(tokens):
+        if tokens.dim() == 3:         # (B, D, N)
+            tokens = torch.view_as_real(tokens)              # (B, D, N, 2)
+            tokens = rearrange(tokens, 'b d n r -> b (d r) n').contiguous()
+        elif tokens.dim() == 4:       # (B, C, F, T)
+            tokens = torch.view_as_real(tokens)              # (B, C, F, T, 2)
+            tokens = rearrange(tokens, 'b c f t r -> b (c r) f t').contiguous()
+        # ensure float type
+        tokens = tokens.float()
+    return tokens
+
 def embeddings_table(tokens):
     from wandb import Table
     from pandas import DataFrame
 
     "make a table of embeddings for use with wandb"
-    features, labels = [], []
+    tokens = _to_real_features(tokens)
     embeddings = rearrange(tokens, 'b d n -> b n d') # each demo sample is n vectors in d-dim space
+    features, labels = [], []
     for i in range(embeddings.size()[0]):  # nested for's are slow but sure ;-) 
         for j in range(embeddings.size()[1]):
             features.append(embeddings[i,j].detach().cpu().numpy())
@@ -43,10 +61,12 @@ def project_down(tokens,     # batched high-dimensional data with dims (b,d,n)
             ):
     "this projects to lower dimenions, grabbing the first _`proj_dims`_ dimensions"
     method = method.lower()
+    tokens = _to_real_features(tokens)
     if tokens.dim() == 4:
         A = rearrange(tokens, 'b c f t -> (b f t) c') # put all the vectors into the same d-dim space
     elif tokens.dim() ==3:
         A = rearrange(tokens, 'b d n -> (b n) d')
+    A = A.float()
     if A.shape[-1] > proj_dims: 
         if method=='umap':
             from umap import UMAP
@@ -76,7 +96,7 @@ def point_cloud(
     ds_preproj=1,         # EXPERIMENTAL: downsampling factor before projecting  (1=no downsampling). Could screw up colors
     ds_preplot=1,         # EXPERIMENTAL: downsampling factor before plotting (1=no downsampling). Could screw up colors
     debug=False,          # print more info
-    colormap=None,        # valid color map to use, None=defaults
+    colormap=None,        # valid color map to use. None=defaults
     darkmode=False,       # dark background, white fonts
     layout_dict=None,      # extra plotly layout options such as camera orientation
     rgb_float = False,   # if True, color_scheme is RGB float values
@@ -88,7 +108,8 @@ def point_cloud(
         tokens = tokens[::ds_preproj]
         if debug: print("tokens.shape =",tokens.shape)
 
-    data = project_down(tokens, method=method, debug=debug, **kwargs).cpu().numpy()
+    # project_down will handle complex->real; ensure final data are floats
+    data = project_down(tokens, method=method, debug=debug, **kwargs).float().cpu().numpy()
     if debug: print("data.shape =",data.shape)
     if data.shape[-1] < 3: # for data less than 3D, embed it in 3D 
         data = np.pad(data, ((0,0),(0,0),(0, 3-data.shape[-1])), mode='constant', constant_values=0)
@@ -269,6 +290,7 @@ def tokens_spectrogram_image(
         debug=False,           # print debugging info
     ):
     "for visualizing embeddings in a spectrogram-like way"
+    tokens = _to_real_features(tokens)
     batch_size, dim, frequency, time = tokens.shape if tokens.dim()==4 else (tokens.shape[0], tokens.shape[1], 1, tokens.shape[2])
     embeddings = rearrange(tokens, 'b c f t -> (b f t) c')  if tokens.dim()==4 else rearrange (tokens, 'b d n -> (b n) d')# expand batches in time
     vmin, vmax = None, None

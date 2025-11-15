@@ -227,7 +227,26 @@ class ComplexGELU1d(nn.Module):
             gate = 0.5 * (1.0 + torch.erf(u / torch.sqrt(torch.tensor(2.0, dtype=r.dtype, device=r.device))))
         return x * gate
 
+class CReLU(nn.Module):
+    """Elementwise ReLU on real and imaginary parts.
 
+    For z = a + i b:
+        CReLU(z) = ReLU(a) + i ReLU(b).
+    Useful as a simple complex extension of real-valued ReLU.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.relu = nn.ReLU()
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        if not torch.is_complex(z):
+            raise TypeError("CReLU expects complex input.")
+        real = self.relu(z.real)
+        imag = self.relu(z.imag)
+        return torch.complex(real, imag)
+    
+    
 class CELU(nn.Module):
     """Elementwise ELU on real and imaginary parts.
 
@@ -285,4 +304,5 @@ __all__ = [
     "ComplexGELU2d",
     "CELU",
     "Abs_SiLU",
+    "CReLU",
 ]
