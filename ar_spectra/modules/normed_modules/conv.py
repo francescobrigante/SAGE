@@ -8,7 +8,8 @@ from torch import nn
 from torch.nn import functional as F
 from torch.nn.utils import spectral_norm, weight_norm
 import complextorch.nn as cplx
-from .norm import ConvLayerNorm, ComplexWeightNorm, ComplexConvLayerNorm2d, ComplexConvLayerNorm1d, ComplexGroupNorm
+from .norm import (ConvLayerNorm, ComplexWeightNorm, ComplexConvLayerNorm2d, 
+                   ComplexConvLayerNorm1d, ComplexGroupNorm, ComplexBatchNorm2d, ComplexBatchNorm1d)
 
 CONV_NORMALIZATIONS = frozenset(['none', 'weight_norm', 'spectral_norm',
                                  'time_layer_norm', 'layer_norm', 'time_group_norm', 
@@ -55,8 +56,16 @@ def get_norm_module(module: nn.Module, causal: bool = False, norm: str = 'none',
     """
     assert norm in CONV_NORMALIZATIONS
     if norm == "batch_norm":
-        # Default to 2D BN for time-frequency tensors; extend if needed
-        return cplx.BatchNorm2d(module.out_channels, **norm_kwargs) if is_complex else nn.BatchNorm2d(module.out_channels, **norm_kwargs)
+        if is_complex:
+            if isinstance(module, nn.Conv1d):
+                return ComplexBatchNorm1d(module.out_channels, **norm_kwargs)
+            else:
+                return ComplexBatchNorm2d(module.out_channels, **norm_kwargs)
+        else:
+            if isinstance(module, nn.Conv1d):
+                return nn.BatchNorm1d(module.out_channels, **norm_kwargs)
+            else:
+                return nn.BatchNorm2d(module.out_channels, **norm_kwargs)
     if norm == 'layer_norm':
         if is_complex:
             if isinstance(module, nn.Conv1d):

@@ -245,5 +245,120 @@ class ComplexGroupNorm(nn.Module):
             y = y.squeeze(2)  # ritorna a (B,C,T)
         return y
 
-ComplexGroupNorm2d = ComplexGroupNorm
+from complexPyTorch.complexLayers import _ComplexBatchNorm
+from complexPyTorch.complexLayers import ComplexBatchNorm2d
+class ComplexBatchNorm1d(_ComplexBatchNorm):
+    def forward(self, inp):
+        """
+        Supporta:
+          (B, C)        -> batch di vettori
+          (B, C, T...)  -> batch di sequenze (qualunque numero di dimensioni temporali/spaziali addizionali)
+        Normalizza solo sul canale, aggregando tutte le altre dimensioni come esempi indipendenti.
+        """
+        original_shape = inp.shape
+        if inp.dim() < 2:
+            raise ValueError(f"Atteso tensore con almeno 2 dimensioni, ricevuto shape={original_shape}")
 
+        # Se più di 2D, portiamo i canali in ultima posizione, facciamo il flatten delle dims residue nel batch
+        if inp.dim() > 2:
+            # (B, C, T1, T2, ...) -> (B, T1, T2, ..., C)
+            permute_order = (0, *range(2, inp.dim()), 1)
+            x = inp.permute(permute_order)
+            flat_batch = int(torch.prod(torch.tensor(x.shape[:-1])))
+            x = x.reshape(flat_batch, self.num_features)  # (B * prod(T*), C)
+        else:
+            x = inp  # (B, C)
+
+        exponential_average_factor = 0.0
+        if self.training and self.track_running_stats:
+            if self.num_batches_tracked is not None:
+                self.num_batches_tracked += 1
+                if self.momentum is None:
+                    exponential_average_factor = 1.0 / float(self.num_batches_tracked)
+                else:
+                    exponential_average_factor = self.momentum
+
+        # Mean
+        if self.training or (not self.track_running_stats):
+            mean_r = x.real.mean(dim=0).type(torch.complex64)
+            mean_i = x.imag.mean(dim=0).type(torch.complex64)
+            mean = mean_r + 1j * mean_i
+        else:
+            mean = self.running_mean
+
+        if self.training and self.track_running_stats:
+            with torch.no_grad():
+                self.running_mean = (
+                    exponential_average_factor * mean
+                    + (1 - exponential_average_factor) * self.running_mean
+                )
+
+        x = x - mean[None, :]
+
+        # Var / cov
+        if self.training or (not self.track_running_stats):
+            n = x.size(0)
+            Crr = x.real.var(dim=0, unbiased=False) + self.eps
+            Cii = x.imag.var(dim=0, unbiased=False) + self.eps
+            Cri = (x.real * x.imag).mean(dim=0)
+        else:
+            Crr = self.running_covar[:, 0] + self.eps
+            Cii = self.running_covar[:, 1] + self.eps
+            Cri = self.running_covar[:, 2]
+            n = x.size(0)  # usato solo per compatibilità nelle formule di update
+
+        if self.training and self.track_running_stats:
+            with torch.no_grad():
+                # correzione bias (n/(n-1)) se n>1
+                corr = n / (n - 1) if n > 1 else 1.0
+                self.running_covar[:, 0] = (
+                    exponential_average_factor * Crr * corr
+                    + (1 - exponential_average_factor) * self.running_covar[:, 0]
+                )
+                self.running_covar[:, 1] = (
+                    exponential_average_factor * Cii * corr
+                    + (1 - exponential_average_factor) * self.running_covar[:, 1]
+                )
+                self.running_covar[:, 2] = (
+                    exponential_average_factor * Cri * corr
+                    + (1 - exponential_average_factor) * self.running_covar[:, 2]
+                )
+
+        # Whitening
+        det = Crr * Cii - Cri.pow(2)
+        s = torch.sqrt(det)
+        t = torch.sqrt(Cii + Crr + 2 * s)
+        inverse_st = 1.0 / (s * t)
+        Rrr = (Cii + s) * inverse_st
+        Rii = (Crr + s) * inverse_st
+        Rri = -Cri * inverse_st
+
+        x_whiten = (Rrr[None, :] * x.real + Rri[None, :] * x.imag).type(torch.complex64) \
+                   + 1j * (Rii[None, :] * x.imag + Rri[None, :] * x.real).type(torch.complex64)
+
+        if self.affine:
+            x_aff = (
+                self.weight[None, :, 0] * x_whiten.real
+                + self.weight[None, :, 2] * x_whiten.imag
+                + self.bias[None, :, 0]
+            ).type(torch.complex64) + 1j * (
+                self.weight[None, :, 2] * x_whiten.real
+                + self.weight[None, :, 1] * x_whiten.imag
+                + self.bias[None, :, 1]
+            ).type(torch.complex64)
+        else:
+            x_aff = x_whiten
+
+        # Ripristina forma originale
+        if inp.dim() > 2:
+            # x_aff: (B * prod(T*), C) -> (B, T1, T2, ..., C) -> (B, C, T1, T2, ...)
+            new_shape = (*original_shape[:1], *original_shape[2:], self.num_features)
+            x_aff = x_aff.view(new_shape)
+            # inverti permute_order
+            # permute_order = (0, 2, 3, ..., 1)
+            inv_perm = [0, permute_order.index(1), *[permute_order.index(i) for i in range(2, inp.dim())]]
+            # più semplice: riportiamo canale in seconda posizione
+            x_aff = x_aff.permute(0, -1, *range(1, x_aff.dim()-1))
+
+        del Crr, Cri, Cii, Rrr, Rii, Rri, det, s, t
+        return x_aff

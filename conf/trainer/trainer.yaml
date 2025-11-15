@@ -13,7 +13,7 @@ scheduler:
   config:
     inv_gamma: 30000
     power: 0.5
-    warmup: 0.995
+    warmup: 0
 
 trainer:
   precision: 32-true

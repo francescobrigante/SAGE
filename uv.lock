@@ -486,6 +486,15 @@ wheels = [
 ]
 
 [[package]]
+name = "complexpytorch"
+version = "0.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7e/87/921b8a41a607fa19ca81a5c3237a958b32d06296fe6cad4653b7e8dc2ef4/complexPyTorch-0.4.tar.gz", hash = "sha256:cbe3d3a54e20f88a1aa2ef0f3ac7e1c6de7080d39319a5fc602871ed3b6cb92c", size = 9784, upload-time = "2021-10-04T07:22:36.919Z" }
+
+[[package]]
 name = "complextorch"
 version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -803,6 +812,7 @@ name = "eulero-backbone"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "complexpytorch" },
     { name = "complextorch" },
     { name = "deepspeed" },
     { name = "descript-audio-codec" },
@@ -825,6 +835,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "complexpytorch", specifier = ">=0.4" },
     { name = "complextorch", specifier = ">=1.2.0" },
     { name = "deepspeed", specifier = ">=0.18.2" },
     { name = "descript-audio-codec", specifier = ">=1.0.0" },
