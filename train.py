@@ -213,6 +213,7 @@ def main(cfg: DictConfig):
             "wandb": OmegaConf.to_container(cfg.trainer.get("wandb", {}), resolve=True),
             "eval_loss_config": OmegaConf.to_container(cfg.trainer.get("eval_loss_config", {}), resolve=True),
             "loss_config": OmegaConf.to_container(cfg.trainer.get("loss_config", {}), resolve=True),
+            "pre_transform": OmegaConf.to_container(cfg.trainer.get("pre_transform", {}), resolve=True),
         }
         ok("Hydra composition complete")
 
@@ -339,6 +340,7 @@ def main(cfg: DictConfig):
         stft_params=cfg.get("train_dataset", {}).get("kwargs", {}),
         optimizer_spec=optimizer_spec,
         scheduler_spec=scheduler_spec,
+        pre_transform_spec=cfg.get("pre_transform", None),
     )
     ok(f"Instantiated AutoEncoder and Lightning wrapper.")
 
