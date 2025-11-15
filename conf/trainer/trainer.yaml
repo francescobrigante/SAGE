@@ -24,7 +24,7 @@ trainer:
   profile: false
   check_val_every_n_epoch: 1
   save_every_n_epochs: 5
-  log_model_structure: false
+  log_model_structure: true
   warmup_steps: 0
   warmup_mode: adv
   encoder_freeze_on_warmup: false

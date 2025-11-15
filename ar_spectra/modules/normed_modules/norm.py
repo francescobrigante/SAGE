@@ -1,4 +1,18 @@
-"""Normalization modules."""
+"""Normalization modules.
+
+This file provides a set of normalization layers for both real and complex valued
+signals, including convolution-friendly LayerNorm variants, complex reparameterized
+weight normalization, complex LayerNorm wrappers for 1D/2D convolution layouts,
+Group Normalization with per-group complex whitening, and BatchNorm variants.
+
+Key goals:
+    * Preserve convolutional layouts while applying per-channel normalization.
+    * Offer complex-valued analogs of common real-valued normalization strategies.
+    * Provide numerically stable whitening (inverse square root) of 2x2 covariance
+        matrices (real/imag parts) used in complex normalization.
+
+All docstrings are written in English for clarity.
+"""
 
 import typing as tp
 
@@ -26,49 +40,106 @@ class ConvLayerNorm(nn.LayerNorm):
 
 
 class ComplexWeightNorm(nn.Module):
+    """Complex-valued weight normalization.
+
+    This is a lightweight reparameterization similar to PyTorch's ``weight_norm``
+    but adapted for complex tensors. Given a complex parameter ``weight`` we
+    replace it by ``g * v / ||v||`` where ``g`` is a real-valued scaling factor
+    (broadcastable over the chosen normalization dimension) and ``v`` is a
+    complex tensor. The reconstruction happens in a forward pre-hook so the
+    wrapped module always sees a correctly normalized complex weight.
+
+    Differences vs torch.nn.utils.weight_norm:
+      * Ensures the original weight is complex valued, raising an error otherwise.
+      * Stores separate parameters ``weight_v`` (complex) and ``weight_g`` (real).
+      * Provides attribute delegation so external code can access properties of
+        the wrapped convolution (e.g. ``kernel_size``) transparently.
+
+    Parameters
+    ----------
+    module : nn.Module
+        Module containing a complex parameter named by ``name``. Typically a
+        convolution layer with ``dtype=torch.complex64`` or higher precision.
+    name : str, default 'weight'
+        Name of the parameter inside ``module`` to reparameterize.
+    dim : int, default 0
+        Dimension along which to compute the vector norm.
+    eps : float, default 1e-12
+        Numerical stability epsilon added to the denominator.
+    """
     def __init__(self, module: nn.Module, name: str = 'weight', dim: int = 0, eps: float = 1e-12):
         super().__init__()
         self.module = module
         self.name, self.dim, self.eps = name, dim, eps
 
-        # get existing complex weight
-        w = getattr(self.module, self.name)  # complex Parameter
+        # Retrieve existing weight and validate it is complex.
+        w = getattr(self.module, self.name)
         if not torch.is_complex(w):
             raise TypeError("Weight must be complex (complex32/complex64/complex128).")
 
-        # build v and g like in torch
+        # Create v (complex) and g (real) parameters.
         v = nn.Parameter(w.data)
-        # norm along dim with keepdim for broadcasting
         w_norm = torch.linalg.vector_norm(w.data, dim=dim, keepdim=True)
-        g = nn.Parameter(w_norm.real)  # real, broadcastable shape
+        g = nn.Parameter(w_norm.real)  # real scaling, broadcastable shape
 
-        # replace the parameter
+        # Replace original parameter with v/g pair.
         delattr(self.module, self.name)
         self.module.register_parameter(f'{self.name}_v', v)
         self.module.register_parameter(f'{self.name}_g', g)
 
-        # register reconstruction pre-hook
+        # Register pre-hook to reconstruct weight before every forward.
         self.module.register_forward_pre_hook(self._recompute_weight, with_kwargs=True)
 
-    def _recompute_weight(self, mod, *args, **kwargs):
-        v = getattr(mod, f'{self.name}_v')          # complex
-        g = getattr(mod, f'{self.name}_g')          # real
+    def _recompute_weight(self, mod, *args, **kwargs):  # noqa: D401 - internal hook
+        v = getattr(mod, f'{self.name}_v')
+        g = getattr(mod, f'{self.name}_g')
         denom = torch.linalg.vector_norm(v, dim=self.dim, keepdim=True).clamp_min(self.eps)
         w = g.to(v.dtype) * (v / denom)
         setattr(mod, self.name, w)
-        return
 
     def forward(self, *args, **kwargs):
         return self.module(*args, **kwargs)
 
+    # Explicit property delegation to avoid fragile __getattr__ recursion.
+    @property
+    def kernel_size(self):
+        return self.module.kernel_size
+
+    @property
+    def stride(self):
+        return self.module.stride
+
+    @property
+    def padding(self):
+        return self.module.padding
+
+    @property
+    def dilation(self):
+        return self.module.dilation
+
+    @property
+    def in_channels(self):
+        return self.module.in_channels
+
+    @property
+    def out_channels(self):
+        return self.module.out_channels
+
+    @property
+    def groups(self):
+        return self.module.groups
+
+    def extra_repr(self) -> str:
+        return f"ComplexWeightNorm(name={self.name}, dim={self.dim}, eps={self.eps})"
+
 
 class ComplexConvLayerNorm2d(nn.Module):
-    """
-    LayerNorm “conv-friendly” per tensori complessi 4-D.
+    """Channel-wise LayerNorm for 4D complex tensors.
 
-    • Input atteso:(B, C, H, W), dtype=torch.complex64
-    • Normalizza **solo** l’asse dei canali C, lasciando invariati H e W
-      (equivalente a GroupNorm con g = 1 ma in algebra complessa).
+    Expects inputs with shape ``(B, C, H, W)`` and ``dtype=torch.complex*``.
+    Normalization is applied only across the channel dimension ``C`` and not
+    over spatial dimensions, mimicking a per-channel normalization akin to a
+    single-group GroupNorm but in the complex domain.
     """
 
     def __init__(self,
@@ -97,12 +168,11 @@ class ComplexConvLayerNorm2d(nn.Module):
 
 
 class ComplexConvLayerNorm1d(nn.Module):
-    """
-    LayerNorm “conv-friendly” per tensori complessi 3-D.
+    """Channel-wise LayerNorm for 3D complex tensors.
 
-    • Input atteso: (B, C, T), dtype=torch.complex64
-    • Normalizza solo l’asse dei canali C, lasciando invariato T
-      (equivalente a GroupNorm con g = 1 ma in algebra complessa).
+    Expects inputs with shape ``(B, C, T)`` and complex dtype. Applies
+    normalization only across channels ``C`` (time axis preserved), equivalent
+    to a single-group GroupNorm in the complex setting.
     """
 
     def __init__(self,
@@ -131,15 +201,26 @@ class ComplexConvLayerNorm1d(nn.Module):
     
     
 class ComplexGroupNorm(nn.Module):
-    """
-    Complex Group Normalization con whitening Re/Im per gruppo.
-    Supporta input:
-      • 4D: (B, C, F, T)
-      • 3D: (B, C, T)  (viene trattato come F=1)
-    Parametri:
-      num_channels, num_groups, eps, affine, reduce_spatial:
-        - Se reduce_spatial=True: media/cov su (canali del gruppo) e tutte le dims spaziali disponibili (F,T oppure solo T).
-        - Se False: solo sui canali del gruppo (come GroupNorm classico).
+    """Complex Group Normalization with per-group whitening.
+
+    Supports inputs of shape ``(B, C, F, T)`` or ``(B, C, T)`` (treated as
+    ``F=1``). For each group of channels we compute the mean and 2x2 real/imag
+    covariance, derive an inverse square root (whitening) transform, and apply
+    it to the centered real and imaginary parts.
+
+    Parameters
+    ----------
+    num_channels : int
+        Total number of channels ``C``.
+    num_groups : int
+        Number of groups ``G`` (``C`` must be divisible by ``G``).
+    eps : float, default 1e-4
+        Numerical stability term added to covariance diagonals.
+    affine : bool, default True
+        Whether to learn an affine transform post-whitening.
+    reduce_spatial : bool, default True
+        If True, statistics are aggregated over channel(s) in group and all
+        spatial dimensions. If False, only over channels (classic GroupNorm).
     """
     def __init__(self,
                  num_channels: int,
@@ -249,25 +330,27 @@ from complexPyTorch.complexLayers import _ComplexBatchNorm
 from complexPyTorch.complexLayers import ComplexBatchNorm2d
 class ComplexBatchNorm1d(_ComplexBatchNorm):
     def forward(self, inp):
-        """
-        Supporta:
-          (B, C)        -> batch di vettori
-          (B, C, T...)  -> batch di sequenze (qualunque numero di dimensioni temporali/spaziali addizionali)
-        Normalizza solo sul canale, aggregando tutte le altre dimensioni come esempi indipendenti.
+        """Complex BatchNorm aggregating over all non-channel dimensions.
+
+        Accepts inputs:
+          * ``(B, C)``   : batch of vectors.
+          * ``(B, C, T...)`` : batch of sequences with one or more additional
+            temporal/spatial dimensions. All non-channel dimensions are folded
+            into the batch for statistics computation. Channel dimension is
+            normalized with complex whitening of its 2x2 covariance.
         """
         original_shape = inp.shape
         if inp.dim() < 2:
-            raise ValueError(f"Atteso tensore con almeno 2 dimensioni, ricevuto shape={original_shape}")
+            raise ValueError(f"Expected tensor with >=2 dims, got shape={original_shape}")
 
-        # Se più di 2D, portiamo i canali in ultima posizione, facciamo il flatten delle dims residue nel batch
+        # If more than 2D, move channels last then flatten remaining spatial dims.
         if inp.dim() > 2:
-            # (B, C, T1, T2, ...) -> (B, T1, T2, ..., C)
-            permute_order = (0, *range(2, inp.dim()), 1)
+            permute_order = (0, *range(2, inp.dim()), 1)  # (B, C, T1, T2, ...) -> (B, T1, T2, ..., C)
             x = inp.permute(permute_order)
             flat_batch = int(torch.prod(torch.tensor(x.shape[:-1])))
-            x = x.reshape(flat_batch, self.num_features)  # (B * prod(T*), C)
+            x = x.reshape(flat_batch, self.num_features)
         else:
-            x = inp  # (B, C)
+            x = inp
 
         exponential_average_factor = 0.0
         if self.training and self.track_running_stats:
@@ -295,7 +378,7 @@ class ComplexBatchNorm1d(_ComplexBatchNorm):
 
         x = x - mean[None, :]
 
-        # Var / cov
+        # Covariance (real-real, imag-imag, real-imag)
         if self.training or (not self.track_running_stats):
             n = x.size(0)
             Crr = x.real.var(dim=0, unbiased=False) + self.eps
@@ -305,11 +388,10 @@ class ComplexBatchNorm1d(_ComplexBatchNorm):
             Crr = self.running_covar[:, 0] + self.eps
             Cii = self.running_covar[:, 1] + self.eps
             Cri = self.running_covar[:, 2]
-            n = x.size(0)  # usato solo per compatibilità nelle formule di update
+            n = x.size(0)
 
         if self.training and self.track_running_stats:
             with torch.no_grad():
-                # correzione bias (n/(n-1)) se n>1
                 corr = n / (n - 1) if n > 1 else 1.0
                 self.running_covar[:, 0] = (
                     exponential_average_factor * Crr * corr
@@ -324,7 +406,7 @@ class ComplexBatchNorm1d(_ComplexBatchNorm):
                     + (1 - exponential_average_factor) * self.running_covar[:, 2]
                 )
 
-        # Whitening
+        # Whitening transform
         det = Crr * Cii - Cri.pow(2)
         s = torch.sqrt(det)
         t = torch.sqrt(Cii + Crr + 2 * s)
@@ -349,15 +431,11 @@ class ComplexBatchNorm1d(_ComplexBatchNorm):
         else:
             x_aff = x_whiten
 
-        # Ripristina forma originale
+        # Restore original shape if there were extra spatial dims.
         if inp.dim() > 2:
-            # x_aff: (B * prod(T*), C) -> (B, T1, T2, ..., C) -> (B, C, T1, T2, ...)
             new_shape = (*original_shape[:1], *original_shape[2:], self.num_features)
-            x_aff = x_aff.view(new_shape)
-            # inverti permute_order
-            # permute_order = (0, 2, 3, ..., 1)
-            inv_perm = [0, permute_order.index(1), *[permute_order.index(i) for i in range(2, inp.dim())]]
-            # più semplice: riportiamo canale in seconda posizione
+            x_aff = x_aff.view(new_shape)  # (B, T1, T2, ..., C)
+            # Move channel back to second position: (B, C, T1, T2, ...)
             x_aff = x_aff.permute(0, -1, *range(1, x_aff.dim()-1))
 
         del Crr, Cri, Cii, Rrr, Rii, Rri, det, s, t
