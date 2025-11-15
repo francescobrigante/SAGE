@@ -236,14 +236,15 @@ class CELU(nn.Module):
     Useful as a simple complex extension of real-valued ELU.
     """
 
-    def __init__(self):
+    def __init__(self, **kwargs):
         super().__init__()
-
+        self.kwargs = kwargs
+        self.elu = nn.ELU(**kwargs)
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         if not torch.is_complex(z):
             raise TypeError("Cplx_ELU expects complex input.")
-        real = F.elu(z.real)
-        imag = F.elu(z.imag)
+        real = self.elu(z.real)
+        imag = self.elu(z.imag)
         return torch.complex(real, imag)
 
 

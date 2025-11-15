@@ -130,8 +130,17 @@ class ComplexConvLayerNorm1d(nn.Module):
         return x_norm.permute(0, 2, 1).contiguous()
     
     
-class ComplexGroupNorm2d(nn.Module):
-
+class ComplexGroupNorm(nn.Module):
+    """
+    Complex Group Normalization con whitening Re/Im per gruppo.
+    Supporta input:
+      • 4D: (B, C, F, T)
+      • 3D: (B, C, T)  (viene trattato come F=1)
+    Parametri:
+      num_channels, num_groups, eps, affine, reduce_spatial:
+        - Se reduce_spatial=True: media/cov su (canali del gruppo) e tutte le dims spaziali disponibili (F,T oppure solo T).
+        - Se False: solo sui canali del gruppo (come GroupNorm classico).
+    """
     def __init__(self,
                  num_channels: int,
                  num_groups: int,
@@ -148,8 +157,6 @@ class ComplexGroupNorm2d(nn.Module):
         self.reduce_spatial = reduce_spatial
 
         if affine:
-            # stessa forma del BN complesso: 3 pesi reali per canale (w_rr, w_ii, w_ri),
-            # e 2 bias (b_r, b_i)
             self.weight = nn.Parameter(torch.empty(num_channels, 3))
             self.bias   = nn.Parameter(torch.empty(num_channels, 2))
         else:
@@ -160,21 +167,17 @@ class ComplexGroupNorm2d(nn.Module):
 
     def reset_parameters(self):
         if self.weight is not None:
-            # diag ~ sqrt(2), offdiag (ri) = 0; bias = 0 (come nel tuo BN)
             init.constant_(self.weight[:, :2], 1.4142135623730951)
             init.zeros_(self.weight[:, 2])
             init.zeros_(self.bias)
 
     @torch.no_grad()
     def _safe_inv_sqrt_params(self, Crr, Cii, Cri):
-        # calcolo robusto dei parametri dell'inverse sqrt 2x2
         det = Crr * Cii - Cri * Cri
-        det = torch.clamp(det, min=0.0)  # numerica
+        det = torch.clamp(det, min=0.0)
         s = torch.sqrt(det + 1e-12)
         t = torch.sqrt(torch.clamp(Cii + Crr + 2.0 * s, min=1e-12))
-        denom = s * t
-        denom = torch.clamp(denom, min=self.eps)
-
+        denom = torch.clamp(s * t, min=self.eps)
         inv_st = 1.0 / denom
         Rrr = (Cii + s) * inv_st
         Rii = (Crr + s) * inv_st
@@ -182,63 +185,55 @@ class ComplexGroupNorm2d(nn.Module):
         return Rrr, Rii, Rri
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: (B, C, F, T), dtype=torch.complex64
-        """
         assert torch.is_complex(x), "Atteso dtype complesso"
+        original_3d = False
+        if x.dim() == 3:
+            # (B,C,T) -> (B,C,1,T)
+            x = x.unsqueeze(2)
+            original_3d = True
+        elif x.dim() != 4:
+            raise ValueError(f"Shape non supportata: {x.shape}")
+
         B, C, F, T = x.shape
         G = self.G
         Cg = C // G
 
-        # (B, G, Cg, F, T)
         xg = x.view(B, G, Cg, F, T)
 
-        # media per-sample per-gruppo (su canali del gruppo e, opzionalmente, su F,T)
         if self.reduce_spatial:
-            reduce_dims = (2, 3, 4)  # Cg, F, T
+            reduce_dims = (2, 3, 4)  # canali gruppo + F + T (F=1 se era 3D)
+            N = Cg * F * T
         else:
-            reduce_dims = (2,)       # solo canali del gruppo
+            reduce_dims = (2,)
+            N = Cg
 
-        mean_r = xg.real.mean(dim=reduce_dims, keepdim=True).to(torch.complex64)
-        mean_i = xg.imag.mean(dim=reduce_dims, keepdim=True).to(torch.complex64)
-        mean = mean_r + 1j * mean_i
-        xg = xg - mean  # broadcast su (B,G,1,1,1)
+        mean_r = xg.real.mean(dim=reduce_dims, keepdim=True)
+        mean_i = xg.imag.mean(dim=reduce_dims, keepdim=True)
+        mean = torch.complex(mean_r, mean_i)
+        xg = xg - mean
 
-        # covarianza Re/Im per gruppo
         r = xg.real
         i = xg.imag
 
-        if self.reduce_spatial:
-            N = Cg * F * T
-        else:
-            N = Cg
-
-        # medie (biased) come in GN/IN
         Crr = (r.pow(2).sum(dim=reduce_dims, keepdim=True) / float(N)) + self.eps
         Cii = (i.pow(2).sum(dim=reduce_dims, keepdim=True) / float(N)) + self.eps
         Cri = (r.mul(i).sum(dim=reduce_dims, keepdim=True) / float(N))
 
-        # inverse sqrt della covarianza (per gruppo)
-        # shape: (B,G,1,1,1)
         with torch.no_grad():
             Rrr, Rii, Rri = self._safe_inv_sqrt_params(Crr, Cii, Cri)
 
-        # applica whiten (broadcast su (Cg,F,T))
         r_wh = Rrr * r + Rri * i
         i_wh = Rri * r + Rii * i
         x_wh = torch.complex(r_wh, i_wh)
 
-        # ricomponi (B,C,F,T)
         y = x_wh.view(B, C, F, T)
 
-        # affine per-canale con mixing Re/Im, come nel tuo BN
         if self.weight is not None:
             w_rr = self.weight[:, 0].view(1, C, 1, 1)
             w_ii = self.weight[:, 1].view(1, C, 1, 1)
-            w_ri = self.weight[:, 2].view(1, C, 1, 1)  # off-diagonale condivisa
+            w_ri = self.weight[:, 2].view(1, C, 1, 1)
             b_r  = self.bias[:, 0].view(1, C, 1, 1)
             b_i  = self.bias[:, 1].view(1, C, 1, 1)
-
             yr = y.real
             yi = y.imag
             y = torch.complex(
@@ -246,5 +241,9 @@ class ComplexGroupNorm2d(nn.Module):
                 w_ri * yr + w_ii * yi + b_i
             )
 
+        if original_3d:
+            y = y.squeeze(2)  # ritorna a (B,C,T)
         return y
+
+ComplexGroupNorm2d = ComplexGroupNorm
 

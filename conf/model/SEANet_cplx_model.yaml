@@ -14,9 +14,10 @@ model:
       norm: time_group_norm
       norm_params: { num_groups: 1 }
       causal: false
-      latent_fbins: 32
+      latent_fbins: 64
       dilation_base: 2
       seq_model: none
+      is_complex: true
   decoder:
     class: ar_spectra.models.autoencoders.SeaNET_AE.SEANetDecoder2d
     kwargs:
@@ -29,9 +30,10 @@ model:
       norm: time_group_norm
       norm_params: { num_groups: 1 }
       causal: false
-      latent_fbins: 32
+      latent_fbins: 64
       dilation_base: 2
       seq_model: none
+      is_complex: true
   bottleneck:
     class: ar_spectra.models.bottlenecks.VAEBottleneck
     skip_bottleneck: true

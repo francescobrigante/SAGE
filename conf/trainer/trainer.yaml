@@ -16,6 +16,7 @@ scheduler:
     warmup: 0.995
 
 trainer:
+  precision: 32-true
   epochs: 100
   amp: false
   log_interval: 1
@@ -35,7 +36,7 @@ trainer:
 wandb:
   project: ICML_2026
   name: SEANet_STFT_losses
-  use_wandb: false
+  use_wandb: true
 
 eval_loss_config:
   sisdr:

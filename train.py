@@ -20,6 +20,7 @@ from ar_spectra.training_utils.get_model_config import extract_model_config
 import wandb
 import time
 from pytorch_lightning.callbacks import Callback
+from pytorch_lightning.loggers import TensorBoardLogger
 console = Console()  
 
 def ok(msg):     console.print(msg, style="bold green")
@@ -224,7 +225,8 @@ def main(cfg: DictConfig):
     runs_dir.mkdir(parents=True, exist_ok=True)
 
     # Standard subdirectories
-    ckpt_dir = runs_dir / "checkpoints"
+    # Checkpoints fuori da runs (richiesta: cartella root 'checkpoints')
+    ckpt_dir = Path(get_original_cwd()) / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     profiler_dir = runs_dir / "profiler"
     profiler_dir.mkdir(parents=True, exist_ok=True)
@@ -347,15 +349,14 @@ def main(cfg: DictConfig):
     # W&B logger 
     wandb_cfg = (cfg.get("wandb", {}) or {})
     use_wandb = bool(wandb_cfg.get("use_wandb", False))
+    # Logger (W&B o TensorBoard) 
     logger = None
     if use_wandb:
-        logger = WandbLogger(
-            project=wandb_cfg.get("project", "ICML_2026"),
-            name=wandb_cfg.get("name", None),
-            log_model=False,
-            save_dir=str(runs_dir / "wandb"),
-            settings=wandb.Settings(_service_wait=7)
-        )
+        # NB: sezione W&B omessa; assicurarsi che WandbLogger usi save_dir=runs_dir
+        logger = WandbLogger(project=wandb_cfg.get("project", "ICML_2026"), name=wandb_cfg.get("name", "default_name"), 
+                             save_dir=str(runs_dir), log_model=False, settings=wandb.Settings(_service_wait=7))
+    else:
+        logger = TensorBoardLogger(save_dir=str(runs_dir), name="lightning_logs", version=None)
         try:
             run = logger.experiment
             # Update run config with parsed configuration
@@ -442,7 +443,20 @@ def main(cfg: DictConfig):
             profile_dataloader=True,
         )
 
-    # Trainer (imposta default_root_dir -> runs_dir)
+    # Warning for  bf16 precision with complex model: we will force conv to complex64
+    try:
+        requested_precision = str(cfg.get("trainer", {}).get("trainer", {}).get("precision", "32-true")).lower()
+    except Exception:
+        requested_precision = "32-true"
+    is_bf16 = ("bf16" in requested_precision)
+    try:
+        has_complex_params = any(p.is_complex() for p in autoenc.parameters())
+    except Exception:
+        has_complex_params = False
+    if is_bf16 and has_complex_params:
+        warn("bf16 + complex rilevato: la convoluzione userà torch.complex64 (complex-bfloat16 non supportato).")
+
+    # Trainer (sets default_root_dir -> runs_dir)
     trainer = Trainer(
         default_root_dir=str(runs_dir),
         accelerator=("gpu" if torch.cuda.is_available() else "cpu"),

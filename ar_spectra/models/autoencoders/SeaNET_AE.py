@@ -64,7 +64,8 @@ class SEANetResnetBlock2d(nn.Module):
             # print(in_chs, "_", out_chs) # 32 _ 16; 16 _ 32; 64 _ 32; 32 _ 64; etc until 256 _ 128; 128_ 256 for encode
             block += [
                 # act(**activation_params),
-                get_activation(activation, **{**activation_params, "channels": in_chs}),
+                # Pass is_complex so that complex activations (e.g., CELU) resolve from eulero.nn
+                get_activation(activation, is_complex=is_complex, **{**activation_params, "channels": in_chs}),
                 SConv2d(in_chs, out_chs, kernel_size=kernel_size, dilation=dilation,
                         norm=norm, norm_kwargs=norm_params,
                         causal=causal, pad_mode=pad_mode,
@@ -174,7 +175,7 @@ class SEANetEncoder2d(nn.Module):
             # Add downsampling layers
             model += [
                 # act(**activation_params),
-                get_activation(activation, **{**activation_params, "channels": mult * n_filters}),
+                get_activation(activation, is_complex=is_complex, **{**activation_params, "channels": mult * n_filters}),
                 SConv2d(mult * n_filters, mult * n_filters * 2,
                         kernel_size=(freq_ratio*2, time_ratio*2),
                         stride=(freq_ratio, time_ratio),
@@ -206,7 +207,7 @@ class SEANetEncoder2d(nn.Module):
         
         if mult * n_filters * latent_fbins > dimension and self.double_final_conv:
             model += [
-            get_activation(activation, **{**activation_params, "channels": mult * n_filters * latent_fbins}),
+            get_activation(activation, is_complex=is_complex, **{**activation_params, "channels": mult * n_filters * latent_fbins}),
             
             SConv1d(mult * n_filters * latent_fbins, 2*dimension, kernel_size=last_kernel_size,
                     norm=norm, norm_kwargs=norm_params,
@@ -219,7 +220,7 @@ class SEANetEncoder2d(nn.Module):
         else:   
             model += [
                 # act(**activation_params),
-                get_activation(activation, **{**activation_params, "channels": mult * n_filters * latent_fbins}),
+                get_activation(activation, is_complex=is_complex, **{**activation_params, "channels": mult * n_filters * latent_fbins}),
                 SConv1d(mult * n_filters * latent_fbins, dimension,
                         kernel_size=last_kernel_size,
                         norm=norm, norm_kwargs=norm_params,
@@ -335,7 +336,7 @@ class SEANetDecoder2d(nn.Module):
             # Add upsampling layers
             model += [
                 # act(**activation_params),
-                get_activation(activation, **{**activation_params, "channels": mult * n_filters}),
+                get_activation(activation, is_complex=is_complex, **{**activation_params, "channels": mult * n_filters}),
                 SConvTranspose2d(mult * n_filters, mult * n_filters // 2,
                                  kernel_size=(freq_ratio * 2, time_ratio * 2),
                                  stride=(freq_ratio, time_ratio),
@@ -359,7 +360,7 @@ class SEANetDecoder2d(nn.Module):
         # Add final layers
         model += [
             # act(**activation_params),
-            get_activation(activation, **{**activation_params, "channels": n_filters}),
+            get_activation(activation, is_complex=is_complex, **{**activation_params, "channels": n_filters}),
             SConv2d(n_filters, channels, last_kernel_size, norm=norm, norm_kwargs=norm_params,
                     causal=causal, pad_mode=pad_mode, is_complex=is_complex)
         ]
