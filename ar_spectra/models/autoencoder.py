@@ -10,6 +10,7 @@ import torch.nn as nn
 import warnings
 from .bottlenecks import VAEBottleneck, SkipBottleneck
 from rich.console import Console
+from ar_spectra.training_utils.pre_transform import create_pre_transform
 
 console = Console()
 def warn(msg):   console.print(msg, style="bold yellow")
@@ -55,6 +56,7 @@ class AutoEncoder(nn.Module):
         bottleneck: Optional[Union[nn.Module, Dict[str, Any], str, type]] = None,
 
         return_latent: bool = False,
+        pre_transform: Optional[Union[str, Dict[str, Any]]] = None,
     ) -> None:
         super().__init__()
         # Permette di passare direttamente istanze oppure specifiche/nomi di classe
@@ -74,6 +76,12 @@ class AutoEncoder(nn.Module):
             (_locate_class(bottleneck)() if isinstance(bottleneck, (str, type)) else bottleneck)
             if bottleneck is not None else None
         )
+        # Optional spectrogram normalization to be applied at encoder input and
+        # inverted after decoder output before losses/ISTFT.
+        try:
+            self.pre_transform = create_pre_transform(pre_transform)
+        except Exception:
+            self.pre_transform = None
         
         # Consistency checks encoder/decoder vs bottleneck 
         def _get_enc_dim(m):
@@ -131,10 +139,22 @@ class AutoEncoder(nn.Module):
             if iterate_batch:
                 latents = []
                 for i in range(audio.shape[0]):
-                    latents.append(self.encoder(audio[i:i+1]))
+                    x_i = audio[i:i+1]
+                    if getattr(self, "pre_transform", None) is not None:
+                        try:
+                            x_i = self.pre_transform.transform(x_i)
+                        except Exception:
+                            pass
+                    latents.append(self.encoder(x_i))
                 latents = torch.cat(latents, dim=0)
             else:
-                latents = self.encoder(audio)
+                x = audio
+                if getattr(self, "pre_transform", None) is not None:
+                    try:
+                        x = self.pre_transform.transform(x)
+                    except Exception:
+                        pass
+                latents = self.encoder(x)
         else:
             latents = audio
 
@@ -158,7 +178,8 @@ class AutoEncoder(nn.Module):
             if iterate_batch:
                 decoded = []
                 for i in range(latents.shape[0]):
-                    decoded.append(self.bottleneck.decode(latents[i:i+1]))
+                    dec_i = self.bottleneck.decode(latents[i:i+1])
+                    decoded.append(dec_i)
                 latents = torch.cat(decoded, dim=0)
             else:
                 latents = self.bottleneck.decode(latents)
@@ -166,10 +187,21 @@ class AutoEncoder(nn.Module):
         if iterate_batch:
             decoded = []
             for i in range(latents.shape[0]):
-                decoded.append(self.decoder(latents[i:i+1]))
+                y_i = self.decoder(latents[i:i+1], **kwargs)
+                if getattr(self, "pre_transform", None) is not None:
+                    try:
+                        y_i = self.pre_transform.inverse(y_i)
+                    except Exception:
+                        pass
+                decoded.append(y_i)
             decoded = torch.cat(decoded, dim=0)
         else:
             decoded = self.decoder(latents, **kwargs)
+            if getattr(self, "pre_transform", None) is not None:
+                try:
+                    decoded = self.pre_transform.inverse(decoded)
+                except Exception:
+                    pass
         
         return decoded
           
@@ -393,10 +425,10 @@ class AutoEncoder(nn.Module):
         bottleneck_spec = cfg.get("bottleneck", None)
 
         # It keeps only the keys supported by the AutoEncoder constructor
-        allowed_ae_keys = {"return_latent"}
+        allowed_ae_keys = {"return_latent", "pre_transform"}
         unknown = set(ae_kwargs.keys()) - allowed_ae_keys
         if unknown:
-            warn(f"AutoEncoder.from_config: ignoring unsupported autoencoder kwargs {sorted(unknown)}")
+            warn(f"AutoEncoder.from_config: ignoring unsupported keys in autoencoder: {sorted(list(unknown))}")
         ae_kwargs = {k: v for k, v in ae_kwargs.items() if k in allowed_ae_keys}
 
         # Decide skip from JSON only (unique source of truth)

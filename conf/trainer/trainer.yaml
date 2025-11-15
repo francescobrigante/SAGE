@@ -38,6 +38,13 @@ wandb:
   name: SEANet_STFT_losses
   use_wandb: true
 
+# Spectrogram normalization applied at encoder input and inverted at decoder output
+pre_transform:
+  type: log_mag
+  config:
+    eps: 1.0e-8
+    alpha: 1.0
+
 eval_loss_config:
   sisdr:
     zero_mean: true
