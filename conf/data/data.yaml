@@ -11,8 +11,8 @@ train_dataset:
     center: true
     normalized: false
     extensions: [".mp3"]
-    stereo: false
-    cac: true
+    stereo: true
+    cac: false
     skip_broken_files: true
     skip_criteria: ["sample_rate"]
 
@@ -37,8 +37,8 @@ eval_dataset:
     center: true
     normalized: false
     extensions: [".mp3"]
-    stereo: false
-    cac: true
+    stereo: true
+    cac: false
     skip_broken_files: true
     skip_criteria: ["sample_rate"]
 

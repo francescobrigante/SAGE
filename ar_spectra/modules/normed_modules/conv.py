@@ -8,18 +8,36 @@ from torch import nn
 from torch.nn import functional as F
 from torch.nn.utils import spectral_norm, weight_norm
 import complextorch.nn as cplx
-from .norm import ConvLayerNorm, ComplexWeightNorm, ComplexConvLayerNorm2d, ComplexConvLayerNorm1d, ComplexGroupNorm2d
+from .norm import ConvLayerNorm, ComplexWeightNorm, ComplexConvLayerNorm2d, ComplexConvLayerNorm1d, ComplexGroupNorm
 
 CONV_NORMALIZATIONS = frozenset(['none', 'weight_norm', 'spectral_norm',
                                  'time_layer_norm', 'layer_norm', 'time_group_norm', 
                                  "batch_norm"])
 
+
+def _resolve_complex_dtype(preferred_real: tp.Optional[torch.dtype]) -> torch.dtype:
+    """Map real precision to complex precision.
+    - float16  -> complex32 (if available) else complex64
+    - float32  -> complex64
+    - float64  -> complex128
+    - bfloat16 -> complex64 (complex-bf16 not supported)
+    - None     -> complex64
+    """
+    if preferred_real in (torch.float16, torch.half):
+        return getattr(torch, 'complex32', torch.complex64)
+    if preferred_real in (torch.float32, torch.float):
+        return torch.complex64
+    if preferred_real in (torch.float64, torch.double):
+        return torch.complex128
+    if preferred_real == torch.bfloat16:
+        return torch.complex64
+    return torch.complex64
+
 # self.conv = apply_parametrization_norm(nn.Conv1d(*args, **kwargs), norm)
 def apply_parametrization_norm(module: nn.Module, norm: str = 'none', is_complex: bool = False) -> nn.Module:
     assert norm in CONV_NORMALIZATIONS
-    if getattr(module, 'weight', None) is not None and module.weight.is_complex():
-        return nn.Identity()
     if norm == 'weight_norm':
+        # Use complex-aware reparam only when explicitly requested
         return ComplexWeightNorm(module) if is_complex else weight_norm(module)
     elif norm == 'spectral_norm':
         if is_complex:
@@ -27,8 +45,7 @@ def apply_parametrization_norm(module: nn.Module, norm: str = 'none', is_complex
         else:
             return spectral_norm(module)
     else:
-        # We already check was in CONV_NORMALIZATION, so any other choice
-        # doesn't need reparametrization.
+        # Any other choice doesn't need reparametrization
         return module
 
 
@@ -38,9 +55,16 @@ def get_norm_module(module: nn.Module, causal: bool = False, norm: str = 'none',
     """
     assert norm in CONV_NORMALIZATIONS
     if norm == "batch_norm":
+        # Default to 2D BN for time-frequency tensors; extend if needed
         return cplx.BatchNorm2d(module.out_channels, **norm_kwargs) if is_complex else nn.BatchNorm2d(module.out_channels, **norm_kwargs)
     if norm == 'layer_norm':
-        return ConvLayerNorm(module.out_channels, **norm_kwargs) if not is_complex else ComplexConvLayerNorm2d(module.out_channels, **norm_kwargs)
+        if is_complex:
+            if isinstance(module, nn.Conv1d):
+                return ComplexConvLayerNorm1d(module.out_channels, **norm_kwargs)
+            else:
+                return ComplexConvLayerNorm2d(module.out_channels, **norm_kwargs)
+        else:
+            return ConvLayerNorm(module.out_channels, **norm_kwargs)
     elif norm == 'time_group_norm':
         if causal:
             raise ValueError("GroupNorm doesn't support causal evaluation.")
@@ -48,7 +72,10 @@ def get_norm_module(module: nn.Module, causal: bool = False, norm: str = 'none',
         num_groups = 1
         if "num_groups" in norm_kwargs:
             num_groups = norm_kwargs.pop("num_groups")
-        return nn.GroupNorm(num_groups, module.out_channels, **norm_kwargs) if not is_complex else ComplexGroupNorm2d
+        if is_complex:
+            return ComplexGroupNorm(module.out_channels, num_groups, **norm_kwargs)
+        else:
+            return nn.GroupNorm(num_groups, module.out_channels, **norm_kwargs)
     else:
         return nn.Identity()
 
@@ -147,7 +174,13 @@ class NormConv1d(nn.Module):
     def __init__(self, *args, causal: bool = False, norm: str = 'none', is_complex: bool = False,
                  norm_kwargs: tp.Dict[str, tp.Any] = {}, **kwargs):
         super().__init__()
-        self.conv = apply_parametrization_norm(nn.Conv1d(*args, **kwargs), norm, is_complex=is_complex)
+        # ensure dtype kwarg for complex convs
+        kw = dict(kwargs)
+        if is_complex and ('dtype' not in kw or kw['dtype'] is None):
+            # try to infer from bias/weight if provided in factory args; else default
+            real_pref = torch.get_default_dtype()
+            kw['dtype'] = _resolve_complex_dtype(real_pref)
+        self.conv = apply_parametrization_norm(nn.Conv1d(*args, **kw), norm, is_complex=is_complex)
         self.norm = get_norm_module(self.conv, causal, norm, is_complex=is_complex, **norm_kwargs)
         self.norm_type = norm
 
@@ -170,7 +203,11 @@ class NormConv2d(nn.Module):
     def __init__(self, *args, causal: bool = False, norm: str = 'none', is_complex: bool = False,
                  norm_kwargs: tp.Dict[str, tp.Any] = {}, **kwargs):
         super().__init__()
-        self.conv = apply_parametrization_norm(nn.Conv2d(*args, **kwargs), norm, is_complex=is_complex)
+        kw = dict(kwargs)
+        if is_complex and ('dtype' not in kw or kw['dtype'] is None):
+            real_pref = torch.get_default_dtype()
+            kw['dtype'] = _resolve_complex_dtype(real_pref)
+        self.conv = apply_parametrization_norm(nn.Conv2d(*args, **kw), norm, is_complex=is_complex)
         self.norm = get_norm_module(self.conv, causal, norm, is_complex=is_complex, **norm_kwargs)
         self.norm_type = norm
 
@@ -189,7 +226,11 @@ class NormConvTranspose1d(nn.Module):
     def __init__(self, *args, causal: bool = False, norm: str = 'none', is_complex: bool = False,
                  norm_kwargs: tp.Dict[str, tp.Any] = {}, **kwargs):
         super().__init__()
-        self.convtr = apply_parametrization_norm(nn.ConvTranspose1d(*args, **kwargs), norm, is_complex=is_complex)
+        kw = dict(kwargs)
+        if is_complex and ('dtype' not in kw or kw['dtype'] is None):
+            real_pref = torch.get_default_dtype()
+            kw['dtype'] = _resolve_complex_dtype(real_pref)
+        self.convtr = apply_parametrization_norm(nn.ConvTranspose1d(*args, **kw), norm, is_complex=is_complex)
         self.norm = get_norm_module(self.convtr, causal, norm, is_complex=is_complex, **norm_kwargs)
         self.norm_type = norm
 
@@ -208,7 +249,11 @@ class NormConvTranspose2d(nn.Module):
     def __init__(self, *args, causal: bool = False, norm: str = 'none', is_complex: bool = False,
                  norm_kwargs: tp.Dict[str, tp.Any] = {}, **kwargs):
         super().__init__()
-        self.convtr = apply_parametrization_norm(nn.ConvTranspose2d(*args, **kwargs), norm, is_complex=is_complex)
+        kw = dict(kwargs)
+        if is_complex and ('dtype' not in kw or kw['dtype'] is None):
+            real_pref = torch.get_default_dtype()
+            kw['dtype'] = _resolve_complex_dtype(real_pref)
+        self.convtr = apply_parametrization_norm(nn.ConvTranspose2d(*args, **kw), norm, is_complex=is_complex)
         self.norm = get_norm_module(self.convtr, causal, norm, is_complex=is_complex, **norm_kwargs)
 
     def forward(self, x):
