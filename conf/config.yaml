@@ -1,15 +1,814 @@
-# Top-level Hydra composition file
-# You can override any group from CLI, e.g.:
-#   python train.py trainer.epochs=10 data.train_dataloader.batch_size=4
-# Legacy fallback: set trainer.use_json=true trainer.json_path=ar_spectra/config/experiments/SEANet_STFT.json
-
-defaults:
-  - data: data
-  - model: SEANet_cplx_model
-  - trainer: trainer
-  - _self_
-
-hydra:
-  run:
-    dir: runs                               # only 'runs' directory
-  output_subdir: null                       # no subdir added
+_wandb:
+    value:
+        cli_version: 0.23.0
+        e:
+            2nugvcmbdsvbnga5or5m58ny6tkmc9p9:
+                codePath: train.py
+                codePathLocal: train.py
+                cpu_count: 8
+                cpu_count_logical: 8
+                cudaVersion: "12.4"
+                disk:
+                    /:
+                        total: "983347249152"
+                        used: "848766513152"
+                email: cerovaz.2159104@studenti.uniroma1.it
+                executable: /home/cerovaz/repos/ICML/Eulero_BackBone/.venv/bin/python
+                git:
+                    commit: 4ec7cf6babccdd4e6f158ef36424f442899d8144
+                    remote: https://github.com/CerovazS/Eulero_BackBone.git
+                gpu: NVIDIA GeForce RTX 3090
+                gpu_count: 2
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 10496
+                      memoryTotal: "25769803776"
+                      name: NVIDIA GeForce RTX 3090
+                      uuid: GPU-8eed0e25-daa2-baa4-5598-85f907abfaee
+                    - architecture: Turing
+                      cudaCores: 4352
+                      memoryTotal: "11811160064"
+                      name: NVIDIA GeForce RTX 2080 Ti
+                      uuid: GPU-4985ffff-f61d-3bd0-f6d9-76d359f207b7
+                host: gauss
+                memory:
+                    total: "67358851072"
+                os: Linux-6.11.0-26-generic-x86_64-with-glibc2.39
+                program: /home/cerovaz/repos/ICML/Eulero_BackBone/train.py
+                python: CPython 3.10.17
+                root: /home/cerovaz/repos/ICML/Eulero_BackBone/runs
+                startedAt: "2025-11-16T21:33:41.300146Z"
+                writerId: 2nugvcmbdsvbnga5or5m58ny6tkmc9p9
+        m:
+            - "1": trainer/global_step
+              "6":
+                - 3
+              "7": []
+            - "2": '*'
+              "5": 1
+              "6":
+                - 1
+              "7": []
+        python_version: 3.10.17
+        t:
+            "1":
+                - 1
+                - 9
+                - 41
+                - 50
+                - 53
+                - 103
+            "2":
+                - 1
+                - 9
+                - 41
+                - 50
+                - 53
+                - 103
+            "3":
+                - 3
+                - 7
+                - 13
+                - 61
+                - 66
+            "4": 3.10.17
+            "5": 0.23.0
+            "12": 0.23.0
+            "13": linux-x86_64
+model_info:
+    value:
+        class: AutoEncoder
+        model_bytes: 64320024
+        model_total_bytes: 64320024
+        modules:
+            - encoder:SEANetEncoder2d
+            - encoder.model:Sequential
+            - encoder.model.0:SConv2d
+            - encoder.model.0.conv:NormConv2d
+            - encoder.model.0.conv.conv:ComplexWeightNorm
+            - encoder.model.0.conv.conv.module:Conv2d
+            - encoder.model.0.conv.norm:Identity
+            - encoder.model.1:SEANetResnetBlock2d
+            - encoder.model.1.block:Sequential
+            - encoder.model.1.block.0:CReLU
+            - encoder.model.1.block.0.relu:ReLU
+            - encoder.model.1.block.1:SConv2d
+            - encoder.model.1.block.1.conv:NormConv2d
+            - encoder.model.1.block.1.conv.conv:ComplexWeightNorm
+            - encoder.model.1.block.1.conv.conv.module:Conv2d
+            - encoder.model.1.block.1.conv.norm:Identity
+            - encoder.model.1.block.2:CReLU
+            - encoder.model.1.block.2.relu:ReLU
+            - encoder.model.1.block.3:SConv2d
+            - encoder.model.1.block.3.conv:NormConv2d
+            - encoder.model.1.block.3.conv.conv:ComplexWeightNorm
+            - encoder.model.1.block.3.conv.conv.module:Conv2d
+            - encoder.model.1.block.3.conv.norm:Identity
+            - encoder.model.1.shortcut:SConv2d
+            - encoder.model.1.shortcut.conv:NormConv2d
+            - encoder.model.1.shortcut.conv.conv:ComplexWeightNorm
+            - encoder.model.1.shortcut.conv.conv.module:Conv2d
+            - encoder.model.1.shortcut.conv.norm:Identity
+            - encoder.model.2:CReLU
+            - encoder.model.2.relu:ReLU
+            - encoder.model.3:SConv2d
+            - encoder.model.3.conv:NormConv2d
+            - encoder.model.3.conv.conv:ComplexWeightNorm
+            - encoder.model.3.conv.conv.module:Conv2d
+            - encoder.model.3.conv.norm:Identity
+            - encoder.model.4:SEANetResnetBlock2d
+            - encoder.model.4.block:Sequential
+            - encoder.model.4.block.0:CReLU
+            - encoder.model.4.block.0.relu:ReLU
+            - encoder.model.4.block.1:SConv2d
+            - encoder.model.4.block.1.conv:NormConv2d
+            - encoder.model.4.block.1.conv.conv:ComplexWeightNorm
+            - encoder.model.4.block.1.conv.conv.module:Conv2d
+            - encoder.model.4.block.1.conv.norm:Identity
+            - encoder.model.4.block.2:CReLU
+            - encoder.model.4.block.2.relu:ReLU
+            - encoder.model.4.block.3:SConv2d
+            - encoder.model.4.block.3.conv:NormConv2d
+            - encoder.model.4.block.3.conv.conv:ComplexWeightNorm
+            - encoder.model.4.block.3.conv.conv.module:Conv2d
+            - encoder.model.4.block.3.conv.norm:Identity
+            - encoder.model.4.shortcut:SConv2d
+            - encoder.model.4.shortcut.conv:NormConv2d
+            - encoder.model.4.shortcut.conv.conv:ComplexWeightNorm
+            - encoder.model.4.shortcut.conv.conv.module:Conv2d
+            - encoder.model.4.shortcut.conv.norm:Identity
+            - encoder.model.5:CReLU
+            - encoder.model.5.relu:ReLU
+            - encoder.model.6:SConv2d
+            - encoder.model.6.conv:NormConv2d
+            - encoder.model.6.conv.conv:ComplexWeightNorm
+            - encoder.model.6.conv.conv.module:Conv2d
+            - encoder.model.6.conv.norm:Identity
+            - encoder.model.7:SEANetResnetBlock2d
+            - encoder.model.7.block:Sequential
+            - encoder.model.7.block.0:CReLU
+            - encoder.model.7.block.0.relu:ReLU
+            - encoder.model.7.block.1:SConv2d
+            - encoder.model.7.block.1.conv:NormConv2d
+            - encoder.model.7.block.1.conv.conv:ComplexWeightNorm
+            - encoder.model.7.block.1.conv.conv.module:Conv2d
+            - encoder.model.7.block.1.conv.norm:Identity
+            - encoder.model.7.block.2:CReLU
+            - encoder.model.7.block.2.relu:ReLU
+            - encoder.model.7.block.3:SConv2d
+            - encoder.model.7.block.3.conv:NormConv2d
+            - encoder.model.7.block.3.conv.conv:ComplexWeightNorm
+            - encoder.model.7.block.3.conv.conv.module:Conv2d
+            - encoder.model.7.block.3.conv.norm:Identity
+            - encoder.model.7.shortcut:SConv2d
+            - encoder.model.7.shortcut.conv:NormConv2d
+            - encoder.model.7.shortcut.conv.conv:ComplexWeightNorm
+            - encoder.model.7.shortcut.conv.conv.module:Conv2d
+            - encoder.model.7.shortcut.conv.norm:Identity
+            - encoder.model.8:CReLU
+            - encoder.model.8.relu:ReLU
+            - encoder.model.9:SConv2d
+            - encoder.model.9.conv:NormConv2d
+            - encoder.model.9.conv.conv:ComplexWeightNorm
+            - encoder.model.9.conv.conv.module:Conv2d
+            - encoder.model.9.conv.norm:Identity
+            - encoder.model.10:PackFreqIntoChannels
+            - encoder.model.11:CReLU
+            - encoder.model.11.relu:ReLU
+            - encoder.model.12:SConv1d
+            - encoder.model.12.conv:NormConv1d
+            - encoder.model.12.conv.conv:ComplexWeightNorm
+            - encoder.model.12.conv.conv.module:Conv1d
+            - encoder.model.12.conv.norm:Identity
+            - decoder:SEANetDecoder2d
+            - decoder.model:Sequential
+            - decoder.model.0:SConv1d
+            - decoder.model.0.conv:NormConv1d
+            - decoder.model.0.conv.conv:ComplexWeightNorm
+            - decoder.model.0.conv.conv.module:Conv1d
+            - decoder.model.0.conv.norm:Identity
+            - decoder.model.1:UnpackFreqFromChannels
+            - decoder.model.2:CReLU
+            - decoder.model.2.relu:ReLU
+            - decoder.model.3:SConvTranspose2d
+            - decoder.model.3.convtr:NormConvTranspose2d
+            - decoder.model.3.convtr.convtr:ComplexWeightNorm
+            - decoder.model.3.convtr.convtr.module:ConvTranspose2d
+            - decoder.model.3.convtr.norm:Identity
+            - decoder.model.4:SEANetResnetBlock2d
+            - decoder.model.4.block:Sequential
+            - decoder.model.4.block.0:CReLU
+            - decoder.model.4.block.0.relu:ReLU
+            - decoder.model.4.block.1:SConv2d
+            - decoder.model.4.block.1.conv:NormConv2d
+            - decoder.model.4.block.1.conv.conv:ComplexWeightNorm
+            - decoder.model.4.block.1.conv.conv.module:Conv2d
+            - decoder.model.4.block.1.conv.norm:Identity
+            - decoder.model.4.block.2:CReLU
+            - decoder.model.4.block.2.relu:ReLU
+            - decoder.model.4.block.3:SConv2d
+            - decoder.model.4.block.3.conv:NormConv2d
+            - decoder.model.4.block.3.conv.conv:ComplexWeightNorm
+            - decoder.model.4.block.3.conv.conv.module:Conv2d
+            - decoder.model.4.block.3.conv.norm:Identity
+            - decoder.model.4.shortcut:SConv2d
+            - decoder.model.4.shortcut.conv:NormConv2d
+            - decoder.model.4.shortcut.conv.conv:ComplexWeightNorm
+            - decoder.model.4.shortcut.conv.conv.module:Conv2d
+            - decoder.model.4.shortcut.conv.norm:Identity
+            - decoder.model.5:CReLU
+            - decoder.model.5.relu:ReLU
+            - decoder.model.6:SConvTranspose2d
+            - decoder.model.6.convtr:NormConvTranspose2d
+            - decoder.model.6.convtr.convtr:ComplexWeightNorm
+            - decoder.model.6.convtr.convtr.module:ConvTranspose2d
+            - decoder.model.6.convtr.norm:Identity
+            - decoder.model.7:SEANetResnetBlock2d
+            - decoder.model.7.block:Sequential
+            - decoder.model.7.block.0:CReLU
+            - decoder.model.7.block.0.relu:ReLU
+            - decoder.model.7.block.1:SConv2d
+            - decoder.model.7.block.1.conv:NormConv2d
+            - decoder.model.7.block.1.conv.conv:ComplexWeightNorm
+            - decoder.model.7.block.1.conv.conv.module:Conv2d
+            - decoder.model.7.block.1.conv.norm:Identity
+            - decoder.model.7.block.2:CReLU
+            - decoder.model.7.block.2.relu:ReLU
+            - decoder.model.7.block.3:SConv2d
+            - decoder.model.7.block.3.conv:NormConv2d
+            - decoder.model.7.block.3.conv.conv:ComplexWeightNorm
+            - decoder.model.7.block.3.conv.conv.module:Conv2d
+            - decoder.model.7.block.3.conv.norm:Identity
+            - decoder.model.7.shortcut:SConv2d
+            - decoder.model.7.shortcut.conv:NormConv2d
+            - decoder.model.7.shortcut.conv.conv:ComplexWeightNorm
+            - decoder.model.7.shortcut.conv.conv.module:Conv2d
+            - decoder.model.7.shortcut.conv.norm:Identity
+            - decoder.model.8:CReLU
+            - decoder.model.8.relu:ReLU
+            - decoder.model.9:SConvTranspose2d
+            - decoder.model.9.convtr:NormConvTranspose2d
+            - decoder.model.9.convtr.convtr:ComplexWeightNorm
+            - decoder.model.9.convtr.convtr.module:ConvTranspose2d
+            - decoder.model.9.convtr.norm:Identity
+            - decoder.model.10:SEANetResnetBlock2d
+            - decoder.model.10.block:Sequential
+            - decoder.model.10.block.0:CReLU
+            - decoder.model.10.block.0.relu:ReLU
+            - decoder.model.10.block.1:SConv2d
+            - decoder.model.10.block.1.conv:NormConv2d
+            - decoder.model.10.block.1.conv.conv:ComplexWeightNorm
+            - decoder.model.10.block.1.conv.conv.module:Conv2d
+            - decoder.model.10.block.1.conv.norm:Identity
+            - decoder.model.10.block.2:CReLU
+            - decoder.model.10.block.2.relu:ReLU
+            - decoder.model.10.block.3:SConv2d
+            - decoder.model.10.block.3.conv:NormConv2d
+            - decoder.model.10.block.3.conv.conv:ComplexWeightNorm
+            - decoder.model.10.block.3.conv.conv.module:Conv2d
+            - decoder.model.10.block.3.conv.norm:Identity
+            - decoder.model.10.shortcut:SConv2d
+            - decoder.model.10.shortcut.conv:NormConv2d
+            - decoder.model.10.shortcut.conv.conv:ComplexWeightNorm
+            - decoder.model.10.shortcut.conv.conv.module:Conv2d
+            - decoder.model.10.shortcut.conv.norm:Identity
+            - decoder.model.11:CReLU
+            - decoder.model.11.relu:ReLU
+            - decoder.model.12:SConv2d
+            - decoder.model.12.conv:NormConv2d
+            - decoder.model.12.conv.conv:ComplexWeightNorm
+            - decoder.model.12.conv.conv.module:Conv2d
+            - decoder.model.12.conv.norm:Identity
+            - bottleneck:SkipBottleneck
+        num_parameters_total: 16080006
+        num_parameters_trainable: 16080006
+        repr: |-
+            AutoEncoder(
+              (encoder): SEANetEncoder2d(
+                (model): Sequential(
+                  (0): SConv2d(
+                    (conv): NormConv2d(
+                      (conv): ComplexWeightNorm(
+                        ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                        (module): Conv2d(2, 16, kernel_size=(7, 7), stride=(1, 1))
+                      )
+                      (norm): Identity()
+                    )
+                  )
+                  (1): SEANetResnetBlock2d(
+                    (block): Sequential(
+                      (0): CReLU(
+                        (relu): ReLU()
+                      )
+                      (1): SConv2d(
+                        (conv): NormConv2d(
+                          (conv): ComplexWeightNorm(
+                            ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                            (module): Conv2d(16, 8, kernel_size=(3, 3), stride=(1, 1))
+                          )
+                          (norm): Identity()
+                        )
+                      )
+                      (2): CReLU(
+                        (relu): ReLU()
+                      )
+                      (3): SConv2d(
+                        (conv): NormConv2d(
+                          (conv): ComplexWeightNorm(
+                            ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                            (module): Conv2d(8, 16, kernel_size=(1, 1), stride=(1, 1))
+                          )
+                          (norm): Identity()
+                        )
+                      )
+                    )
+                    (shortcut): SConv2d(
+                      (conv): NormConv2d(
+                        (conv): ComplexWeightNorm(
+                          ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                          (module): Conv2d(16, 16, kernel_size=(1, 1), stride=(1, 1))
+                        )
+                        (norm): Identity()
+                      )
+                    )
+                  )
+                  (2): CReLU(
+                    (relu): ReLU()
+                  )
+                  (3): SConv2d(
+                    (conv): NormConv2d(
+                      (conv): ComplexWeightNorm(
+                        ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                        (module): Conv2d(16, 32, kernel_size=(8, 4), stride=(4, 2))
+                      )
+                      (norm): Identity()
+                    )
+                  )
+                  (4): SEANetResnetBlock2d(
+                    (block): Sequential(
+                      (0): CReLU(
+                        (relu): ReLU()
+                      )
+                      (1): SConv2d(
+                        (conv): NormConv2d(
+                          (conv): ComplexWeightNorm(
+                            ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                            (module): Conv2d(32, 16, kernel_size=(3, 3), stride=(1, 1))
+                          )
+                          (norm): Identity()
+                        )
+                      )
+                      (2): CReLU(
+                        (relu): ReLU()
+                      )
+                      (3): SConv2d(
+                        (conv): NormConv2d(
+                          (conv): ComplexWeightNorm(
+                            ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                            (module): Conv2d(16, 32, kernel_size=(1, 1), stride=(1, 1))
+                          )
+                          (norm): Identity()
+                        )
+                      )
+                    )
+                    (shortcut): SConv2d(
+                      (conv): NormConv2d(
+                        (conv): ComplexWeightNorm(
+                          ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                          (module): Conv2d(32, 32, kernel_size=(1, 1), stride=(1, 1))
+                        )
+                        (norm): Identity()
+                      )
+                    )
+                  )
+                  (5): CReLU(
+                    (relu): ReLU()
+                  )
+                  (6): SConv2d(
+                    (conv): NormConv2d(
+                      (conv): ComplexWeightNorm(
+                        ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                        (module): Conv2d(32, 64, kernel_size=(2, 4), stride=(1, 2))
+                      )
+                      (norm): Identity()
+                    )
+                  )
+                  (7): SEANetResnetBlock2d(
+                    (block): Sequential(
+                      (0): CReLU(
+                        (relu): ReLU()
+                      )
+                      (1): SConv2d(
+                        (conv): NormConv2d(
+                          (conv): ComplexWeightNorm(
+                            ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                            (module): Conv2d(64, 32, kernel_size=(3, 3), stride=(1, 1))
+                          )
+                          (norm): Identity()
+                        )
+                      )
+                      (2): CReLU(
+                        (relu): ReLU()
+                      )
+                      (3): SConv2d(
+                        (conv): NormConv2d(
+                          (conv): ComplexWeightNorm(
+                            ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                            (module): Conv2d(32, 64, kernel_size=(1, 1), stride=(1, 1))
+                          )
+                          (norm): Identity()
+                        )
+                      )
+                    )
+                    (shortcut): SConv2d(
+                      (conv): NormConv2d(
+                        (conv): ComplexWeightNorm(
+                          ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                          (module): Conv2d(64, 64, kernel_size=(1, 1), stride=(1, 1))
+                        )
+                        (norm): Identity()
+                      )
+                    )
+                  )
+                  (8): CReLU(
+                    (relu): ReLU()
+                  )
+                  (9): SConv2d(
+                    (conv): NormConv2d(
+                      (conv): ComplexWeightNorm(
+                        ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                        (module): Conv2d(64, 128, kernel_size=(8, 4), stride=(4, 2))
+                      )
+                      (norm): Identity()
+                    )
+                  )
+                  (10): PackFreqIntoChannels()
+                  (11): CReLU(
+                    (relu): ReLU()
+                  )
+                  (12): SConv1d(
+                    (conv): NormConv1d(
+                      (conv): ComplexWeightNorm(
+                        ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                        (module): Conv1d(8192, 64, kernel_size=(7,), stride=(1,))
+                      )
+                      (norm): Identity()
+                    )
+                  )
+                )
+              )
+              (decoder): SEANetDecoder2d(
+                (model): Sequential(
+                  (0): SConv1d(
+                    (conv): NormConv1d(
+                      (conv): ComplexWeightNorm(
+                        ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                        (module): Conv1d(64, 8192, kernel_size=(7,), stride=(1,))
+                      )
+                      (norm): Identity()
+                    )
+                  )
+                  (1): UnpackFreqFromChannels()
+                  (2): CReLU(
+                    (relu): ReLU()
+                  )
+                  (3): SConvTranspose2d(
+                    (convtr): NormConvTranspose2d(
+                      (convtr): ComplexWeightNorm(
+                        ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                        (module): ConvTranspose2d(128, 64, kernel_size=(8, 4), stride=(4, 2))
+                      )
+                      (norm): Identity()
+                    )
+                  )
+                  (4): SEANetResnetBlock2d(
+                    (block): Sequential(
+                      (0): CReLU(
+                        (relu): ReLU()
+                      )
+                      (1): SConv2d(
+                        (conv): NormConv2d(
+                          (conv): ComplexWeightNorm(
+                            ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                            (module): Conv2d(64, 32, kernel_size=(3, 3), stride=(1, 1))
+                          )
+                          (norm): Identity()
+                        )
+                      )
+                      (2): CReLU(
+                        (relu): ReLU()
+                      )
+                      (3): SConv2d(
+                        (conv): NormConv2d(
+                          (conv): ComplexWeightNorm(
+                            ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                            (module): Conv2d(32, 64, kernel_size=(1, 1), stride=(1, 1))
+                          )
+                          (norm): Identity()
+                        )
+                      )
+                    )
+                    (shortcut): SConv2d(
+                      (conv): NormConv2d(
+                        (conv): ComplexWeightNorm(
+                          ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                          (module): Conv2d(64, 64, kernel_size=(1, 1), stride=(1, 1))
+                        )
+                        (norm): Identity()
+                      )
+                    )
+                  )
+                  (5): CReLU(
+                    (relu): ReLU()
+                  )
+                  (6): SConvTranspose2d(
+                    (convtr): NormConvTranspose2d(
+                      (convtr): ComplexWeightNorm(
+                        ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                        (module): ConvTranspose2d(64, 32, kernel_size=(2, 4), stride=(1, 2))
+                      )
+                      (norm): Identity()
+                    )
+                  )
+                  (7): SEANetResnetBlock2d(
+                    (block): Sequential(
+                      (0): CReLU(
+                        (relu): ReLU()
+                      )
+                      (1): SConv2d(
+                        (conv): NormConv2d(
+                          (conv): ComplexWeightNorm(
+                            ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                            (module): Conv2d(32, 16, kernel_size=(3, 3), stride=(1, 1))
+                          )
+                          (norm): Identity()
+                        )
+                      )
+                      (2): CReLU(
+                        (relu): ReLU()
+                      )
+                      (3): SConv2d(
+                        (conv): NormConv2d(
+                          (conv): ComplexWeightNorm(
+                            ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                            (module): Conv2d(16, 32, kernel_size=(1, 1), stride=(1, 1))
+                          )
+                          (norm): Identity()
+                        )
+                      )
+                    )
+                    (shortcut): SConv2d(
+                      (conv): NormConv2d(
+                        (conv): ComplexWeightNorm(
+                          ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                          (module): Conv2d(32, 32, kernel_size=(1, 1), stride=(1, 1))
+                        )
+                        (norm): Identity()
+                      )
+                    )
+                  )
+                  (8): CReLU(
+                    (relu): ReLU()
+                  )
+                  (9): SConvTranspose2d(
+                    (convtr): NormConvTranspose2d(
+                      (convtr): ComplexWeightNorm(
+                        ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                        (module): ConvTranspose2d(32, 16, kernel_size=(8, 4), stride=(4, 2))
+                      )
+                      (norm): Identity()
+                    )
+                  )
+                  (10): SEANetResnetBlock2d(
+                    (block): Sequential(
+                      (0): CReLU(
+                        (relu): ReLU()
+                      )
+                      (1): SConv2d(
+                        (conv): NormConv2d(
+                          (conv): ComplexWeightNorm(
+                            ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                            (module): Conv2d(16, 8, kernel_size=(3, 3), stride=(1, 1))
+                          )
+                          (norm): Identity()
+                        )
+                      )
+                      (2): CReLU(
+                        (relu): ReLU()
+                      )
+                      (3): SConv2d(
+                        (conv): NormConv2d(
+                          (conv): ComplexWeightNorm(
+                            ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                            (module): Conv2d(8, 16, kernel_size=(1, 1), stride=(1, 1))
+                          )
+                          (norm): Identity()
+                        )
+                      )
+                    )
+                    (shortcut): SConv2d(
+                      (conv): NormConv2d(
+                        (conv): ComplexWeightNorm(
+                          ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                          (module): Conv2d(16, 16, kernel_size=(1, 1), stride=(1, 1))
+                        )
+                        (norm): Identity()
+                      )
+                    )
+                  )
+                  (11): CReLU(
+                    (relu): ReLU()
+                  )
+                  (12): SConv2d(
+                    (conv): NormConv2d(
+                      (conv): ComplexWeightNorm(
+                        ComplexWeightNorm(name=weight, dim=0, eps=1e-12)
+                        (module): Conv2d(16, 2, kernel_size=(7, 7), stride=(1, 1))
+                      )
+                      (norm): Identity()
+                    )
+                  )
+                )
+              )
+              (bottleneck): SkipBottleneck()
+            )
+parsed_config:
+    value:
+        demo:
+            every_n_epochs: 1
+            istft_params:
+                center: true
+                fft_size: 2048
+                hop_length: 512
+                normalized: false
+                sample_rate: 44100
+                target_frames: 128
+                win_length: 2048
+            max_demos: 7
+            save_basename: recon_val
+            target_seconds: 1
+        device: cuda
+        eval_dataloader:
+            batch_size: 16
+            num_workers: 8
+            persistent_workers: false
+            pin_memory: false
+            pin_memory_device: cuda
+            prefetch_factor: 8
+            shuffle: false
+        eval_dataset:
+            class: ar_spectra.dataset.OnTheFlySTFTDataset
+            kwargs:
+                audio_dir: /home/cerovaz/repos/data/jamendo_full/eval
+                cac: false
+                center: true
+                extensions:
+                    - .mp3
+                hop_length: 512
+                n_fft: 2048
+                normalized: false
+                sample_rate: 44100
+                skip_broken_files: true
+                skip_criteria:
+                    - sample_rate
+                stereo: true
+                target_frames: 128
+                win_length: 2048
+        eval_loss_config:
+            mel:
+                fft_size: 2048
+                hop_size: 512
+                n_mels: 128
+                win_length: 2048
+            sisdr:
+                reduction: mean
+                zero_mean: true
+            stft:
+                fft_size: 2048
+                hop_size: 512
+                sample_rate: 44100
+                win_length: 2048
+        loss_config:
+            spectral:
+                stft_mse:
+                    config:
+                        reduction: mean
+                weights:
+                    stft_mse: 1
+        model:
+            autoencoder:
+                return_latent: false
+            bottleneck:
+                class: ar_spectra.models.bottlenecks.VAEBottleneck
+                skip_bottleneck: true
+            decoder:
+                class: ar_spectra.models.autoencoders.SeaNET_AE.SEANetDecoder2d
+                kwargs:
+                    activation: CReLU
+                    causal: false
+                    channels: 2
+                    dilation_base: 2
+                    input_size: 64
+                    is_complex: true
+                    latent_fbins: 64
+                    n_filters: 16
+                    n_residual_layers: 1
+                    norm: weight_norm
+                    norm_params:
+                        num_groups: 1
+                    ratios:
+                        - - 4
+                          - 2
+                        - - 1
+                          - 2
+                        - - 4
+                          - 2
+                    seq_model: none
+            encoder:
+                class: ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d
+                kwargs:
+                    activation: CReLU
+                    causal: false
+                    dilation_base: 2
+                    dimension: 64
+                    input_size: 2
+                    is_complex: true
+                    latent_fbins: 64
+                    n_filters: 16
+                    n_residual_layers: 1
+                    norm: weight_norm
+                    norm_params:
+                        num_groups: 1
+                    ratios:
+                        - - 4
+                          - 2
+                        - - 1
+                          - 2
+                        - - 4
+                          - 2
+                    seq_model: none
+        optimizer:
+            config:
+                lr: 0.0003
+                weight_decay: 0.001
+            type: AdamW
+        pre_transform:
+            config:
+                alpha: 1
+                eps: 1e-08
+            type: none
+        scheduler:
+            config:
+                inv_gamma: 30000
+                power: 0.5
+                warmup: 0
+            type: InverseLR
+        seed: 94
+        train_dataloader:
+            batch_size: 16
+            num_workers: 8
+            persistent_workers: false
+            pin_memory: false
+            pin_memory_device: cuda
+            prefetch_factor: 8
+            shuffle: true
+        train_dataset:
+            class: ar_spectra.dataset.OnTheFlySTFTDataset
+            kwargs:
+                audio_dir: /home/cerovaz/repos/data/jamendo_full/train
+                cac: false
+                center: true
+                extensions:
+                    - .mp3
+                hop_length: 512
+                n_fft: 2048
+                normalized: false
+                sample_rate: 44100
+                skip_broken_files: true
+                skip_criteria:
+                    - sample_rate
+                stereo: true
+                target_frames: 128
+                win_length: 2048
+        trainer:
+            amp: false
+            check_val_every_n_epoch: 1
+            ckpt_dir: checkpoints/seanet_stft
+            encoder_freeze_on_warmup: false
+            epochs: 100
+            log_interval: 1
+            log_model_structure: true
+            num_gpus: 1
+            num_sanity_val_steps: 0
+            precision: 32-true
+            profile: false
+            profiler_dir: lightning_profiler
+            save_every_n_epochs: 5
+            strategy: auto
+            val_check_interval: null
+            warmup_mode: adv
+            warmup_steps: 0
+        wandb:
+            name: SEANet_STFT_losses
+            project: ICML_2026
+            use_wandb: true

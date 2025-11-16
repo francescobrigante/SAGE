@@ -355,9 +355,72 @@ def main(cfg: DictConfig):
     # Logger (W&B o TensorBoard) 
     logger = None
     if use_wandb:
-        # NB: sezione W&B omessa; assicurarsi che WandbLogger usi save_dir=runs_dir
+
         logger = WandbLogger(project=wandb_cfg.get("project", "ICML_2026"), name=wandb_cfg.get("name", "default_name"), 
                              save_dir=str(runs_dir), log_model=False, settings=wandb.Settings(_service_wait=7))
+        # Log YAML configuration files used for the run (Hydra mode) or legacy JSON.
+        try:
+            run = logger.experiment
+            # Always attach parsed unified configuration
+            run.config.update({"parsed_config": cfg}, allow_val_change=True)
+
+            original_cwd = Path(get_original_cwd())
+            if is_json_mode:
+                # Legacy JSON mode: save the original JSON and the parsed unified config
+                legacy_path_obj = Path(legacy_path) if 'legacy_path' in locals() and legacy_path else None
+                # Opzione per salvare localmente anche nella cartella media (solo se richiesto)
+                store_local = bool(wandb_cfg.get("store_local_configs", False))
+                configs_local_dir = media_dir / f"configs_{run.id}" if store_local else None
+                if store_local:
+                    configs_local_dir.mkdir(parents=True, exist_ok=True)
+                # Parsed unified config JSON
+                parsed_cfg_path = (configs_local_dir / "parsed_config.json") if store_local else (original_cwd / "conf" / "parsed_config.json")
+                parsed_cfg_path.write_text(json.dumps(cfg, indent=2))
+                run.save(str(parsed_cfg_path), base_path=str(parsed_cfg_path.parent))
+                # Original legacy JSON
+                if legacy_path_obj is not None and legacy_path_obj.exists():
+                    legacy_copy_path = (configs_local_dir / "legacy_experiment.json") if store_local else legacy_path_obj
+                    if store_local:
+                        legacy_copy_path.write_text(legacy_path_obj.read_text())
+                    run.save(str(legacy_copy_path), base_path=str(legacy_copy_path.parent))
+                ok("W&B: uploaded legacy JSON configuration files (no duplicate outside media dir).")
+            else:
+                # Hydra mode: save top-level config plus data/model/trainer YAMLs
+                hydra_root = original_cwd / "conf"
+                yaml_targets = []
+                # Main composed config (config.yaml)
+                yaml_targets.append(hydra_root / "config.yaml")
+                # Data
+                yaml_targets.append(hydra_root / "data" / "data.yaml")
+                # Trainer
+                yaml_targets.append(hydra_root / "trainer" / "trainer.yaml")
+                # All model yaml variants (upload all to capture selected + alternatives)
+                model_dir = hydra_root / "model"
+                if model_dir.exists():
+                    for mf in sorted(model_dir.glob("*.yaml")):
+                        yaml_targets.append(mf)
+                # Decide if we create local copies under media/ or only register originals
+                store_local = bool(wandb_cfg.get("store_local_configs", False))
+                configs_local_dir = media_dir / f"configs_{run.id}" if store_local else None
+                if store_local:
+                    configs_local_dir.mkdir(parents=True, exist_ok=True)
+                uploaded = 0
+                for src in yaml_targets:
+                    if not src.exists():
+                        continue
+                    if store_local:
+                        # Copy into media/<run-id>/configs
+                        dst = configs_local_dir / src.name
+                        dst.write_text(src.read_text())
+                        run.save(str(dst), base_path=str(dst.parent))
+                    else:
+                        # Register original file directly without duplicating in CWD
+                        run.save(str(src), base_path=str(src.parent))
+                    uploaded += 1
+                mode_msg = "(stored locally under media/)" if store_local else "(only on W&B; originals referenced)"
+                ok(f"W&B: uploaded {uploaded} Hydra YAML file(s) {mode_msg}.")
+        except Exception as e:
+            warn(f"W&B YAML/JSON config upload failed ({type(e).__name__}: {e})")
     else:
         logger = TensorBoardLogger(save_dir=str(runs_dir), name="lightning_logs", version=None)
         try:
