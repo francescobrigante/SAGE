@@ -4,6 +4,7 @@ from ..interface.aeiou import pca_point_cloud
 import wandb
 import torch
 import os
+import warnings
 
 def get_rank():
     """Get rank of current process."""
@@ -121,9 +122,13 @@ def log_image(logger, key, img_data):
         logger.experiment.log_image(img_data, name=key)
 
 def log_point_cloud(logger, key, tokens, caption=None):
-    if isinstance(logger, WandbLogger):
-        point_cloud = pca_point_cloud(tokens)
-        logger.experiment.log({key: point_cloud})
-    elif isinstance(logger, CometLogger):
-        point_cloud = pca_point_cloud(tokens, rgb_float=True, output_type="points")
-        #logger.experiment.log_points_3d(scene_name=key, points=point_cloud)
+    try:
+        if isinstance(logger, WandbLogger):
+            point_cloud = pca_point_cloud(tokens)  
+            logger.experiment.log({key: point_cloud})
+        elif isinstance(logger, CometLogger):
+            point_cloud = pca_point_cloud(tokens, rgb_float=True, output_type="points")
+            # logger.experiment.log_points_3d(scene_name=key, points=point_cloud)
+    except Exception as e:
+        warnings.warn(f"Skipping point cloud logging: {type(e).__name__}: {e}")
+        pass
