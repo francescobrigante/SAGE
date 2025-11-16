@@ -29,6 +29,45 @@ console = Console()
 def ok(msg):     console.print(msg, style="bold green")
 def warn(msg):   console.print(msg, style="bold yellow")
 
+def _save_audio_with_fallback(path: str, wav_chxn: torch.Tensor, sr: int) -> bool:
+    """
+    Salva audio tentando nell'ordine:
+      1) torchaudio.save (usa TorchCodec; può fallire per FFmpeg/TorchCodec)
+      2) soundfile (libsndfile)
+      3) scipy.io.wavfile.write
+    wav_chxn: (C, N) float32 su CPU o GPU
+    """
+    # Assicurati di avere (C, N) float32 CPU
+    wav = wav_chxn.detach().to(torch.float32).cpu().contiguous()
+    # 1) torchaudio
+    try:
+        import torchaudio as _ta
+        _ta.save(path, wav, sr, encoding="PCM_F", bits_per_sample=32)
+        return True
+    except Exception as e:
+        warn(f"torchaudio.save failed ({type(e).__name__}: {e}); trying soundfile...")
+
+    # 2) soundfile
+    try:
+        import soundfile as sf
+        data = wav.transpose(0, 1).numpy()  # (N, C)
+        sf.write(path, data, sr, subtype="FLOAT")
+        return True
+    except Exception as e:
+        warn(f"soundfile write failed ({type(e).__name__}: {e}); trying scipy...")
+
+    # 3) scipy
+    try:
+        from scipy.io.wavfile import write as wavwrite
+        data = wav.transpose(0, 1).numpy().astype("float32")  # (N, C)
+        wavwrite(path, sr, data)
+        return True
+    except Exception as e:
+        warn(f"scipy.io.wavfile.write failed ({type(e).__name__}: {e})")
+        warn(f"Failed to save audio to '{path}' with torchaudio/soundfile/scipy.")
+        return False
+    
+    
 def trim_to_shortest(a, b):
     """Trim the longer of two tensors to the length of the shorter one."""
     if a.shape[-1] > b.shape[-1]:
@@ -476,19 +515,21 @@ class AutoencoderValDemoCallback(pl.Callback):
             # Converti a float32 per il salvataggio
             wav_reals_fakes_f32 = reals_fakes.detach().to(torch.float32).cpu()
             wav_input_encoder_istft_f32 = encoder_input_istft.detach().to(torch.float32).cpu()
-            # use float PCM (no int quantization). Values already scaled to <=1.0
-            torchaudio.save(filename_input_encoder_istft, wav_input_encoder_istft_f32, sr, encoding="PCM_F", bits_per_sample=32)
-            torchaudio.save(filename, wav_reals_fakes_f32, sr, encoding="PCM_F", bits_per_sample=32)
+
+            # Prova prima torchaudio (TorchCodec), poi fallback a soundfile/scipy
+            saved_enc = _save_audio_with_fallback(filename_input_encoder_istft, wav_input_encoder_istft_f32, sr)
+            saved_rec = _save_audio_with_fallback(filename, wav_reals_fakes_f32, sr)
 
             # logging
             from .utils import log_audio, log_image, log_point_cloud
             from ..interface.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 
-            log_audio(trainer.logger, 'val/recon', filename, sr)
-            log_audio(trainer.logger, 'val/input_encoder_istft', filename_input_encoder_istft, sr)
+            if saved_rec:
+                log_audio(trainer.logger, 'val/recon', filename, sr)
+            if saved_enc:
+                log_audio(trainer.logger, 'val/input_encoder_istft', filename_input_encoder_istft, sr)
             lat_to_log = latents[0] if isinstance(latents, (tuple, list)) else latents
             log_point_cloud(trainer.logger, 'val/embeddings_3dpca', lat_to_log)
             log_image(trainer.logger, 'val/embeddings_spec', tokens_spectrogram_image(lat_to_log))
             log_image(trainer.logger, 'val/recon_melspec_left', audio_spectrogram_image(reals_fakes))
-            
-            
+
