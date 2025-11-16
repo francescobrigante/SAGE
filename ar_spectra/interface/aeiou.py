@@ -18,8 +18,8 @@ def _to_real_features(tokens: torch.Tensor) -> torch.Tensor:
     """
     If tokens are complex, convert to real by stacking [real, imag] along channel/feature dim.
     Shapes handled:
-      - (B, D, N) -> (B, 2*D, N)
-      - (B, C, F, T) -> (B, 2*C, F, T)
+    - (B, D, N) -> (B, 2*D, N)
+    - (B, C, F, T) -> (B, 2*C, F, T)
     """
     if torch.is_complex(tokens):
         if tokens.dim() == 3:         # (B, D, N)
