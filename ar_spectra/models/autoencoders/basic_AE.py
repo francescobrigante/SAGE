@@ -1,12 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from ar_spectra.modules.normed_modules.conv import SConv1d, SConvTranspose2d, SConvTranspose1d, SConv2d
 
 class ResidualBlock(nn.Module):
     """
     A simple residual block with two convolutional layers.
     """
-    def __init__(self, channels):
+    def __init__(self, channels, activation = "ELU", norm = "weight_norm"):
         super().__init__()
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
         self.norm1 = nn.GroupNorm(num_groups=1, num_channels=channels)
@@ -25,24 +26,30 @@ class SimpleSpectrogramEncoder(nn.Module):
     """
     Encodes a spectrogram by downsampling frequency and time, increasing channels.
     """
-    def __init__(self, input_size, dimension=128, n_residual_layers=2):
+    def __init__(self, input_size, dimension=128, n_residual_layers=2, is_complex=False, use_sconv =False):
         super().__init__()
         self.input_size = input_size
         self.dimension = dimension
-        
+        self.is_complex = is_complex
+        self.use_sconv = use_sconv
+        if use_sconv:
+            Conv2dLayer = SConv2d
+        else:
+            Conv2dLayer = nn.Conv2d
+
         # Initial convolution to increase channel dimension
-        self.in_conv = nn.Conv2d(input_size, 8, kernel_size=5, padding=2)
-        self.big_rf = nn.Conv2d(8, 8, kernel_size=(31, 5), padding=(15, 2))
+        self.in_conv = Conv2dLayer(input_size, 8, kernel_size=5, padding=2)
+        self.big_rf = Conv2dLayer(8, 8, kernel_size=(31, 5), padding=(15, 2))
         self.in_residual = nn.Sequential(*[ResidualBlock(8) for _ in range(n_residual_layers)])
         
         # Downsampling stages
         self.down_block1 = nn.Sequential(
-            nn.Conv2d(8, 16, kernel_size=6, stride=(4, 4), padding=1), # F/2, T/2
+            Conv2dLayer(8, 16, kernel_size=6, stride=(4, 4), padding=1), # F/2, T/2
             nn.GroupNorm(1, 16),
             nn.ELU()
         )
         self.down_block2 = nn.Sequential(
-            nn.Conv2d(16, dimension, kernel_size=6, stride=(4, 4), padding=1), # F/4, T/4
+            Conv2dLayer(16, dimension, kernel_size=6, stride=(4, 4), padding=1), # F/4, T/4
             nn.GroupNorm(1, dimension),
             nn.ELU()
         )
@@ -66,10 +73,19 @@ class SimpleSpectrogramDecoder(nn.Module):
     """
     Decodes a latent representation back to a spectrogram.
     """
-    def __init__(self, input_size, channels, n_residual_layers=2):
+    def __init__(self, input_size, channels, n_residual_layers=2, is_complex=False, use_sconv=False):
         super().__init__()
         self.input_size = input_size
         self.channels = channels
+        self.is_complex = is_complex
+        self.use_sconv = use_sconv
+        if use_sconv:
+            ConvTranspose2dLayer = SConvTranspose2d
+            ConvTranspose1dLayer = SConvTranspose1d
+        else:
+            ConvTranspose2dLayer = nn.ConvTranspose2d
+            ConvTranspose1dLayer = nn.ConvTranspose1d
+            
 
         # Residual blocks
         self.residuals = nn.Sequential(
@@ -78,12 +94,12 @@ class SimpleSpectrogramDecoder(nn.Module):
 
         # Upsampling stages
         self.up_block1 = nn.Sequential(
-            nn.ConvTranspose2d(input_size, 16, kernel_size=6, stride=(4, 4), padding=1), # F*2, T*2
+            ConvTranspose2dLayer(input_size, 16, kernel_size=6, stride=(4, 4), padding=1), # F*2, T*2
             nn.GroupNorm(1, 16),
             nn.ELU()
         )
         self.up_block2 = nn.Sequential(
-            nn.ConvTranspose2d(16, 8, kernel_size=6, stride=(4, 4), padding=1, output_padding=(1,0)), # F*4, T*4
+            ConvTranspose2dLayer(16, 8, kernel_size=6, stride=(4, 4), padding=1, output_padding=(1,0)), # F*4, T*4
             nn.GroupNorm(1, 8),
             nn.ELU()
         )
@@ -91,8 +107,8 @@ class SimpleSpectrogramDecoder(nn.Module):
             *[ResidualBlock(8) for _ in range(n_residual_layers)]
         )
         # Final convolution to match output channels
-        self.big_rf = nn.Conv2d(8, 8, kernel_size=(31, 5), padding=(15, 2))
-        self.out_conv = nn.Conv2d(8, channels, kernel_size=5, padding=2)
+        self.big_rf = ConvTranspose2dLayer(8, 8, kernel_size=(31, 5), padding=(15, 2))
+        self.out_conv = ConvTranspose2dLayer(8, channels, kernel_size=5, padding=2)
 
     def forward(self, x):
         # x shape: (B, C_latent, F_latent, T_latent)
