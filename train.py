@@ -21,6 +21,7 @@ import wandb
 import time
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.loggers import TensorBoardLogger
+from typing import Dict, List
 console = Console()  
 
 def ok(msg):     console.print(msg, style="bold green")
@@ -115,6 +116,42 @@ def _decide_pin_memory(requested, dataset, batch_size, num_workers: int = 0, pre
 def load_json(path: str):
     with open(path, "r") as f:
         return json.load(f)
+
+class WandbConfigLogger:
+    """Utility per caricare l'intera cartella di configurazione Hydra su W&B.
+    - Non crea copie locali dei file
+    - Logga ogni file come testo (chiave: conf/<relative_path>) in un singolo step (commit=False)
+    - Facoltativamente può creare un artifact (non richiesto ora)
+    """
+    def __init__(self, conf_root: Path, extensions: tuple = (".yaml", ".yml")):
+        self.conf_root = conf_root
+        self.extensions = extensions
+
+    def list_files(self) -> List[Path]:
+        if not self.conf_root.exists():
+            return []
+        return [p for p in self.conf_root.rglob("*") if p.is_file() and p.suffix in self.extensions]
+
+    def load_contents(self) -> Dict[str, str]:
+        files = self.list_files()
+        out: Dict[str, str] = {}
+        for f in files:
+            try:
+                rel = f.relative_to(self.conf_root)
+                key = f"conf/{rel.as_posix()}"
+                out[key] = f.read_text()
+            except Exception as e:
+                warn(f"Skip file {f} ({type(e).__name__}: {e})")
+        return out
+
+    def log_to_wandb(self, run):
+        data = self.load_contents()
+        if not data:
+            warn("Nessun file di configurazione trovato da loggare su W&B.")
+            return
+        # Log come singolo dict; commit=False evita step prematuro
+        run.log(data, commit=False)
+        ok(f"Loggata cartella conf su W&B ({len(data)} files).")
 
 class DatasetEpochSetter(pl.Callback):
     def __init__(self, dataset):
@@ -358,6 +395,13 @@ def main(cfg: DictConfig):
         # NB: sezione W&B omessa; assicurarsi che WandbLogger usi save_dir=runs_dir
         logger = WandbLogger(project=wandb_cfg.get("project", "ICML_2026"), name=wandb_cfg.get("name", "default_name"), 
                              save_dir=str(runs_dir), log_model=False, settings=wandb.Settings(_service_wait=7))
+        # Upload immediato dell'intera cartella di configurazione Hydra su W&B (senza copie locali)
+        try:
+            run = logger.experiment
+            conf_root = Path(get_original_cwd()) / "conf"
+            WandbConfigLogger(conf_root).log_to_wandb(run)
+        except Exception as e:
+            warn(f"Upload dir conf on W&B failed ({type(e).__name__}: {e})")
     else:
         logger = TensorBoardLogger(save_dir=str(runs_dir), name="lightning_logs", version=None)
         try:
