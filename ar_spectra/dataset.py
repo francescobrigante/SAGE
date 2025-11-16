@@ -60,14 +60,13 @@ class OnTheFlySTFTDataset(Dataset):
         max_pad_ratio: float = 0.05,
         extensions: Optional[Sequence[str]] = None,
         stereo: bool = True,
-        cac: bool = False,  # complex-as-channels
+        cac: bool = False,
         seed: int = 42,
         dtype: torch.dtype = torch.complex64,
         skip_broken_files: Union[bool, Sequence[str]] = True,
         skip_criteria: Optional[Sequence[str]] = None,
         max_t_retries: int = 2,
         max_replacements: int = 8,
-        # NEW: target_length in frames (preferred). Kept `length` as legacy alias.
         length: Optional[int] = None,
         target_frames: Optional[int] = None,
     ):
@@ -179,6 +178,8 @@ class OnTheFlySTFTDataset(Dataset):
         self._reset_rng()
         # Flag for warning about channel mismatch
         self._warned_channel_mismatch: int = 0
+        # NEW: flag per warning singolo sul fallback mp3
+        self._warned_torchaudio_mp3_partial_fail: int = 0
 
     def _reset_rng(self):
         mixed = (self._base_seed & 0xFFFFFFFF) ^ ((self._epoch * 0x9E3779B1) & 0xFFFFFFFF)
@@ -286,43 +287,72 @@ class OnTheFlySTFTDataset(Dataset):
 
         # se non abbiamo un probe affidabile, fallback semplice
         if self._probe_fn is None or suffix != ".mp3":
-            wav, sr = self._load_waveform(path)    # load completo
-            seg = self._random_crop_or_pad(wav, generator=gen)    # crop/pad (use gen)
-            return seg.to(torch.float32), sr
-
-        # qui: MP3 con probe disponibile
-        try:
-            src_sr, total_frames, _ch = self._probe_fn(path)
-        except Exception:
-            # Ultimo fallback
             wav, sr = self._load_waveform(path)
             seg = self._random_crop_or_pad(wav, generator=gen)
             return seg.to(torch.float32), sr
 
-        # se troppo corto rispetto alla tua soglia, lascia che venga filtrato prima
+        # MP3 con probe
+        try:
+            src_sr, total_frames, _ch = self._probe_fn(path)
+        except Exception:
+            wav, sr = self._load_waveform(path)
+            seg = self._random_crop_or_pad(wav, generator=gen)
+            return seg.to(torch.float32), sr
+
         if total_frames < self.segment_samples:
             raise RuntimeError("MP3 too short; should have been filtered earlier.")
 
-        # offset casuale nello spazio dei frame della sorgente (usa il generator passato)
         start = int(torch.randint(
             0, total_frames - self.segment_samples + 1,
             (1,), generator=gen
         ).item())
 
-        wav, sr = torchaudio.load(
-            str(path),
-            frame_offset=start,
-            num_frames=self.segment_samples,
-            normalize=True
-        )
-        wav = self._match_channels(wav).to(torch.float32)
+        try:
+            wav, sr = torchaudio.load(
+                str(path),
+                frame_offset=start,
+                num_frames=self.segment_samples,
+                normalize=True
+            )
+        except Exception as e:
+            # Fallback una sola volta
+            if self._warned_torchaudio_mp3_partial_fail == 0:
+                warn(f"Torchaudio MP3 partial load failed: {e}. Falling back to librosa (only shown once).")
+                self._warned_torchaudio_mp3_partial_fail = 1
+            try:
+                import librosa
+                offset_sec = start / max(src_sr, 1)
+                duration_sec = self.segment_samples / max(src_sr, 1)
+                # Carica senza resampling, poi gestiamo noi
+                y, lr_sr = librosa.load(
+                    str(path),
+                    sr=None,
+                    mono=False,
+                    offset=offset_sec,
+                    duration=duration_sec
+                )
+                y = torch.from_numpy(y)
+                if y.ndim == 1:
+                    y = y.unsqueeze(0)  # mono -> (1,N)
+                wav = y.to(torch.float32)
+                sr = int(lr_sr)
+                # Se la durata è inferiore e accettabile, pad simmetrico
+                cur_len = wav.shape[-1]
+                if cur_len < self.segment_samples:
+                    if cur_len >= self.min_acceptable_len:
+                        pad_needed = self.segment_samples - cur_len
+                        left = pad_needed // 2
+                        right = pad_needed - left
+                        wav = F.pad(wav, (left, right), mode="constant", value=0.0)
+                    else:
+                        raise RuntimeError("Librosa fallback segment too short.")
+            except Exception as e2:
+                raise RuntimeError(f"Librosa fallback for MP3 partial load failed: {e2}") from e
 
-        # In teoria, con skip_broken_files=True SR e canali sono già allineati.
-        # Manteniamo un resample difensivo se il controllo non è attivo.
+        wav = self._match_channels(wav).to(torch.float32)
         if sr != self.sample_rate and "sample_rate" not in self.skip_criteria:
             wav = torchaudio.functional.resample(wav, sr, self.sample_rate)
             sr = self.sample_rate
-
         return wav, sr
 
     def __getitem__(self, index: int) -> torch.Tensor:
