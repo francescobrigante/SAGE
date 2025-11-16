@@ -94,3 +94,11 @@ checkpoints/last.ckpt
 checkpoints/last.ckpt
 checkpoints/last.ckpt
 test_model_size.py
+outputs/2025-11-16/22-40-48/train.log
+outputs/2025-11-16/22-40-48/.hydra/config.yaml
+outputs/2025-11-16/22-40-48/.hydra/hydra.yaml
+outputs/2025-11-16/22-40-48/.hydra/overrides.yaml
+outputs/2025-11-16/22-41-10/train.log
+outputs/2025-11-16/22-41-10/.hydra/config.yaml
+outputs/2025-11-16/22-41-10/.hydra/hydra.yaml
+outputs/2025-11-16/22-41-10/.hydra/overrides.yaml
