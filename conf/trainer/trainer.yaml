@@ -24,6 +24,7 @@ trainer:
   profile: false
   check_val_every_n_epoch: 1
   save_every_n_epochs: 5
+  num_sanity_val_steps: 0
   log_model_structure: true
   warmup_steps: 0
   warmup_mode: adv
@@ -40,7 +41,7 @@ wandb:
 
 # Spectrogram normalization applied at encoder input and inverted at decoder output
 pre_transform:
-  type: log_mag
+  type: none          # none | log_mag |
   config:
     eps: 1.0e-8
     alpha: 1.0
