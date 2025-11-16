@@ -1,92 +1,134 @@
+from pytorch_lightning.loggers import WandbLogger, CometLogger
+from ..interface.aeiou import pca_point_cloud
+
+import wandb
 import torch
-import math
-from torch import nn
-from einops import rearrange
+import os
+import warnings
 
-class DynamicLossWeighting(nn.Module):
-    def __init__(self, init_val = 1.0):
-        super().__init__()
-        self.loss_weight = nn.Parameter(torch.tensor(init_val))
-    def forward(self, loss):
-        return loss / torch.exp(self.loss_weight) + self.loss_weight
+def get_rank():
+    """Get rank of current process."""
 
-def flat_pairwise_sq_distance(x, y):
-    """
-    Compute pairwise squared Euclidean distances for flat tensors.
+    print(os.environ.keys())
+
+    if "SLURM_PROCID" in os.environ:
+        return int(os.environ["SLURM_PROCID"])
+
+    if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+        return 0
+
+    return torch.distributed.get_rank()
+
+class InverseLR(torch.optim.lr_scheduler._LRScheduler):
+    """Implements an inverse decay learning rate schedule with an optional exponential
+    warmup. When last_epoch=-1, sets initial lr as lr.
+    inv_gamma is the number of steps/epochs required for the learning rate to decay to
+    (1 / 2)**power of its original value.
     Args:
-        x: Tensor of shape (B, D)
-        y: Tensor of shape (B, D)
-    Returns:
-        dist_sq: Tensor of shape (B, B)
+        optimizer (Optimizer): Wrapped optimizer.
+        inv_gamma (float): Inverse multiplicative factor of learning rate decay. Default: 1.
+        power (float): Exponential factor of learning rate decay. Default: 1.
+        warmup (float): Exponential warmup factor (0 <= warmup < 1, 0 to disable)
+            Default: 0.
+        final_lr (float): The final learning rate. Default: 0.
+        last_epoch (int): The index of last epoch. Default: -1.
     """
-    x_norm = (x ** 2).mean(dim=1, keepdim=True)  # (B, 1)
-    y_norm = (y ** 2).mean(dim=1, keepdim=True).transpose(0, 1)  # (1, B)
-    return (x_norm + y_norm - 2.0 * torch.mm(x, y.t())/ x.shape[1] ) 
 
-def multi_bandwidth_kernel_2d(x, y, bandwidths):
-    """
-    Compute the sum of Gaussian kernels (with different bandwidths) between two flat tensors.
-    Args:
-        x: Tensor of shape (B, D)
-        y: Tensor of shape (B, D)
-        bandwidths: Iterable of scalar bandwidth values.
-    Returns:
-        kernel: Tensor of shape (B, B)
-    """
-    dist_sq = flat_pairwise_sq_distance(x, y).clip(min = 0.0)
-    kernel_sum = 0.0
-    for bw in bandwidths:
-        #kernel_sum += torch.exp(-dist_sq / (2.0 * bw))
-        kernel_sum += (1/(1 + dist_sq / ( 2 * bw))).mean()
-    return kernel_sum / len(bandwidths)
+    def __init__(self, optimizer, inv_gamma=1., power=1., warmup=0., final_lr=0.,
+                 last_epoch=-1):
+        self.inv_gamma = inv_gamma
+        self.power = power
+        if not 0. <= warmup < 1:
+            raise ValueError('Invalid value for warmup')
+        self.warmup = warmup
+        self.final_lr = final_lr
+        super().__init__(optimizer, last_epoch)
 
-def mmd_loss_flat(x, y, bandwidths):
-    """
-    Compute the MMD loss between two flat sets of vectors.
-    Args:
-        x: Tensor of shape (B, D)
-        y: Tensor of shape (B, D)
-        bandwidths: Iterable of bandwidth values.
-    Returns:
-        loss: Scalar tensor representing the MMD loss.
-    """
-    K_xx = multi_bandwidth_kernel_2d(x, x, bandwidths)
-    K_yy = multi_bandwidth_kernel_2d(y, y, bandwidths)
-    K_xy = multi_bandwidth_kernel_2d(x, y, bandwidths)
-    loss = K_xx + K_yy - 2.0 * K_xy
-    return loss
+    def get_lr(self):
+        if not self._get_lr_called_within_step:
+            import warnings
+            warnings.warn("To get the last learning rate computed by the scheduler, "
+                          "please use `get_last_lr()`.")
 
-def mmd(x, y, bandwidths =[1], dim = None):
-    """
-    Compute the MMD loss along a chosen feature axis by collapsing all other dimensions.
-    
+        return self._get_closed_form_lr()
+
+    def _get_closed_form_lr(self):
+        warmup = 1 - self.warmup ** (self.last_epoch + 1)
+        lr_mult = (1 + self.last_epoch / self.inv_gamma) ** -self.power
+        return [warmup * max(self.final_lr, base_lr * lr_mult)
+                for base_lr in self.base_lrs]
+
+def create_optimizer_from_config(optimizer_config, parameters):
+    """Create optimizer from config.
+
     Args:
-        x: Tensor of arbitrary shape.
-        y: Tensor of the same shape as x.
-        bandwidths: Iterable of scalar bandwidth values for the kernel.
-        dim: The axis index that should be treated as the feature dimension.
-        
+        parameters (iterable): parameters to optimize.
+        optimizer_config (dict): optimizer config.
+
     Returns:
-        Scalar tensor representing the MMD loss computed on the flattened representations.
+        torch.optim.Optimizer: optimizer.
     """
-    if dim is None:
-        dim_product = math.prod(x.shape[1:])
-        new_shape = (-1, dim_product)
-        x_flat = x.reshape(new_shape)
-        y_flat = y.reshape(new_shape)
+
+    optimizer_type = optimizer_config["type"]
+
+    if optimizer_type == "FusedAdam":
+        from deepspeed.ops.adam import FusedAdam
+        optimizer = FusedAdam(parameters, **optimizer_config["config"])
     else:
-        dims = list(range(x.dim()))
-        dims.pop(dim)
-        dims.append(dim)
-        x_perm = x.permute(*dims)
-        y_perm = y.permute(*dims)
-        # Collapse all dimensions except the last one.
-        new_shape = (-1, x_perm.size(-1))
-        x_flat = x_perm.reshape(new_shape)
-        y_flat = y_perm.reshape(new_shape)
-    return mmd_loss_flat(x_flat, y_flat, bandwidths)
+        optimizer_fn = getattr(torch.optim, optimizer_type)
+        optimizer = optimizer_fn(parameters, **optimizer_config["config"])
+    return optimizer
 
-def grouped_mmd(x, y, bandwidths = [1], groups = 2):
-    grouped_x = rearrange(x, '... (g f) t -> ... g (f t)', g = groups)
-    grouped_y = rearrange(y, '... (g f) t -> ... g (f t)', g = groups)
-    return mmd(grouped_x, grouped_y, bandwidths, dim = None)
+def create_scheduler_from_config(scheduler_config, optimizer):
+    """Create scheduler from config.
+
+    Args:
+        scheduler_config (dict): scheduler config.
+        optimizer (torch.optim.Optimizer): optimizer.
+
+    Returns:
+        torch.optim.lr_scheduler._LRScheduler: scheduler.
+    """
+    if scheduler_config["type"] == "InverseLR":
+        scheduler_fn = InverseLR
+    else:
+        scheduler_fn = getattr(torch.optim.lr_scheduler, scheduler_config["type"])
+    scheduler = scheduler_fn(optimizer, **scheduler_config["config"])
+    return scheduler
+
+def logger_project_name(logger) -> str:
+    if isinstance(logger, WandbLogger):
+        return logger.experiment.project
+    elif isinstance(logger, CometLogger):
+        return logger.name
+
+def log_metric(logger, key, value, step=None):
+    from pytorch_lightning.loggers import WandbLogger, CometLogger
+    if isinstance(logger, WandbLogger):
+        logger.experiment.log({key: value})
+    elif isinstance(logger, CometLogger):
+        logger.experiment.log_metrics({key: value}, step=step)
+
+def log_audio(logger, key, audio_path, sample_rate, caption=None):
+    if isinstance(logger, WandbLogger):
+        logger.experiment.log({key: wandb.Audio(audio_path, sample_rate=sample_rate, caption=caption)})
+    elif isinstance(logger, CometLogger):
+        logger.experiment.log_audio(audio_path, file_name=key, sample_rate=sample_rate)
+
+def log_image(logger, key, img_data):
+    if isinstance(logger, WandbLogger):
+        logger.experiment.log({key: wandb.Image(img_data)})
+    elif isinstance(logger, CometLogger):
+        logger.experiment.log_image(img_data, name=key)
+
+def log_point_cloud(logger, key, tokens, caption=None):
+    try:
+        if isinstance(logger, WandbLogger):
+            point_cloud = pca_point_cloud(tokens)  
+            logger.experiment.log({key: point_cloud})
+        elif isinstance(logger, CometLogger):
+            point_cloud = pca_point_cloud(tokens, rgb_float=True, output_type="points")
+            # logger.experiment.log_points_3d(scene_name=key, points=point_cloud)
+    except Exception as e:
+        warnings.warn(f"Skipping point cloud logging: {type(e).__name__}: {e}")
+        pass
