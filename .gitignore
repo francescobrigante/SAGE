@@ -93,3 +93,4 @@ checkpoints/last.ckpt
 checkpoints/last.ckpt
 checkpoints/last.ckpt
 checkpoints/last.ckpt
+test_model_size.py

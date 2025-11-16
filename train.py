@@ -148,6 +148,7 @@ class ModelInfoLogger(pl.Callback):
         # Console output: parameter summary + structure
         console.rule("[bold cyan]Model info")
         console.print(f"params total/trainable: {info.get('num_parameters_total')}/{info.get('num_parameters_trainable')}")
+        console.print(f"model size (bytes): {info.get('model_bytes')}")
         console.rule("[bold cyan]Model structure")
         model_cfg = extract_model_config(model)
         if self.log_structure:
