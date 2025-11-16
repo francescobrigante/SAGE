@@ -315,15 +315,11 @@ class OnTheFlySTFTDataset(Dataset):
                 normalize=True
             )
         except Exception as e:
-            # Fallback una sola volta
-            if self._warned_torchaudio_mp3_partial_fail == 0:
-                warn(f"Torchaudio MP3 partial load failed: {e}. Falling back to librosa (only shown once).")
-                self._warned_torchaudio_mp3_partial_fail = 1
+            # Silent fallback: try librosa without printing warnings; only raise if it also fails
             try:
                 import librosa
                 offset_sec = start / max(src_sr, 1)
                 duration_sec = self.segment_samples / max(src_sr, 1)
-                # Carica senza resampling, poi gestiamo noi
                 y, lr_sr = librosa.load(
                     str(path),
                     sr=None,
@@ -336,7 +332,6 @@ class OnTheFlySTFTDataset(Dataset):
                     y = y.unsqueeze(0)  # mono -> (1,N)
                 wav = y.to(torch.float32)
                 sr = int(lr_sr)
-                # Se la durata è inferiore e accettabile, pad simmetrico
                 cur_len = wav.shape[-1]
                 if cur_len < self.segment_samples:
                     if cur_len >= self.min_acceptable_len:
@@ -347,7 +342,7 @@ class OnTheFlySTFTDataset(Dataset):
                     else:
                         raise RuntimeError("Librosa fallback segment too short.")
             except Exception as e2:
-                raise RuntimeError(f"Librosa fallback for MP3 partial load failed: {e2}") from e
+                raise RuntimeError(f"MP3 partial load failed and librosa fallback failed: {e2}") from e
 
         wav = self._match_channels(wav).to(torch.float32)
         if sr != self.sample_rate and "sample_rate" not in self.skip_criteria:
