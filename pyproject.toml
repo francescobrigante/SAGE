@@ -22,4 +22,5 @@ dependencies = [
     "umap>=0.1.1",
     "wandb>=0.23.0",
     "complexpytorch>=0.4",
+    "pandas>=2.3.3",
 ]
