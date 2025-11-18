@@ -211,11 +211,28 @@ class AutoencoderEngine(nn.Module):
                 self.hubert = HubertLoss(weight=1.0, **hubert_cfg)
                 gen_loss_modules.append(LossWithTarget(self.hubert, target_key="reals", input_key="decoded", name="hubert_loss", weight=hubert_weight, decay=self.loss_config["hubert"].get("decay", 1.0)))
 
+        # TODO: verify order of preds-targets in L1/MSELoss
         if "time" in self.loss_config:
             if self.loss_config["time"]["weights"].get("l1", 0.0) > 0.0:
-                gen_loss_modules.append(L1Loss(key_a='reals', key_b='decoded', weight=self.loss_config["time"]["weights"]["l1"], name='l1_time_loss', decay=self.loss_config["time"].get('decay', 1.0)))
+                gen_loss_modules.append(
+                    L1Loss(
+                        key_a='decoded',   # pred
+                        key_b='reals',     # target
+                        weight=self.loss_config["time"]["weights"]["l1"],
+                        name='l1_time_loss',
+                        decay=self.loss_config["time"].get('decay', 1.0)
+                    )
+                )
             if self.loss_config["time"]["weights"].get("l2", 0.0) > 0.0:
-                gen_loss_modules.append(MSELoss(key_a='reals', key_b='decoded', weight=self.loss_config["time"]["weights"]["l2"], name='l2_time_loss', decay=self.loss_config["time"].get('decay', 1.0)))
+                gen_loss_modules.append(
+                    MSELoss(
+                        key_a='decoded',   # pred
+                        key_b='reals',     # target
+                        weight=self.loss_config["time"]["weights"]["l2"],
+                        name='l2_time_loss',
+                        decay=self.loss_config["time"].get('decay', 1.0)
+                    )
+                )
 
         if self.autoencoder.bottleneck is not None:
             gen_loss_modules += create_loss_modules_from_bottleneck(self.autoencoder.bottleneck, self.loss_config)
