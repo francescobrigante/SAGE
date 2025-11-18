@@ -3,10 +3,11 @@ seed: 94
 device: cuda
 
 optimizer:
-  type: AdamW
+  type: RAdam
   config:
-    lr: 0.0003
-    weight_decay: 0.001
+    lr: 1e-3
+    weight_decay: 1e-5
+    decoupled_weight_decay: true
 
 scheduler:
   type: InverseLR
@@ -66,17 +67,8 @@ loss_config:
     stft_mse:
       config:
         reduction: mean
-    mrstft_stable_audio:
-      config:
-        w_sc : 0.0
-        w_lin_mag : 1.0
-        w_phs : 0.5
-        w_log_mag : 0.0
-        fft_sizes: [2048]
-        hop_sizes: [512]
-        win_lengths: [2048]
-        sample_rate: 44100
-    weights: { stft_mse: 0.1, mrstft: 3}
+
+    weights: { stft_mse: 1.0 }
 
 # Legacy fallback controls
 use_json: false

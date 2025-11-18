@@ -74,6 +74,10 @@ def create_optimizer_from_config(optimizer_config, parameters):
     if optimizer_type == "FusedAdam":
         from deepspeed.ops.adam import FusedAdam
         optimizer = FusedAdam(parameters, **optimizer_config["config"])
+        
+    elif optimizer_type == "Lion":
+        from lion_pytorch import Lion
+        optimizer = Lion(parameters, **optimizer_config["config"])
     else:
         optimizer_fn = getattr(torch.optim, optimizer_type)
         optimizer = optimizer_fn(parameters, **optimizer_config["config"])
