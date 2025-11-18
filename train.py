@@ -120,12 +120,14 @@ def load_json(path: str):
 class WandbConfigLogger:
     """Utility per caricare l'intera cartella di configurazione Hydra su W&B.
     - Non crea copie locali dei file
-    - Logga ogni file come testo (chiave: conf/<relative_path>) in un singolo step (commit=False)
-    - Facoltativamente può creare un artifact (non richiesto ora)
+    - Può loggare i contenuti testuali oppure caricare i file come artifact
+    - Di default usa un artifact (più pulito nel pannello W&B)
     """
-    def __init__(self, conf_root: Path, extensions: tuple = (".yaml", ".yml")):
+    def __init__(self, conf_root: Path, extensions: tuple = (".yaml", ".yml"), use_artifact: bool = True, log_text: bool = False):
         self.conf_root = conf_root
         self.extensions = extensions
+        self.use_artifact = use_artifact
+        self.log_text = log_text
 
     def list_files(self) -> List[Path]:
         if not self.conf_root.exists():
@@ -149,9 +151,41 @@ class WandbConfigLogger:
         if not data:
             warn("Nessun file di configurazione trovato da loggare su W&B.")
             return
-        # Log come singolo dict; commit=False evita step prematuro
-        run.log(data, commit=False)
-        ok(f"Loggata cartella conf su W&B ({len(data)} files).")
+        rel_paths = list(data.keys())
+        # Aggiorna config con la lista dei file (non con il contenuto completo)
+        try:
+            run.config.update({"hydra_conf_files": rel_paths}, allow_val_change=True)
+        except Exception:
+            pass
+        if self.use_artifact:
+            try:
+                artifact = wandb.Artifact("hydra-conf", type="config")
+                # Aggiunge i file originali senza copiarli altrove
+                for f in self.list_files():
+                    artifact.add_file(str(f))
+                run.log_artifact(artifact)
+                ok(f"Caricata cartella conf come artifact W&B ({len(data)} files).")
+            except Exception as e:
+                warn(f"Artifact upload fallito ({type(e).__name__}: {e}); provo fallback testuale.")
+                self._fallback_text(run, data)
+        elif self.log_text:
+            self._fallback_text(run, data)
+        else:
+            # Se nessuna modalità è attiva logga solo la lista
+            run.log({"hydra/num_conf_files": len(data)}, commit=True)
+            ok("Loggata lista file di configurazione in W&B.")
+
+    def _fallback_text(self, run, data: Dict[str, str]):
+        # Log dei contenuti come testo (potrebbe generare molte chiavi)
+        # Per evitare step fantasma usiamo un singolo dict + commit=True
+        text_payload = {f"conf_text/{k}": v for k, v in data.items()}
+        # Riduci dimensione se molto grande (evita saturare UI)
+        MAX_LEN = 4000
+        for k, v in list(text_payload.items()):
+            if len(v) > MAX_LEN:
+                text_payload[k] = v[:MAX_LEN] + "\n... [TRUNCATED]"
+        run.log(text_payload, commit=True)
+        ok(f"Loggati contenuti YAML (fallback) su W&B ({len(data)} files).")
 
 class DatasetEpochSetter(pl.Callback):
     def __init__(self, dataset):
@@ -399,7 +433,7 @@ def main(cfg: DictConfig):
         try:
             run = logger.experiment
             conf_root = Path(get_original_cwd()) / "conf"
-            WandbConfigLogger(conf_root).log_to_wandb(run)
+            WandbConfigLogger(conf_root, use_artifact=True, log_text=False).log_to_wandb(run)
         except Exception as e:
             warn(f"Upload dir conf on W&B failed ({type(e).__name__}: {e})")
     else:
