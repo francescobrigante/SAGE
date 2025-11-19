@@ -7,11 +7,11 @@ model:
     kwargs:
       input_size: auto           # will be patched at runtime
       dimension: 128
-      n_filters: 16
+      n_filters: 8
       n_residual_layers: 1
       ratios: [[4,2],[1,2],[4,2]]
       activation: ELU
-      norm: time_group_norm
+      norm: weight_norm
       norm_params: { num_groups: 1 }
       causal: false
       latent_fbins: 64
@@ -23,11 +23,11 @@ model:
     kwargs:
       channels: auto             # will be patched at runtime
       input_size: 128
-      n_filters: 16
+      n_filters: 8
       n_residual_layers: 1
       ratios: [[4,2],[1,2],[4,2]]
       activation: ELU
-      norm: time_group_norm
+      norm: weight_norm
       norm_params: { num_groups: 1 }
       causal: false
       latent_fbins: 64
