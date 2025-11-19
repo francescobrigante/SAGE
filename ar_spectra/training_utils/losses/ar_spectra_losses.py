@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from typing import Optional, Sequence, Tuple
 from typing_extensions import Literal
+import torchaudio
 
 def to_complex_spectrogram(X: torch.Tensor) -> torch.Tensor:
     """
@@ -361,3 +362,320 @@ class MultiResSpectralConvergence(nn.Module):
         elif reduction == "none":
             return sc_vals
 
+class MultiResolutionSpectrogramLoss(nn.Module):
+    """
+    Computes the Multi-Resolution Spectrogram Loss for complex-valued signals.
+
+    This loss function aggregates spectral errors across multiple Short-Time Fourier Transform (STFT)
+    resolutions to provide a robust time-frequency distance metric. It combines Spectral Convergence
+    (SC) and a Magnitude-based distance metric (L1) to capture both the structural and fine-grained
+    spectral discrepancies between the predicted and ground-truth waveforms.
+
+    The total loss L_MR is defined as the aggregation (mean or sum) over all resolutions r:
+
+        L_MR = Reduce_r( factor_sc * L_SC^(r) + factor_mag * L_mag^(r) )
+
+    Where:
+      - L_SC^(r) is the spectral convergence loss at resolution r.
+      - L_mag^(r) is the magnitude distance at resolution r.
+
+    Args:
+        fft_sizes (Sequence[int]): A sequence of FFT sizes for the multi-resolution analysis.
+            Default is (512, 1024, 2048, 4096).
+        hop_sizes (Optional[Sequence[int]]): A sequence of hop sizes corresponding to each FFT size.
+            If None, defaults to `fft_size // 4`.
+        win_lengths (Optional[Sequence[int]]): A sequence of window lengths corresponding to each FFT size.
+            If None, defaults to `fft_sizes`.
+        window_fn (Callable): The window function to apply (e.g., `torch.hann_window`).
+            Default is `torch.hann_window`.
+        factor_sc (float): The weighting factor for the spectral convergence term.
+            Default is 1.0.
+        factor_mag (float): The weighting factor for the magnitude L1 term.
+            Default is 1.0.
+        eps (float): A small constant for numerical stability. Default is 1e-8.
+        reduction (str): Specifies the reduction to apply to the output over resolutions:
+            'mean' | 'sum' | 'none'. Default is 'mean'.
+        return_details (bool): If True, the forward pass returns a tuple containing the aggregated
+            total loss and a tensor of losses per resolution. If False, returns only the total loss.
+            Default is False.
+    """
+    def __init__(
+        self,
+        fft_sizes: Sequence[int] = (512, 1024, 2048, 4096),
+        hop_sizes: Optional[Sequence[int]] = None,
+        win_lengths: Optional[Sequence[int]] = None,
+        window_fn = torch.hann_window,
+        factor_sc: float = 1.0,
+        factor_mag: float = 1.0,
+        eps: float = 1e-8,
+        reduction: str = "mean",
+        return_details: bool = False,
+    ):
+        super().__init__()
+        self.fft_sizes = fft_sizes
+        self.hop_sizes = hop_sizes if hop_sizes is not None else [n // 4 for n in fft_sizes]
+        self.win_lengths = win_lengths if win_lengths is not None else fft_sizes
+        
+        if not (len(self.fft_sizes) == len(self.hop_sizes) == len(self.win_lengths)):
+            raise ValueError("fft_sizes, hop_sizes, and win_lengths must have the same length.")
+
+        self.window_fn = window_fn
+        self.factor_sc = factor_sc
+        self.factor_mag = factor_mag
+        self.eps = eps
+        self.reduction = reduction
+        self.return_details = return_details
+        
+        # Internal loss modules
+        # We use mean reduction for the internal components to get a scalar per resolution
+        self.sc_loss = ComplexSpectralConvergence(reduction='mean', eps=eps)
+
+    def _stft(self, x: torch.Tensor, n_fft: int, hop: int, win_len: int, window: torch.Tensor) -> torch.Tensor:
+        B, C, T = x.shape
+        x_reshaped = x.reshape(B * C, T)
+        Z = torch.stft(
+            x_reshaped, n_fft=n_fft, hop_length=hop, win_length=win_len,
+            window=window, center=True, return_complex=True,
+            pad_mode="reflect"
+        )
+        # Z: (B*C, F, T_frames)
+        _, F, T_frames = Z.shape
+        return Z.view(B, C, F, T_frames)
+
+    def forward(
+        self,
+        wav_hat: torch.Tensor,
+        wav_gt: torch.Tensor,
+    ) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
+        
+        if wav_hat.ndim == 2:
+            wav_hat = wav_hat.unsqueeze(1)
+        if wav_gt.ndim == 2:
+            wav_gt = wav_gt.unsqueeze(1)
+            
+        if wav_hat.shape != wav_gt.shape:
+             raise ValueError(f"Shape mismatch: {wav_hat.shape} vs {wav_gt.shape}")
+        
+        losses_per_res = []
+        
+        for n_fft, hop, win_len in zip(self.fft_sizes, self.hop_sizes, self.win_lengths):
+            # Construct window on the fly to ensure correct device/dtype
+            window = self.window_fn(win_len, device=wav_hat.device, dtype=wav_hat.dtype)
+            
+            S_hat = self._stft(wav_hat, n_fft, hop, win_len, window)
+            S_gt = self._stft(wav_gt, n_fft, hop, win_len, window)
+            
+            # Spectral Convergence (scalar)
+            loss_sc = self.sc_loss(S_hat, S_gt)
+            
+            # Magnitude L1 Loss (scalar)
+            # We compute the mean absolute difference of the complex spectrograms
+            loss_mag = (S_hat - S_gt).abs().mean()
+            
+            total_res_loss = (self.factor_sc * loss_sc) + (self.factor_mag * loss_mag)
+            losses_per_res.append(total_res_loss)
+            
+        losses_per_res = torch.stack(losses_per_res)
+        
+        if self.reduction == "mean":
+            total_loss = losses_per_res.mean()
+        elif self.reduction == "sum":
+            total_loss = losses_per_res.sum()
+        elif self.reduction == "none":
+            total_loss = losses_per_res
+        else:
+            raise ValueError(f"Invalid reduction: {self.reduction}")
+        
+        if self.return_details:
+            return total_loss, losses_per_res
+        return total_loss
+
+
+
+class MRMelLoss(nn.Module):
+    """
+    Computes the Multi-Resolution Mel-Spectrogram Loss (MR-Mel).
+
+    This loss calculates the L1 distance between the Mel-scaled spectrograms of the predicted
+    and ground-truth waveforms across multiple resolutions. It is designed to capture perceptual
+    differences by projecting the magnitude spectrogram onto the Mel frequency scale, which
+    approximates human hearing sensitivity.
+
+    The total loss L_Mel is defined as the aggregation (mean or sum) over all resolutions r:
+
+        L_Mel = Reduce_r( || log(M^{(r)}(\hat{y}) + \epsilon) - log(M^{(r)}(y) + \epsilon) ||_1 )
+
+    Where:
+      - M^{(r)} is the Mel-spectrogram projection at resolution r.
+      - \epsilon is a small constant for numerical stability in the logarithmic domain.
+
+    Args:
+        sample_rate (int): The sampling rate of the input audio.
+        fft_sizes (Sequence[int]): A sequence of FFT sizes for the multi-resolution analysis.
+            Default is (512, 1024, 2048).
+        hop_sizes (Optional[Sequence[int]]): A sequence of hop sizes corresponding to each FFT size.
+            If None, defaults to `fft_size // 4`.
+        win_lengths (Optional[Sequence[int]]): A sequence of window lengths corresponding to each FFT size.
+            If None, defaults to `fft_sizes`.
+        n_mels (Sequence[int]): Number of Mel bands for each resolution. Must match the length of fft_sizes.
+            Default is (80, 80, 80).
+        window_fn (Callable): The window function to apply (e.g., `torch.hann_window`).
+            Default is `torch.hann_window`.
+        f_min (float): Minimum frequency for the Mel filterbank. Default is 0.0.
+        f_max (Optional[float]): Maximum frequency for the Mel filterbank. If None, uses sample_rate // 2.
+        power (float): Exponent for the magnitude spectrogram before Mel projection. Default is 1.0 (Magnitude).
+        log_mel (bool): If True, applies a logarithmic transformation to the Mel spectrograms. Default is True.
+        mel_scale (str): Scale to use: 'htk' or 'slaney'. Default is 'slaney'.
+        norm (Optional[str]): Normalization for the Mel filterbank. 'slaney' or None. Default is 'slaney'.
+        eps_mag (float): Epsilon added to magnitude before power. Default is 1e-8.
+        eps_log (float): Epsilon added before log. Default is 1e-5.
+        reduction (str): Specifies the reduction to apply to the output over resolutions:
+            'mean' | 'sum' | 'none'. Default is 'mean'.
+        return_details (bool): If True, returns (total_loss, losses_per_resolution). Default is False.
+    """
+    def __init__(
+        self,
+        sample_rate: int,
+        fft_sizes: Sequence[int] = (512, 1024, 2048),
+        hop_sizes: Optional[Sequence[int]] = None,
+        win_lengths: Optional[Sequence[int]] = None,
+        n_mels: Sequence[int] = (80, 80, 80),
+        window_fn = torch.hann_window,
+        f_min: float = 0.0,
+        f_max: Optional[float] = None,
+        power: float = 1.0,
+        log_mel: bool = True,
+        mel_scale: str = "slaney",
+        norm: Optional[str] = "slaney",
+        eps_mag: float = 1e-8,
+        eps_log: float = 1e-5,
+        reduction: str = "mean",
+        return_details: bool = False,
+    ):
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.fft_sizes = fft_sizes
+        self.hop_sizes = hop_sizes if hop_sizes is not None else [n // 4 for n in fft_sizes]
+        self.win_lengths = win_lengths if win_lengths is not None else fft_sizes
+        self.n_mels = n_mels
+        
+        if not (len(self.fft_sizes) == len(self.hop_sizes) == len(self.win_lengths) == len(self.n_mels)):
+            raise ValueError("fft_sizes, hop_sizes, win_lengths, and n_mels must have the same length.")
+
+        self.window_fn = window_fn
+        self.f_min = f_min
+        self.f_max = f_max
+        self.power = power
+        self.log_mel = log_mel
+        self.eps_mag = eps_mag
+        self.eps_log = eps_log
+        self.reduction = reduction
+        self.return_details = return_details
+
+        # Pre-compute Mel Filterbanks and register as buffers
+        for i, (n_fft, n_mel) in enumerate(zip(self.fft_sizes, self.n_mels)):
+            n_freqs = n_fft // 2 + 1
+            
+            # Handle torchaudio version differences or specific functional calls
+            try:
+                fb = torchaudio.functional.melscale_fbanks(
+                    n_freqs=n_freqs,
+                    f_min=self.f_min,
+                    f_max=self.f_max if self.f_max is not None else float(self.sample_rate // 2),
+                    n_mels=n_mel,
+                    sample_rate=self.sample_rate,
+                    norm=norm,
+                    mel_scale=mel_scale,
+                )
+            except AttributeError:
+                 # Fallback for older torchaudio versions if necessary, or use create_fb_matrix
+                 fb = torchaudio.functional.create_fb_matrix(
+                    n_freqs=n_freqs,
+                    f_min=self.f_min,
+                    f_max=self.f_max if self.f_max is not None else float(self.sample_rate // 2),
+                    n_mels=n_mel,
+                    sample_rate=self.sample_rate,
+                    norm=norm,
+                    mel_scale=mel_scale,
+                )
+
+            # Ensure shape is (n_mels, n_freqs) for matmul
+            if fb.shape[0] != n_mel:
+                fb = fb.transpose(0, 1)
+                
+            self.register_buffer(f"mel_basis_{i}", fb)
+
+    def _stft(self, x: torch.Tensor, n_fft: int, hop: int, win_len: int, window: torch.Tensor) -> torch.Tensor:
+        B, C, T = x.shape
+        x_reshaped = x.reshape(B * C, T)
+        Z = torch.stft(
+            x_reshaped, n_fft=n_fft, hop_length=hop, win_length=win_len,
+            window=window, center=True, return_complex=True,
+            pad_mode="reflect"
+        )
+        # Z: (B*C, F, T_frames)
+        _, F, T_frames = Z.shape
+        return Z.view(B, C, F, T_frames)
+
+    def forward(
+        self,
+        wav_hat: torch.Tensor,
+        wav_gt: torch.Tensor,
+    ) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
+        
+        if wav_hat.ndim == 2:
+            wav_hat = wav_hat.unsqueeze(1)
+        if wav_gt.ndim == 2:
+            wav_gt = wav_gt.unsqueeze(1)
+            
+        if wav_hat.shape != wav_gt.shape:
+             raise ValueError(f"Shape mismatch: {wav_hat.shape} vs {wav_gt.shape}")
+
+        losses_per_res = []
+
+        for i, (n_fft, hop, win_len) in enumerate(zip(self.fft_sizes, self.hop_sizes, self.win_lengths)):
+            # Construct window
+            window = self.window_fn(win_len, device=wav_hat.device, dtype=wav_hat.dtype)
+            # Retrieve Mel basis
+            mel_basis = getattr(self, f"mel_basis_{i}")
+
+            # STFT
+            S_hat = self._stft(wav_hat, n_fft, hop, win_len, window)
+            S_gt = self._stft(wav_gt, n_fft, hop, win_len, window)
+
+            # Magnitude & Power
+            mag_hat = S_hat.abs().clamp_min(self.eps_mag).pow(self.power)
+            mag_gt = S_gt.abs().clamp_min(self.eps_mag).pow(self.power)
+
+            # Mel Projection: (B, C, F, T) -> (B, C, M, T)
+            # We need to handle the channel dimension for matmul
+            B, C, F, T = mag_hat.shape
+            mag_hat_flat = mag_hat.view(B * C, F, T)
+            mag_gt_flat = mag_gt.view(B * C, F, T)
+
+            mel_hat = torch.matmul(mel_basis, mag_hat_flat).view(B, C, -1, T)
+            mel_gt = torch.matmul(mel_basis, mag_gt_flat).view(B, C, -1, T)
+
+            # Log (Optional)
+            if self.log_mel:
+                mel_hat = torch.log(mel_hat + self.eps_log)
+                mel_gt = torch.log(mel_gt + self.eps_log)
+
+            # L1 Loss
+            loss = F.l1_loss(mel_hat, mel_gt, reduction="mean")
+            losses_per_res.append(loss)
+
+        losses_per_res = torch.stack(losses_per_res)
+
+        if self.reduction == "mean":
+            total_loss = losses_per_res.mean()
+        elif self.reduction == "sum":
+            total_loss = losses_per_res.sum()
+        elif self.reduction == "none":
+            total_loss = losses_per_res
+        else:
+            raise ValueError(f"Invalid reduction: {self.reduction}")
+
+        if self.return_details:
+            return total_loss, losses_per_res
+        return total_loss

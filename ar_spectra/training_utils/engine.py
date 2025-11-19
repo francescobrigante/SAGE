@@ -10,7 +10,7 @@ from .losses import (
     L1Loss, LossWithTarget, MSELoss, HubertLoss, 
 )
 from .losses import auraloss as auraloss
-from .losses.ar_spectra_losses import ComplexSpectralConvergence, MultiResSpectralConvergence, ComplexMSE
+from .losses.ar_spectra_losses import ComplexSpectralConvergence, MultiResSpectralConvergence, ComplexMSE, MultiResolutionSpectrogramLoss
 from .utils import create_optimizer_from_config, create_scheduler_from_config
 from rich.console import Console
 console = Console()  
@@ -131,12 +131,16 @@ class AutoencoderEngine(nn.Module):
                 mrstft_block = spectral_cfg.get(chosen, {}) or {}
                 # accetta sia {"config": {...}} sia dizionario piatto
                 configs_mrstft = mrstft_block.get("config", mrstft_block) or {}
-                if chosen in ("mrstft_stable_audio", "mrstft"):
+                if chosen in ("mrstft_stable_audio",):
                     # Variante auraloss classica
                     self.mrstft = auraloss.MultiResolutionSTFTLoss(**configs_mrstft)
                 elif chosen == "mrstft_sc":
                     # Variante basata su Spectral Convergence
                     self.mrstft = MultiResSpectralConvergence(**configs_mrstft)
+                elif chosen == "mrstft":
+                    # Variante basata su MSE complesso
+                    self.mrstft = MultiResolutionSpectrogramLoss(**configs_mrstft)
+                    
         # per evitare AttributeError in rami opzionali
         self.lrstft = None
 

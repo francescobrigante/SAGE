@@ -68,7 +68,13 @@ loss_config:
       config:
         reduction: mean
 
-    weights: { stft_mse: 1.0 }
+    mrstft:
+      config:
+        reduction: mean
+        factor_sc: 0.0
+        factor_mag: 1.0
+
+    weights: { stft_mse: 1.0, mrstft: 4.0 }
 
 # Legacy fallback controls
 use_json: false
