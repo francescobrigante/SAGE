@@ -364,40 +364,68 @@ class MultiResSpectralConvergence(nn.Module):
 
 class MultiResolutionSpectrogramLoss(nn.Module):
     """
-    Computes the Multi-Resolution Spectrogram Loss for complex-valued signals.
+    Multi-Resolution Spectrogram Loss (MR-Spec).
 
-    This loss function aggregates spectral errors across multiple Short-Time Fourier Transform (STFT)
-    resolutions to provide a robust time-frequency distance metric. It combines Spectral Convergence
-    (SC) and a Magnitude-based distance metric (L1) to capture both the structural and fine-grained
-    spectral discrepancies between the predicted and ground-truth waveforms.
+    This loss aggregates time–frequency discrepancies between predicted and reference
+    waveforms across multiple STFT resolutions. For each resolution r (n_fft_r, hop_r, win_r)
+    the following scalar components are computed:
 
-    The total loss L_MR is defined as the aggregation (mean or sum) over all resolutions r:
+        1. Spectral Convergence (SC):
+            SC_r = || S_r - Ŝ_r ||_F / ( || S_r ||_F + eps_sc )
 
-        L_MR = Reduce_r( factor_sc * L_SC^(r) + factor_mag * L_mag^(r) )
+        2. Complex L1 (time–frequency reconstruction term):
+            L_complex_r = mean_{b,c,f,t} | Ŝ_r - S_r |
 
-    Where:
-      - L_SC^(r) is the spectral convergence loss at resolution r.
-      - L_mag^(r) is the magnitude distance at resolution r.
+        3. Optional Linear Magnitude L1 (phase-discarded):
+            L_linmag_r = mean_{b,c,f,t} | |Ŝ_r| - |S_r| |
+
+        4. Optional Log-Magnitude L1 (phase-discarded, improves perceptual balance):
+            L_logmag_r = mean_{b,c,f,t} | log(|Ŝ_r| + eps_mag) - log(|S_r| + eps_mag) |
+
+    Total per-resolution loss:
+        L_r = w_sc * SC_r
+              + w_complex * L_complex_r
+              + I_lin * w_lin * L_linmag_r
+              + I_log * w_log * L_logmag_r
+
+        where I_lin = 1 if linear_mag=True else 0,
+              I_log = 1 if log_mag=True else 0,
+              and not (linear_mag and log_mag) (mutually exclusive by design).
+
+    Final aggregation over all resolutions R:
+        L_MR =
+            mean_r L_r   if reduction == 'mean'
+            sum_r  L_r   if reduction == 'sum'
+            [L_r]_r      if reduction == 'none'
 
     Args:
-        fft_sizes (Sequence[int]): A sequence of FFT sizes for the multi-resolution analysis.
-            Default is (512, 1024, 2048, 4096).
-        hop_sizes (Optional[Sequence[int]]): A sequence of hop sizes corresponding to each FFT size.
-            If None, defaults to `fft_size // 4`.
-        win_lengths (Optional[Sequence[int]]): A sequence of window lengths corresponding to each FFT size.
-            If None, defaults to `fft_sizes`.
-        window_fn (Callable): The window function to apply (e.g., `torch.hann_window`).
-            Default is `torch.hann_window`.
-        factor_sc (float): The weighting factor for the spectral convergence term.
-            Default is 1.0.
-        factor_mag (float): The weighting factor for the magnitude L1 term.
-            Default is 1.0.
-        eps (float): A small constant for numerical stability. Default is 1e-8.
-        reduction (str): Specifies the reduction to apply to the output over resolutions:
-            'mean' | 'sum' | 'none'. Default is 'mean'.
-        return_details (bool): If True, the forward pass returns a tuple containing the aggregated
-            total loss and a tensor of losses per resolution. If False, returns only the total loss.
-            Default is False.
+        fft_sizes (Sequence[int]): STFT FFT sizes per resolution.
+        hop_sizes (Optional[Sequence[int]]): Hop sizes; defaults to n_fft // 4.
+        win_lengths (Optional[Sequence[int]]): Window lengths; defaults to fft_sizes.
+        window_fn (Callable): Window function constructor (e.g. torch.hann_window).
+        factor_sc (float): Weight w_sc for spectral convergence.
+        factor_mag (float): Weight w_complex for complex L1 term (|Ŝ - S|).
+        linear_mag (bool): Enable linear magnitude L1 term (| |Ŝ| - |S| |).
+        log_mag (bool): Enable log-magnitude L1 term (| log(|Ŝ|) - log(|S|) |).
+                        Mutually exclusive with linear_mag.
+        factor_linear_mag (float): Weight w_lin applied if linear_mag=True.
+        factor_log_mag (float): Weight w_log applied if log_mag=True.
+        eps (float): Numerical stability for spectral convergence denominator.
+        eps_mag (float): Numerical stability for magnitude + logarithm.
+        reduction (str): {'mean','sum','none'} aggregation over resolutions.
+        return_details (bool): If True returns (total_loss, per_resolution_losses).
+
+    Forward Args:
+        wav_hat (Tensor): Predicted waveform (B, C, T) or (B, T).
+        wav_gt (Tensor): Reference waveform (same shape as wav_hat).
+
+    Returns:
+        Tensor if return_details=False else (total_loss, per_resolution_losses).
+
+    Notes:
+        - Phase is not directly penalized except via SC and complex L1.
+        - Set exactly one of linear_mag or log_mag to True to add a pure magnitude term.
+        - If both linear_mag and log_mag are False, the loss reduces to SC + complex L1.
     """
     def __init__(
         self,
@@ -407,7 +435,13 @@ class MultiResolutionSpectrogramLoss(nn.Module):
         window_fn = torch.hann_window,
         factor_sc: float = 1.0,
         factor_mag: float = 1.0,
+        *,
+        linear_mag: bool = False,
+        log_mag: bool = False,
+        factor_linear_mag: float = 1.0,
+        factor_log_mag: float = 1.0,
         eps: float = 1e-8,
+        eps_mag: float = 1e-8,
         reduction: str = "mean",
         return_details: bool = False,
     ):
@@ -415,68 +449,92 @@ class MultiResolutionSpectrogramLoss(nn.Module):
         self.fft_sizes = fft_sizes
         self.hop_sizes = hop_sizes if hop_sizes is not None else [n // 4 for n in fft_sizes]
         self.win_lengths = win_lengths if win_lengths is not None else fft_sizes
-        
+
         if not (len(self.fft_sizes) == len(self.hop_sizes) == len(self.win_lengths)):
             raise ValueError("fft_sizes, hop_sizes, and win_lengths must have the same length.")
+
+        if reduction not in {"mean", "sum", "none"}:
+            raise ValueError(f"Invalid reduction: {reduction}")
+
+        if linear_mag and log_mag:
+            raise ValueError("linear_mag and log_mag are mutually exclusive. Choose only one.")
+        if factor_sc < 0 or factor_mag < 0 or factor_linear_mag < 0 or factor_log_mag < 0:
+            raise ValueError("All factor weights must be non-negative.")
 
         self.window_fn = window_fn
         self.factor_sc = factor_sc
         self.factor_mag = factor_mag
+        self.linear_mag = linear_mag
+        self.log_mag = log_mag
+        self.factor_linear_mag = factor_linear_mag
+        self.factor_log_mag = factor_log_mag
         self.eps = eps
+        self.eps_mag = eps_mag
         self.reduction = reduction
         self.return_details = return_details
-        
-        # Internal loss modules
-        # We use mean reduction for the internal components to get a scalar per resolution
+
         self.sc_loss = ComplexSpectralConvergence(reduction='mean', eps=eps)
 
     def _stft(self, x: torch.Tensor, n_fft: int, hop: int, win_len: int, window: torch.Tensor) -> torch.Tensor:
         B, C, T = x.shape
-        x_reshaped = x.reshape(B * C, T)
+        x_flat = x.reshape(B * C, T)
         Z = torch.stft(
-            x_reshaped, n_fft=n_fft, hop_length=hop, win_length=win_len,
-            window=window, center=True, return_complex=True,
-            pad_mode="reflect"
+            x_flat, n_fft=n_fft, hop_length=hop, win_length=win_len,
+            window=window, center=True, return_complex=True, pad_mode="reflect"
         )
-        # Z: (B*C, F, T_frames)
-        _, F, T_frames = Z.shape
-        return Z.view(B, C, F, T_frames)
+        _, F, TT = Z.shape
+        return Z.view(B, C, F, TT)
 
     def forward(
         self,
         wav_hat: torch.Tensor,
         wav_gt: torch.Tensor,
     ) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
-        
         if wav_hat.ndim == 2:
             wav_hat = wav_hat.unsqueeze(1)
         if wav_gt.ndim == 2:
             wav_gt = wav_gt.unsqueeze(1)
-            
         if wav_hat.shape != wav_gt.shape:
-             raise ValueError(f"Shape mismatch: {wav_hat.shape} vs {wav_gt.shape}")
-        
+            raise ValueError(f"Shape mismatch: {wav_hat.shape} vs {wav_gt.shape}")
+
         losses_per_res = []
-        
         for n_fft, hop, win_len in zip(self.fft_sizes, self.hop_sizes, self.win_lengths):
-            # Construct window on the fly to ensure correct device/dtype
             window = self.window_fn(win_len, device=wav_hat.device, dtype=wav_hat.dtype)
-            
+
             S_hat = self._stft(wav_hat, n_fft, hop, win_len, window)
             S_gt = self._stft(wav_gt, n_fft, hop, win_len, window)
-            
-            # Spectral Convergence (scalar)
+
+            # Spectral convergence
             loss_sc = self.sc_loss(S_hat, S_gt)
-            
-            # Magnitude L1 Loss (scalar)
-            # We compute the mean absolute difference of the complex spectrograms
-            loss_mag = (S_hat - S_gt).abs().mean()
-            
-            total_res_loss = (self.factor_sc * loss_sc) + (self.factor_mag * loss_mag)
+
+            # Complex L1 (difference in the complex plane)
+            loss_complex = (S_hat - S_gt).abs().mean()
+
+            # Optional magnitude-only terms
+            add_mag = 0.0
+            if self.linear_mag or self.log_mag:
+                mag_hat = S_hat.abs().clamp_min(self.eps_mag)
+                mag_gt = S_gt.abs().clamp_min(self.eps_mag)
+
+                if self.linear_mag:
+                    lin_mag_loss = (mag_hat - mag_gt).abs().mean()
+                    add_mag = add_mag + self.factor_linear_mag * lin_mag_loss
+
+                if self.log_mag:
+                    log_mag_hat = torch.log(mag_hat + self.eps_mag)
+                    log_mag_gt = torch.log(mag_gt + self.eps_mag)
+                    log_mag_loss = (log_mag_hat - log_mag_gt).abs().mean()
+                    add_mag = add_mag + self.factor_log_mag * log_mag_loss
+
+            total_res_loss = (
+                self.factor_sc * loss_sc +
+                self.factor_mag * loss_complex +
+                add_mag
+            )
             losses_per_res.append(total_res_loss)
-            
+
         losses_per_res = torch.stack(losses_per_res)
-        
+
         if self.reduction == "mean":
             total_loss = losses_per_res.mean()
         elif self.reduction == "sum":
@@ -485,7 +543,7 @@ class MultiResolutionSpectrogramLoss(nn.Module):
             total_loss = losses_per_res
         else:
             raise ValueError(f"Invalid reduction: {self.reduction}")
-        
+
         if self.return_details:
             return total_loss, losses_per_res
         return total_loss
@@ -531,7 +589,9 @@ class MRMelLoss(nn.Module):
         eps_log (float): Epsilon added before log. Default is 1e-5.
         reduction (str): Specifies the reduction to apply to the output over resolutions:
             'mean' | 'sum' | 'none'. Default is 'mean'.
-        return_details (bool): If True, returns (total_loss, losses_per_resolution). Default is False.
+        return_details (bool): If True, the forward pass returns a tuple containing the aggregated
+            total loss and a tensor of losses per resolution. If False, returns only the total loss.
+            Default is False.
     """
     def __init__(
         self,
@@ -634,7 +694,7 @@ class MRMelLoss(nn.Module):
         losses_per_res = []
 
         for i, (n_fft, hop, win_len) in enumerate(zip(self.fft_sizes, self.hop_sizes, self.win_lengths)):
-            # Construct window
+            # Construct window on the fly to ensure correct device/dtype
             window = self.window_fn(win_len, device=wav_hat.device, dtype=wav_hat.dtype)
             # Retrieve Mel basis
             mel_basis = getattr(self, f"mel_basis_{i}")

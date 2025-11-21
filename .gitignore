@@ -19,7 +19,7 @@ __pycache__/
 checkpoints/
 ICML_2026/
 runs/
-
+.github/
 lightning_logs/version_0/events.out.tfevents.1763163632.gauss.821159.0
 lightning_logs/version_0/hparams.yaml
 lightning_logs/version_1/events.out.tfevents.1763163810.gauss.821578.0
