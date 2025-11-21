@@ -72,7 +72,9 @@ loss_config:
       config:
         reduction: mean
         factor_sc: 0.0
-        factor_mag: 1.0
+        factor_mag: 0.5
+        linear_mag: true
+        factor_linear_mag: 1.0
 
     weights: { stft_mse: 1.0, mrstft: 4.0 }
 
