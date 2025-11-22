@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import torch
 import torch.nn as nn
 import warnings
-from .bottlenecks import VAEBottleneck, SkipBottleneck
+from ar_spectra.models.bottlenecks import VAEBottleneck, SkipBottleneck
 from rich.console import Console
 from ar_spectra.training_utils.pre_transform import create_pre_transform
 import torchaudio
@@ -28,18 +28,20 @@ def _locate_class(class_path: Union[str, type]) -> type:
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
 
-# For training and eval dataset instantiation
 def instantiate_from_spec(spec: Dict[str, Any]) -> Any:
+    """Instantiate an object from a simple spec.
+
+    This local helper is used only inside this module to
+    build encoder/decoder/bottleneck components. For the
+    global training/inference initialization logic, use
+    ``ar_spectra.training_utils.initialization.instantiate_from_spec``.
     """
-    spec = {
-      "class": "pkg.mod.Class",
-      "args": [...],          # optional
-      "kwargs": { ... }       # optional
-    }
-    """
+
     if "class" not in spec:
         raise ValueError("spec is missing the 'class' key.")
-    cls = _locate_class(spec["class"])
+    module_path, class_name = spec["class"].rsplit(".", 1)
+    module = importlib.import_module(module_path)
+    cls = getattr(module, class_name)
     args = spec.get("args", []) or []
     kwargs = spec.get("kwargs", {}) or {}
     return cls(*args, **kwargs)
@@ -554,5 +556,3 @@ def load_config(path: str) -> Dict[str, Any]:
 
 def build_from_json(path: str) -> AutoEncoder:
     return AutoEncoder.from_config(load_config(path))
-
-

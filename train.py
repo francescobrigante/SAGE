@@ -13,6 +13,10 @@ import torch.profiler as torch_profiler
 from pytorch_lightning.profilers import PyTorchProfiler
 from ar_spectra.models.autoencoder import AutoEncoder, instantiate_from_spec
 from ar_spectra.training_utils.autoencoders import AutoencoderTrainingWrapper, AutoencoderValDemoCallback
+from ar_spectra.training_utils.initialization import (
+    build_datasets_and_loaders,
+    build_training_wrapper_from_cfg,
+)
 from tqdm import tqdm
 from rich.console import Console
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
@@ -308,113 +312,13 @@ def main(cfg: DictConfig):
 
     torch.backends.cudnn.benchmark = True
 
-    # Dataset
-    train_ds = instantiate_from_spec(cfg["train_dataset"])
-    dl_cfg = cfg.get("train_dataloader", {}) or {}
-    num_workers = int(dl_cfg.get("num_workers", 8))
-
-    # Decide pin_memory for train
-    train_batch_size = int(dl_cfg.get("batch_size", 8))
-    train_pin_req = dl_cfg.get("pin_memory", "auto")
-    _train_pf = int(dl_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None
-    train_pin_memory = _decide_pin_memory(
-        train_pin_req, train_ds, train_batch_size, num_workers=num_workers, prefetch_factor=_train_pf
-    )
-
-    train_dl = DataLoader(
-        train_ds,
-        batch_size=train_batch_size,
-        num_workers=num_workers,
-        pin_memory=train_pin_memory,
-        shuffle=bool(dl_cfg.get("shuffle", True)),
-        drop_last=True,
-        persistent_workers=(dl_cfg.get("persistent_workers", False) if num_workers > 0 else False),
-        prefetch_factor=int(dl_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
-        collate_fn=collate_stft,
-    )
-    
-    eval_ds = instantiate_from_spec(cfg.get("eval_dataset", None))
-    dl_eval_cfg = cfg.get("eval_dataloader", {}) or {}
-    if eval_ds is not None:
-        eval_batch_size = int(dl_eval_cfg.get("batch_size", train_batch_size))
-        eval_pin_req = dl_eval_cfg.get("pin_memory", train_pin_req)
-        _eval_pf = int(dl_eval_cfg.get("prefetch_factor", dl_cfg.get("prefetch_factor", 8))) if num_workers > 0 else None
-        eval_pin_memory = _decide_pin_memory(
-            eval_pin_req, eval_ds, eval_batch_size, num_workers=num_workers, prefetch_factor=_eval_pf
-        )
-        eval_dl = DataLoader(
-            eval_ds,
-            batch_size=eval_batch_size,
-            num_workers=num_workers,
-            pin_memory=eval_pin_memory,
-            shuffle=bool(dl_eval_cfg.get("shuffle", False)),
-            drop_last=False,
-            persistent_workers=(dl_eval_cfg.get("persistent_workers", False) if num_workers > 0 else False),
-            prefetch_factor=int(dl_eval_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
-            collate_fn=collate_stft,
-        )
-    else:
-        eval_dl = None
-        warn("Eval dataset and dataloader not provided; training will proceed without evaluation.")
-
-    # Infer channel counts from dataset or first batch (for 'auto' placeholders)
-    ds_spec_ch = getattr(train_ds, "spec_channels", None)
-    ds_audio_ch = getattr(train_ds, "audio_channels", None)
-    cac = bool(cfg.get("train_dataset", {}).get("kwargs", {}).get("cac", False))
-    if ds_spec_ch is not None and ds_audio_ch is not None:
-        model_channels = int(ds_spec_ch)
-        audio_channels = int(ds_audio_ch)
-    else:
-        sample = next(iter(train_dl))
-        sp_reals, orig = sample
-        if sp_reals.dim() == 3:
-            Cx, F, T = sp_reals.shape
-        elif sp_reals.dim() == 4:
-            _, Cx, F, T = sp_reals.shape
-        else:
-            raise RuntimeError(f"Forma inattesa per sp_reals: {tuple(sp_reals.shape)}")
-        model_channels = int(Cx)
-        audio_channels = (model_channels // 2) if cac else model_channels
-
-    # Resolve 'auto' placeholders in model encoder/decoder configuration
-    model_cfg = cfg["model"]
-    enc_kwargs = model_cfg["encoder"].setdefault("kwargs", {})
-    dec_kwargs = model_cfg["decoder"].setdefault("kwargs", {})
-    def set_auto(d: dict, key: str, value: int):
-        v = d.get(key, None)
-        if (v is None) or (isinstance(v, str) and v.lower() == "auto"):
-            d[key] = int(value)
-    set_auto(enc_kwargs, "input_size", model_channels)
-    set_auto(dec_kwargs, "channels", model_channels)
-    if "out_channels" in dec_kwargs:
-        set_auto(dec_kwargs, "out_channels", model_channels)
-
-    # Build model and Lightning wrapper
-    autoenc = AutoEncoder.from_config(model_cfg)
-    # Optimizer/scheduler specs are passed through to the wrapper
-    optimizer_spec = cfg.get("optimizer", None)
-    scheduler_spec = cfg.get("scheduler", None)
-
-    # Instantiate Lightning training wrapper
-    wrapper = AutoencoderTrainingWrapper(
-        autoencoder=autoenc,
-        sample_rate=int(cfg["train_dataset"]["kwargs"].get("sample_rate", 44100)),
-        audio_channels=int(audio_channels),
-        loss_config=cfg.get("loss_config", None),
-        eval_loss_config=cfg.get("eval_loss_config", None),
-        optimizer_configs=None,
-        warmup_steps=int(cfg.get("trainer", {}).get("warmup_steps", 0)),
-        warmup_mode=str(cfg.get("trainer", {}).get("warmup_mode", "adv")),
-        encoder_freeze_on_warmup=bool(cfg.get("trainer", {}).get("encoder_freeze_on_warmup", False)),
-        force_input_mono=bool(cfg.get("model", {}).get("autoencoder", {}).get("force_input_mono", False)),
-        latent_mask_ratio=float(cfg.get("model", {}).get("autoencoder", {}).get("latent_mask_ratio", 0.0)),
-        teacher_model=None,
-        stft_params=cfg.get("train_dataset", {}).get("kwargs", {}),
-        optimizer_spec=optimizer_spec,
-        scheduler_spec=scheduler_spec,
-        pre_transform_spec=cfg.get("pre_transform", None),
-    )
-    ok(f"Instantiated AutoEncoder and Lightning wrapper.")
+    # Datasets, dataloaders and wrapper initialization (single source of truth)
+    wrapper, data_init = build_training_wrapper_from_cfg(cfg)
+    train_ds = data_init.train_dataset
+    train_dl = data_init.train_dataloader
+    eval_dl = data_init.eval_dataloader
+    audio_channels = data_init.audio_channels
+    ok("Instantiated datasets, dataloaders, AutoEncoder and Lightning wrapper.")
 
     # Provide eval STFT params to engine for validation phase
     eval_stft_params = (cfg.get("eval_dataset", {}) or {}).get("kwargs", {}) or {}
@@ -531,7 +435,7 @@ def main(cfg: DictConfig):
         requested_precision = "32-true"
     is_bf16 = ("bf16" in requested_precision)
     try:
-        has_complex_params = any(p.is_complex() for p in autoenc.parameters())
+        has_complex_params = any(p.is_complex() for p in wrapper.autoencoder.parameters())
     except Exception:
         has_complex_params = False
     if is_bf16 and has_complex_params:
