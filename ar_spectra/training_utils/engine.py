@@ -10,7 +10,8 @@ from .losses import (
     L1Loss, LossWithTarget, MSELoss, HubertLoss, 
 )
 from .losses import auraloss as auraloss
-from .losses.ar_spectra_losses import ComplexSpectralConvergence, MultiResSpectralConvergence, ComplexMSE, MultiResolutionSpectrogramLoss
+from .losses.ar_spectra_losses import (ComplexSpectralConvergence, MultiResSpectralConvergence, 
+                                       ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance)
 from .utils import create_optimizer_from_config, create_scheduler_from_config
 from rich.console import Console
 console = Console()  
@@ -118,7 +119,8 @@ class AutoencoderEngine(nn.Module):
         if spectral_cfg and isinstance(spectral_cfg, dict):
             # JSON: "spectral": { "<one-of> mrstft_stable_audio | mrstft | mrstft_sc": { "config": {...} }, "weights": {...} }
             # select one of the possible mrstft losses
-            mr_keys = [k for k in ("mrstft_stable_audio", "mrstft", "mrstft_sc") if k in spectral_cfg]
+            mr_keys = [k for k in ("mrstft_stable_audio", "mrstft", "mrstft_sc",) if k in spectral_cfg]
+            phase_keys = ["cosine_phase_loss"] if "cosine_phase_loss" in spectral_cfg else []
             assert len(mr_keys) <= 1, (
                 "loss_config.spectral: you need to specify at most one of the keys:"
                 "'mrstft_stable_audio', 'mrstft', 'mrstft_sc'. "
@@ -140,6 +142,16 @@ class AutoencoderEngine(nn.Module):
                 elif chosen == "mrstft":
                     # Variante basata su MSE complesso
                     self.mrstft = MultiResolutionSpectrogramLoss(**configs_mrstft)
+                
+            if len(phase_keys) ==0:
+                self.phase_loss = None
+            else:
+                phase_chosen = phase_keys[0]
+                phase_block = spectral_cfg.get(phase_chosen, {}) or {}
+                configs_phase = phase_block.get("config", phase_block) or {}
+                self.phase_loss = PhaseCosineDistance(**configs_phase)
+                
+          
                     
         # per evitare AttributeError in rami opzionali
         self.lrstft = None
@@ -193,7 +205,18 @@ class AutoencoderEngine(nn.Module):
                         decay=stft_loss_decay
                     )
                 )
-                
+            if self.phase_loss is not None:
+                phase_weight = spectral_cfg['weights'].get('cosine_phase_loss', 0.0)
+                gen_loss_modules.append(
+                    LossWithTarget(
+                        self.phase_loss,
+                        target_key='encoder_input',
+                        input_key='sp_decoded',
+                        name='phase_cosine_loss',
+                        weight=phase_weight,
+                        decay=stft_loss_decay   
+                    )
+                )
 
         if "mrmel" in self.loss_config:
              mrmel_weight = self.loss_config["mrmel"]["weights"]["mrmel"]
@@ -542,6 +565,12 @@ class AutoencoderEngine(nn.Module):
             except Exception:
                 params = {}
             ok(f"- {type(self.mrstft).__name__}: {params}")
+        if self.phase_loss is not None:
+            try:
+                params = self._extract_hparams(self.phase_loss)
+            except Exception:
+                params = {}
+            ok(f"- {type(self.phase_loss).__name__}: {params}")
         if spectral_cfg:
             ok(f"- Spectral weights: {spectral_cfg.get('weights', {})}")
 
