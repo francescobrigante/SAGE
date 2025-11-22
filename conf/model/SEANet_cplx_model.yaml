@@ -13,7 +13,7 @@ model:
       activation: CReLU
       activation_params: {}
       norm: weight_norm
-      norm_params: { num_groups: 1 }
+      norm_params: {}
       causal: false
       latent_fbins: 64
       dilation_base: 2
@@ -30,7 +30,7 @@ model:
       activation: CReLU
       activation_params: {}
       norm: weight_norm
-      norm_params: { num_groups: 1 }
+      norm_params: {}
       causal: false
       latent_fbins: 64
       dilation_base: 2
