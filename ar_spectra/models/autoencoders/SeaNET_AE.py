@@ -240,7 +240,10 @@ class SEANetEncoder2d(nn.Module):
         if x.dim() == 3:
             x = x.unsqueeze(1)
         # returns latents channels-first (B, C, T)
-        return self.model(x)                   
+        y = self.model(x)
+        print("Encoder output shape:", y.shape)
+        print("Encoder input shape:", x.shape)
+        return y                   
 
 
 
@@ -379,5 +382,5 @@ class SEANetDecoder2d(nn.Module):
     def forward(self, z):
         # z : (B, C, T)  [channels-first]
         y = self.model(z)      
-        #print("Decoder output shape:", y.shape)     
+        print("Decoder output shape:", y.shape)     
         return y
