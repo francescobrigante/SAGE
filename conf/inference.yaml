@@ -19,6 +19,27 @@ mono: false
 # Chunked encode/decode settings (work in "latent steps")
 chunked: false
 overlap: 32
+chunk_size: null           # latent steps; null = default (128)
+segment_seconds: null     # seconds per chunk; exclusive with segment_frames/chunk_size
+segment_frames: null       # STFT frames per chunk; exclusive with segment_seconds/chunk_size
+
+# Dataset specification used for inference (independent from training configs)
+dataset:
+  class: ar_spectra.dataset.OnTheFlySTFTDataset
+  kwargs:
+    audio_dir: "/home/cerovaz/repos/data/jamendo_full/test_trimmed"
+    sample_rate: 44100
+    n_fft: 2048
+    hop_length: 512
+    win_length: 2048
+    center: true
+    normalized: false
+    extensions: [".mp3"]
+    stereo: true
+    cac: false
+    skip_broken_files: true
+    skip_criteria: ["sample_rate"]
+    target_frames: null       # leave null (with no segment_*) to stream full waveforms
 
 
 # riferimenti alle config di training
@@ -26,5 +47,24 @@ model_config_path: "conf/model/SEANet_cplx_model.yaml"
 data_config_path: "conf/data/data.yaml"
 
 # Limiti opzionali input (solo uno dei due se impostato)
-max_seconds: null        # es: 4.0
-max_frames: 512         # es: 128 (frame STFT)
+max_seconds: 10        # es: 4.0
+max_frames: null         # es: 128 (frame STFT)
+
+
+# Dataset inference (set enabled=true to iterate over an entire dataset)
+dataset_inference:
+  enabled: true           # run batched inference when true
+  output_dir: "runs/inference/dataset_outputs"
+  file_prefix: ""
+  batch_size: 32
+  num_workers: 4
+  shuffle: false
+  pin_memory: false
+  persistent_workers: false
+  prefetch_factor: null
+  pin_memory_device: null
+  max_batches: null
+  max_samples: null
+  save_waveforms: true
+  save_input_audio: false
+

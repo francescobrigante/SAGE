@@ -69,6 +69,7 @@ class OnTheFlySTFTDataset(Dataset):
         max_replacements: int = 8,
         length: Optional[int] = None,
         target_frames: Optional[int] = None,
+        full_waveform: bool = False,
     ):
         super().__init__()
         self.audio_dir = Path(audio_dir).expanduser().resolve()
@@ -90,6 +91,7 @@ class OnTheFlySTFTDataset(Dataset):
         self.cac = bool(cac)
         self.max_t_retries = int(max_t_retries)
         self.max_replacements = int(max_replacements)
+        self.full_waveform = bool(full_waveform)
 
         # --- Gestione granulare dello skip ---
         if isinstance(skip_broken_files, bool):
@@ -105,20 +107,27 @@ class OnTheFlySTFTDataset(Dataset):
         self.audio_channels = 2 if self.stereo else 1
         self.spec_channels = 2 * self.audio_channels if self.cac else self.audio_channels
         
-        # Resolve target frames length (support legacy `length` and preferred `target_frames`)
-        frames = None
-        if target_frames is not None:
-            frames = int(target_frames)
-        elif length is not None:
-            frames = int(length)
+        if self.full_waveform:
+            self.target_frames = None
+            self.segment_samples = None
+            self.min_acceptable_len = 0
         else:
-            raise ValueError("OnTheFlySTFTDataset requires 'target_frames' (frames). Provide target_frames in dataset kwargs.")
-        self.target_frames = frames
+            # Resolve target frames length (support legacy `length` and preferred `target_frames`)
+            frames = None
+            if target_frames is not None:
+                frames = int(target_frames)
+            elif length is not None:
+                frames = int(length)
+            else:
+                raise ValueError("OnTheFlySTFTDataset requires 'target_frames' (frames). Provide target_frames in dataset kwargs.")
+            if frames < 2:
+                raise ValueError("target_frames must be >= 2 to compute STFT segments.")
+            self.target_frames = frames
 
-        # number of samples in time domain for the requested spectrogram frames:
-        # segment_samples = (frames - 1) * hop_length
-        self.segment_samples = (self.target_frames - 1) * self.hop_length
-        self.min_acceptable_len = int(self.segment_samples * (1.0 - self.max_pad_ratio))
+            # number of samples in time domain for the requested spectrogram frames:
+            # segment_samples = (frames - 1) * hop_length
+            self.segment_samples = (self.target_frames - 1) * self.hop_length
+            self.min_acceptable_len = int(self.segment_samples * (1.0 - self.max_pad_ratio))
 
         candidate_files = sorted(
             [p for p in self.audio_dir.rglob("*") if p.suffix.lower() in self.extensions]
@@ -145,9 +154,12 @@ class OnTheFlySTFTDataset(Dataset):
                     if "channels" in self.skip_criteria and num_channels != self.audio_channels:
                         mismatched_count += 1
                         continue
-                    # altrimenti includi il file se la sua lunghezza stimata è accettabile
-                    est_len = int(round(num_frames * (self.sample_rate / src_sr))) if src_sr > 0 else num_frames
-                    if est_len >= self.min_acceptable_len:
+                    if not self.full_waveform:
+                        # altrimenti includi il file se la sua lunghezza stimata è accettabile
+                        est_len = int(round(num_frames * (self.sample_rate / src_sr))) if src_sr > 0 else num_frames
+                        if est_len >= self.min_acceptable_len:
+                            self.files.append(p)
+                    else:
                         self.files.append(p)
                 except Exception:
                     # Non scartare l’intero dataset per errori puntuali, continua
@@ -161,16 +173,18 @@ class OnTheFlySTFTDataset(Dataset):
                 f"No usable files found in {self.audio_dir} with min length {self.min_acceptable_len} samples."
             )
 
-        self._stft = torchaudio.transforms.Spectrogram(
-            n_fft=self.n_fft,
-            hop_length=self.hop_length,
-            win_length=self.win_length,
-            window_fn=window_fn,
-            power=None,  # complex STFT
-            center=self.center,
-            pad_mode=self.pad_mode,
-            normalized=self.normalized,
-        )
+        self._stft = None
+        if not self.full_waveform:
+            self._stft = torchaudio.transforms.Spectrogram(
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                win_length=self.win_length,
+                window_fn=window_fn,
+                power=None,  # complex STFT
+                center=self.center,
+                pad_mode=self.pad_mode,
+                normalized=self.normalized,
+            )
 
         self._base_seed = int(seed)
         self._epoch = 0
@@ -360,6 +374,17 @@ class OnTheFlySTFTDataset(Dataset):
             path = self.files[index]
             suffix = path.suffix.lower()
             wav = None
+
+            if self.full_waveform:
+                try:
+                    wav, _ = self._load_waveform(path)
+                except Exception:
+                    index = int(torch.randint(0, len(self), (1,), generator=self._rng).item())
+                    replacements += 1
+                    continue
+
+                wav = wav.contiguous()
+                return None, wav
 
             # Segment extraction: MP3 may be loaded by offset; other formats load full then crop
             try:
