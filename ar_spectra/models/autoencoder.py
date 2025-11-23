@@ -192,7 +192,7 @@ class AutoEncoder(nn.Module):
         self.downsampling_ratio = samples_per_latent
         return self.downsampling_ratio
 
-    def encode(self, audio, skip_bottleneck: bool = False, return_info=False, iterate_batch=False, debug=True, **kwargs):
+    def encode(self, audio, skip_bottleneck: bool = False, return_info=False, iterate_batch=False, debug=False, **kwargs):
         # Separate STFT/ISTFT kwargs that should NOT go to encoder/bottleneck forward.
         STFT_PARAM_KEYS = {"n_fft", "hop_length", "win_length", "window", "center", "normalized", "onesided", "length"}
         encode_kwargs = {k: v for k, v in kwargs.items() if k not in STFT_PARAM_KEYS}
@@ -236,7 +236,7 @@ class AutoEncoder(nn.Module):
             return latents, info
         return latents
 
-    def decode(self, latents, skip_bottleneck: bool = False, iterate_batch=False, debug=True, **kwargs):
+    def decode(self, latents, skip_bottleneck: bool = False, iterate_batch=False, debug=False, **kwargs):
         # Filter out STFT-related kwargs that belong to ISTFT only.
         STFT_PARAM_KEYS = {"n_fft", "hop_length", "win_length", "window", "center", "normalized", "onesided", "length"}
         decode_kwargs = {k: v for k, v in kwargs.items() if k not in STFT_PARAM_KEYS}
