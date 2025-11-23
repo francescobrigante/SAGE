@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import copy
+import math
+import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
 import torch
@@ -235,3 +239,177 @@ def build_training_wrapper_from_cfg(cfg: Dict[str, Any]) -> Tuple["AutoencoderTr
     )
 
     return wrapper, data_init
+
+
+def prepare_dataset_spec(
+    raw_spec: Dict[str, Any],
+    *,
+    project_root: Path,
+    segment_seconds: Optional[Any],
+    segment_frames: Optional[Any],
+    default_sample_rate: int,
+    default_hop_length: int,
+    force_mono: bool,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Normalize a dataset spec for STFT-based pipelines.
+
+    Returns the patched spec together with the resolved STFT parameters
+    that downstream encode/decode utilities can reuse.
+    """
+
+    if not raw_spec:
+        return {}, {}
+
+    prepared = copy.deepcopy(raw_spec)
+    kwargs = prepared.setdefault("kwargs", {}) or {}
+
+    audio_dir = kwargs.get("audio_dir")
+    if audio_dir is not None:
+        audio_path = Path(audio_dir)
+        kwargs["audio_dir"] = str((project_root / audio_path).resolve()) if not audio_path.is_absolute() else str(audio_path)
+
+    if force_mono and kwargs.get("stereo", True):
+        kwargs["stereo"] = False
+
+    sample_rate = int(kwargs.get("sample_rate", default_sample_rate))
+    hop_length = int(kwargs.get("hop_length", default_hop_length if default_hop_length > 0 else 512))
+
+    full_waveform_flag = bool(kwargs.get("full_waveform", False))
+
+    if segment_frames is not None:
+        kwargs["target_frames"] = max(2, int(segment_frames))
+        full_waveform_flag = False
+    elif segment_seconds is not None:
+        frames = int(math.ceil(float(segment_seconds) * sample_rate / max(1, hop_length))) + 1
+        kwargs["target_frames"] = max(2, frames)
+        full_waveform_flag = False
+    elif kwargs.get("target_frames") is not None:
+        kwargs["target_frames"] = max(2, int(kwargs.get("target_frames")))
+        full_waveform_flag = False
+
+    if kwargs.get("target_frames") is None and not full_waveform_flag:
+        full_waveform_flag = True
+
+    if full_waveform_flag:
+        kwargs.pop("target_frames", None)
+        kwargs["full_waveform"] = True
+    else:
+        kwargs["full_waveform"] = False
+
+    kwargs["sample_rate"] = sample_rate
+    kwargs["hop_length"] = hop_length
+    if "win_length" in kwargs:
+        kwargs["win_length"] = int(kwargs.get("win_length"))
+    if "n_fft" in kwargs:
+        kwargs["n_fft"] = int(kwargs.get("n_fft"))
+
+    return prepared, kwargs
+
+
+def build_inference_dataloader(
+    dataset: Any,
+    *,
+    batch_size: int,
+    shuffle: bool,
+    num_workers: int,
+    pin_memory: bool,
+    persistent_workers: bool,
+    prefetch_factor: Optional[int],
+    pin_memory_device: Optional[str] = None,
+) -> DataLoader:
+    """Create a DataLoader configured for inference workloads."""
+
+    if batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer for inference")
+
+    loader_kwargs: Dict[str, Any] = {
+        "batch_size": int(batch_size),
+        "shuffle": bool(shuffle),
+        "num_workers": int(num_workers),
+        "pin_memory": bool(pin_memory),
+        "drop_last": False,
+        "collate_fn": collate_stft,
+    }
+
+    if loader_kwargs["num_workers"] > 0:
+        loader_kwargs["persistent_workers"] = bool(persistent_workers)
+        loader_kwargs["prefetch_factor"] = int(prefetch_factor) if prefetch_factor is not None else 2
+    else:
+        loader_kwargs["persistent_workers"] = False
+
+    if pin_memory_device:
+        loader_kwargs["pin_memory_device"] = str(pin_memory_device)
+
+    return DataLoader(dataset, **loader_kwargs)
+
+
+def resolve_chunk_sizes(
+    *,
+    sr: int,
+    hop_length: int,
+    samples_per_latent: int,
+    frames_per_latent: int,
+    segment_seconds: Optional[Any],
+    segment_frames: Optional[Any],
+    chunk_size_latent_cfg: Optional[Any],
+    overlap_latent: int,
+) -> Tuple[int, int, int]:
+    """Resolve chunk sizing options returning (chunk_samples, overlap_samples, chunk_latent)."""
+
+    options_selected = [segment_seconds is not None, segment_frames is not None, chunk_size_latent_cfg is not None]
+    if sum(options_selected) > 1:
+        raise ValueError("Specify only one among segment_seconds, segment_frames, chunk_size.")
+
+    if segment_seconds is not None:
+        segment_samples = int(round(float(segment_seconds) * sr))
+        chunk_size_latent = max(1, int(round(segment_samples / max(1, samples_per_latent))))
+    elif segment_frames is not None:
+        segment_frames = int(segment_frames)
+        chunk_size_latent = max(1, int(round(segment_frames / max(1, frames_per_latent))))
+    elif chunk_size_latent_cfg is not None:
+        chunk_size_latent = max(1, int(chunk_size_latent_cfg))
+    else:
+        chunk_size_latent = 128
+
+    chunk_size_samples = chunk_size_latent * samples_per_latent
+    overlap_samples = max(0, int(overlap_latent)) * samples_per_latent
+    return chunk_size_samples, overlap_samples, chunk_size_latent
+
+
+def _extract_autoencoder_state(state_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Return only the parameters that belong to the AutoEncoder module."""
+
+    prefixes = ("engine.autoencoder.", "autoencoder.")
+    extracted: Dict[str, Any] = {}
+
+    for key, value in state_dict.items():
+        matched = False
+        for prefix in prefixes:
+            if key.startswith(prefix):
+                extracted[key[len(prefix):]] = value
+                matched = True
+                break
+        if not matched and (
+            key.startswith("encoder.")
+            or key.startswith("decoder.")
+            or key.startswith("bottleneck.")
+        ):
+            extracted[key] = value
+
+    return extracted or state_dict
+
+
+def load_checkpoint(autoencoder: AutoEncoder, ckpt_path: Path) -> AutoEncoder:
+    """Load state dict from a Lightning checkpoint or plain state dict."""
+
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+    if isinstance(ckpt, dict) and "state_dict" in ckpt:
+        state_dict = _extract_autoencoder_state(ckpt["state_dict"])
+        missing, unexpected = autoencoder.load_state_dict(state_dict, strict=False)
+        if missing:
+            warnings.warn(f"Missing keys when loading checkpoint: {missing}")
+        if unexpected:
+            warnings.warn(f"Unexpected keys when loading checkpoint: {unexpected}")
+    else:
+        autoencoder.load_state_dict(ckpt)
+    return autoencoder

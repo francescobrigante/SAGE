@@ -42,9 +42,8 @@ dataset:
     target_frames: null       # leave null (with no segment_*) to stream full waveforms
 
 
-# riferimenti alle config di training
+# Configurazione del modello (architettura da istanziare)
 model_config_path: "conf/model/SEANet_cplx_model.yaml"
-data_config_path: "conf/data/data.yaml"
 
 # Limiti opzionali input (solo uno dei due se impostato)
 max_seconds: 10        # es: 4.0
