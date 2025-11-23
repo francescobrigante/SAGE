@@ -192,7 +192,7 @@ class AutoEncoder(nn.Module):
         self.downsampling_ratio = samples_per_latent
         return self.downsampling_ratio
 
-    def encode(self, audio, skip_bottleneck: bool = False, return_info=False, iterate_batch=False, **kwargs):
+    def encode(self, audio, skip_bottleneck: bool = False, return_info=False, iterate_batch=False, debug=True, **kwargs):
         # Separate STFT/ISTFT kwargs that should NOT go to encoder/bottleneck forward.
         STFT_PARAM_KEYS = {"n_fft", "hop_length", "win_length", "window", "center", "normalized", "onesided", "length"}
         encode_kwargs = {k: v for k, v in kwargs.items() if k not in STFT_PARAM_KEYS}
@@ -216,7 +216,11 @@ class AutoEncoder(nn.Module):
                         x = self.pre_transform.transform(x)
                     except Exception:
                         pass
+                if debug:
+                    print(f"[AutoEncoder.encode] input to encoder shape={x.shape}")
                 latents = self.encoder(x)  # avoid passing unrelated kwargs
+                if debug:
+                    print(f"[AutoEncoder.encode] encoder output latents shape={latents.shape}")
         else:
             latents = audio
 
@@ -232,7 +236,7 @@ class AutoEncoder(nn.Module):
             return latents, info
         return latents
 
-    def decode(self, latents, skip_bottleneck: bool = False, iterate_batch=False, **kwargs):
+    def decode(self, latents, skip_bottleneck: bool = False, iterate_batch=False, debug=True, **kwargs):
         # Filter out STFT-related kwargs that belong to ISTFT only.
         STFT_PARAM_KEYS = {"n_fft", "hop_length", "win_length", "window", "center", "normalized", "onesided", "length"}
         decode_kwargs = {k: v for k, v in kwargs.items() if k not in STFT_PARAM_KEYS}
@@ -264,7 +268,8 @@ class AutoEncoder(nn.Module):
                     decoded = self.pre_transform.inverse(decoded)
                 except Exception:
                     pass
-        
+        if debug:
+            print(f"[AutoEncoder.decode] decoder output shape={decoded.shape}")
         return decoded
           
     def _maybe_add_nyquist(self, S: torch.Tensor, n_fft: int, onesided: bool) -> torch.Tensor:
@@ -357,8 +362,15 @@ class AutoEncoder(nn.Module):
         S = self._maybe_add_nyquist(S, n_fft, onesided)
 
         T_frames = S.shape[-1]
-        if target_length is None and center:
-            target_length = hop_length*(T_frames-1) + (win_length or n_fft)
+        if target_length is None and hop_length is not None:
+            frames = max(T_frames - 1, 0)
+            if center:
+                # For centered STFT the original segment length is frames*hop (padded part is trimmed internally).
+                target_length = hop_length * frames
+            else:
+                base_win = win_length or n_fft
+                if base_win is not None:
+                    target_length = hop_length * frames + base_win
 
         if S.dim() == 4:  # [B, C, F, T]
             B, C, F_bins, T_frames = S.shape

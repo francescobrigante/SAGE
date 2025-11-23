@@ -38,7 +38,7 @@ trainer:
 wandb:
   project: ICML_2026
   name: SEANet_STFT_losses
-  use_wandb: true
+  use_wandb: false
 
 # Spectrogram normalization applied at encoder input and inverted at decoder output
 pre_transform:
@@ -68,20 +68,8 @@ loss_config:
       config:
         reduction: mean
 
-    mrstft:
-      config:
-        reduction: mean
-        factor_sc: 0.0
-        factor_mag: 0.5
-        linear_mag: true
-        factor_linear_mag: 1.0
 
-    cosine_phase_loss:
-      config:
-        reduction: mean
-        energy_weighted: false
-
-    weights: { stft_mse: 1.0, mrstft: 4.0, cosine_phase_loss: 2.0 }
+    weights: {stft_mse: 1.0}
 
 # Legacy fallback controls
 use_json: false
