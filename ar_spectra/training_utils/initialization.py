@@ -59,7 +59,15 @@ def collate_stft(batch):
     """
 
     Ss, wavs = zip(*batch)
-    s0 = Ss[0].shape
+    first_spec = Ss[0]
+
+    if first_spec is None:
+        assert all(x is None for x in Ss), "Mixed spectrogram/None batches are not supported."
+        w0 = wavs[0].shape
+        assert all(x.shape == w0 for x in wavs), f"Wav shapes differ: {[x.shape for x in wavs]}"
+        return None, torch.stack(wavs, 0)
+
+    s0 = first_spec.shape
     w0 = wavs[0].shape
     assert all(x.shape == s0 for x in Ss), f"STFT shapes differ: {[x.shape for x in Ss]}"
     assert all(x.shape == w0 for x in wavs), f"Wav shapes differ: {[x.shape for x in wavs]}"
