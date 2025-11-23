@@ -331,8 +331,13 @@ def main(cfg: DictConfig):
     logger = None
     if use_wandb:
         # NB: sezione W&B omessa; assicurarsi che WandbLogger usi save_dir=runs_dir
-        logger = WandbLogger(project=wandb_cfg.get("project", "ICML_2026"), name=wandb_cfg.get("name", "default_name"), 
-                             save_dir=str(runs_dir), log_model=False, settings=wandb.Settings(_service_wait=7))
+        logger = WandbLogger(
+            project=wandb_cfg.get("project", "ICML_2026"),
+            name=wandb_cfg.get("name", "default_name"),
+            save_dir=str(runs_dir),
+            log_model=wandb_cfg.get("log_model", "all"),  # log checkpoints to W&B with same cadence as local saves
+            settings=wandb.Settings(_service_wait=7),
+        )
         # Upload immediato dell'intera cartella di configurazione Hydra su W&B (senza copie locali)
         try:
             run = logger.experiment
