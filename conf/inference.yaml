@@ -1,0 +1,30 @@
+#############################################
+# Inference configuration for AutoEncoder/VAE
+#############################################
+
+# Path to a trained checkpoint, relative to project root
+checkpoint: "/home/cerovaz/repos/ICML/Eulero_BackBone/checkpoints/epoch_039.ckpt"
+
+# Input and output audio files (relative to project root)
+input_wav: "/home/cerovaz/repos/data/jamendo_full/test/388.mp3"
+output_wav: "/home/cerovaz/repos/ICML/Eulero_BackBone/runs/casos/pizzeria/388_recon.wav"
+
+# Target sample rate for inference. If different from input, audio
+# will be resampled. Should match training sample_rate.
+sample_rate: 44100
+
+# Mono conversion: if true, multi-channel input is averaged to mono
+mono: false
+
+# Chunked encode/decode settings (work in "latent steps")
+chunked: false
+overlap: 32
+
+
+# riferimenti alle config di training
+model_config_path: "conf/model/SEANet_cplx_model.yaml"
+data_config_path: "conf/data/data.yaml"
+
+# Limiti opzionali input (solo uno dei due se impostato)
+max_seconds: null        # es: 4.0
+max_frames: 512         # es: 128 (frame STFT)

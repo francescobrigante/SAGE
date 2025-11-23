@@ -193,6 +193,9 @@ class AutoEncoder(nn.Module):
         return self.downsampling_ratio
 
     def encode(self, audio, skip_bottleneck: bool = False, return_info=False, iterate_batch=False, **kwargs):
+        # Separate STFT/ISTFT kwargs that should NOT go to encoder/bottleneck forward.
+        STFT_PARAM_KEYS = {"n_fft", "hop_length", "win_length", "window", "center", "normalized", "onesided", "length"}
+        encode_kwargs = {k: v for k, v in kwargs.items() if k not in STFT_PARAM_KEYS}
         info = {}
         if self.encoder is not None:
             if iterate_batch:
@@ -204,7 +207,7 @@ class AutoEncoder(nn.Module):
                             x_i = self.pre_transform.transform(x_i)
                         except Exception:
                             pass
-                    latents.append(self.encoder(x_i))
+                    latents.append(self.encoder(x_i))  # encoder forward should not receive STFT params
                 latents = torch.cat(latents, dim=0)
             else:
                 x = audio
@@ -213,7 +216,7 @@ class AutoEncoder(nn.Module):
                         x = self.pre_transform.transform(x)
                     except Exception:
                         pass
-                latents = self.encoder(x)
+                latents = self.encoder(x)  # avoid passing unrelated kwargs
         else:
             latents = audio
 
@@ -221,7 +224,8 @@ class AutoEncoder(nn.Module):
 
         # JSON config is the ground truth: if SkipBottleneck is set we never apply VAEs or others.
         if self.bottleneck is not None:
-            latents, bottleneck_info = self.bottleneck.encode(latents, return_info=True, **kwargs)
+            # Pass only non-STFT kwargs to bottleneck.
+            latents, bottleneck_info = self.bottleneck.encode(latents, return_info=True, **encode_kwargs)
             info.update(bottleneck_info)
         
         if return_info:
@@ -229,11 +233,14 @@ class AutoEncoder(nn.Module):
         return latents
 
     def decode(self, latents, skip_bottleneck: bool = False, iterate_batch=False, **kwargs):
+        # Filter out STFT-related kwargs that belong to ISTFT only.
+        STFT_PARAM_KEYS = {"n_fft", "hop_length", "win_length", "window", "center", "normalized", "onesided", "length"}
+        decode_kwargs = {k: v for k, v in kwargs.items() if k not in STFT_PARAM_KEYS}
         if self.bottleneck is not None:
             if iterate_batch:
                 decoded = []
                 for i in range(latents.shape[0]):
-                    dec_i = self.bottleneck.decode(latents[i:i+1])
+                    dec_i = self.bottleneck.decode(latents[i:i+1])  # bottleneck decode receives no STFT params
                     decoded.append(dec_i)
                 latents = torch.cat(decoded, dim=0)
             else:
@@ -242,7 +249,7 @@ class AutoEncoder(nn.Module):
         if iterate_batch:
             decoded = []
             for i in range(latents.shape[0]):
-                y_i = self.decoder(latents[i:i+1], **kwargs)
+                y_i = self.decoder(latents[i:i+1], **decode_kwargs)
                 if getattr(self, "pre_transform", None) is not None:
                     try:
                         y_i = self.pre_transform.inverse(y_i)
@@ -251,7 +258,7 @@ class AutoEncoder(nn.Module):
                 decoded.append(y_i)
             decoded = torch.cat(decoded, dim=0)
         else:
-            decoded = self.decoder(latents, **kwargs)
+            decoded = self.decoder(latents, **decode_kwargs)
             if getattr(self, "pre_transform", None) is not None:
                 try:
                     decoded = self.pre_transform.inverse(decoded)
@@ -367,149 +374,237 @@ class AutoEncoder(nn.Module):
         else:
             raise RuntimeError(f"Unexpected complex shape {S.shape}")
 
-    def encode_audio(self,
-                     audio: torch.Tensor,
-                     chunked: bool = False,
-                     overlap: int = 32,
-                     chunk_size: int = 128,
-                     pack_complex: bool = True,
-                     **kwargs):
+
+    # =============================
+    # Inference utility functions
+    # =============================
+    def _plan_chunks(self, total_len: int, chunk_size: int, overlap_size: int) -> Tuple[List[Tuple[int, int]], int]:
+        """Plan (start,end) sample indices for chunked processing.
+        Pads at end so last chunk has exact chunk_size.
+        Returns list of tuples and the padded total length.
         """
-        Waveform -> STFT -> (optional pre_transform inside encode) -> latents.
-        If chunked=True performs encoding on overlapping waveform segments.
-        overlap and chunk_size are expressed in 'latent steps':
-        uses self.downsampling_ratio or hop_length as fallback.
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be > 0")
+        if overlap_size < 0 or overlap_size >= chunk_size:
+            raise ValueError("overlap_size must satisfy 0 <= overlap_size < chunk_size")
+        if total_len <= 0:
+            return [], 0
+        step = chunk_size - overlap_size
+        if step <= 0:
+            raise ValueError("chunk_size must be greater than overlap_size")
+        import math
+        n_chunks = math.ceil((total_len - overlap_size) / step)
+        padded_len = (n_chunks - 1) * step + chunk_size
+        chunks: List[Tuple[int,int]] = []
+        for i in range(n_chunks):
+            s = i * step
+            e = s + chunk_size
+            chunks.append((s, e))
+        return chunks, padded_len
+
+    def _hann_crossfade_windows(self, overlap_size: int) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Return (fade_in, fade_out) Hann halves; None if overlap_size==0."""
+        if overlap_size == 0:
+            return None, None
+        w = torch.hann_window(2 * overlap_size, periodic=False)
+        return w[:overlap_size], w[overlap_size:]
+
+    def encode_audio(
+        self,
+        audio: torch.Tensor,
+        *,
+        stereo: bool = True,
+        chunked: bool = False,
+        chunk_size: int = 0,
+        overlap_size: int = 0,
+        pack_complex: bool = True,
+        debug: bool = False,
+        **stft_kwargs,
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """Encode raw waveform(s) into latents with optional chunking + overlap.
+
+        Accepts audio [T], [C,T], or [B,C,T]; normalizes to [B,C,T].
+        When chunked, splits into overlapping chunks with step chunk_size-overlap_size.
+        Returns concatenated latents and info dict for decode_audio.
         """
+        # Normalize shape
+        if audio.dim() == 1:
+            audio = audio.unsqueeze(0).unsqueeze(0)
+        elif audio.dim() == 2:
+            audio = audio.unsqueeze(0)
+        elif audio.dim() != 3:
+            raise ValueError(f"audio must be 1D/2D/3D, got {tuple(audio.shape)}")
+        B, C, T_total = audio.shape
+        if stereo and C == 1:
+            audio = audio.repeat(1, 2, 1)
+            C = 2
+        if not stereo and C > 2:
+            raise ValueError("If stereo=False expected mono or stereo only.")
+        if debug:
+            print("[encode_audio] ---- PIPELINE START ----")
+            print(f"[encode_audio] input waveform shape={audio.shape} (B={B}, C={C}, T={T_total})")
+            print(f"[encode_audio] chunked={chunked}, chunk_size={chunk_size}, overlap_size={overlap_size}")
+            print(f"[encode_audio] STFT kwargs={stft_kwargs}")
+
+        info: Dict[str, Any] = {
+            "original_length": T_total,
+            "chunked": chunked,
+            "overlap_size": overlap_size,
+        }
         if not chunked:
-            S = self.stft(audio, **kwargs)  # complex [B, C, F, Tt]
-            if pack_complex:
-                S = self._pack_complex(S)    # [B, 2C, F, Tt]
-            latents = self.encode(S, **kwargs)
-            return latents
+            chunks = [(0, T_total)]
+            padded_length = T_total
+        else:
+            if chunk_size <= 0:
+                raise ValueError("chunk_size must be > 0 when chunked=True")
+            chunks, padded_length = self._plan_chunks(T_total, chunk_size, overlap_size)
+            if padded_length > T_total:
+                pad_amt = padded_length - T_total
+                audio = torch.nn.functional.pad(audio, (0, pad_amt))
+            info["padded_length"] = padded_length
+        info["chunk_boundaries"] = chunks
 
-        n_fft      = kwargs.get("n_fft", 2048)
-        hop_length = kwargs.get("hop_length", n_fft // 4)
-        samples_per_latent = int(getattr(self, "downsampling_ratio", hop_length))
-        total_size = audio.shape[-1]
-        batch_size = audio.shape[0]
-        chunk_size_samples = chunk_size * samples_per_latent
-        overlap_samples    = overlap * samples_per_latent
-        hop_samples        = chunk_size_samples - overlap_samples
-        chunks = []
-        for start in range(0, total_size - chunk_size_samples + 1, hop_samples):
-            end = start + chunk_size_samples
-            chunks.append(audio[:, :, start:end])
-        if end != total_size:
-            chunks.append(audio[:, :, -chunk_size_samples:])
-        chunks = torch.stack(chunks)  # [N, B, C, chunk_size_samples]
-        num_chunks = chunks.shape[0]
+        latent_chunks: List[torch.Tensor] = []
+        latent_chunk_lengths: List[int] = []
+        stft_frames_per_chunk: List[int] = []
 
-        y_size = total_size // samples_per_latent
-        latent_channels = getattr(self, "latent_dim", None)
-        if latent_channels is None:
-            for k in ["dimension", "latent_dim", "out_channels"]:
-                if hasattr(self.encoder, k):
-                    latent_channels = int(getattr(self.encoder, k))
-                    break
-        if latent_channels is None:
-            raise RuntimeError("Unable to determine latent_dim for final buffer.")
-        y_final = torch.zeros((batch_size, latent_channels, y_size), dtype=audio.dtype, device=audio.device)
+        for i, (s, e) in enumerate(chunks):
+            wav_chunk = audio[:, :, s:e]
+            if debug:
+                print(f"[encode_audio] ---- CHUNK {i} ----")
+                print(f"[encode_audio] slice samples=({s}, {e}) -> wav_chunk shape={wav_chunk.shape}")
+            spec = self.stft(wav_chunk, **stft_kwargs)  # complex [B,C,F,TT]
+            if debug:
+                print(f"[encode_audio] STFT -> complex spec shape={spec.shape}")
+            spec_in = self._pack_complex(spec) if pack_complex else spec
+            if debug:
+                packing_msg = "packed real/imag (2*C channels)" if pack_complex else "kept complex tensor"
+                print(f"[encode_audio] spec post-pack: shape={spec_in.shape} ({packing_msg})")
+            lat = self.encode(spec_in)
+            if debug:
+                print(f"[encode_audio] encoder output latents shape={lat.shape}")
+            latent_chunks.append(lat)
+            latent_chunk_lengths.append(lat.shape[-1])
+            stft_frames_per_chunk.append(spec.shape[-1])
+            if debug:
+                print(f"[encode_audio] chunk {i} wav {wav_chunk.shape} spec {spec_in.shape} lat {lat.shape}")
 
-        for i in range(num_chunks):
-            wav_chunk = chunks[i]
-            S_chunk = self.stft(wav_chunk, **kwargs)
-            if pack_complex:
-                S_chunk = self._pack_complex(S_chunk)
-            y_chunk = self.encode(S_chunk, **kwargs)
-            if i == num_chunks - 1:
-                t_end = y_size
-                t_start = t_end - y_chunk.shape[-1]
-            else:
-                t_start = i * hop_samples // samples_per_latent
-                t_end = t_start + chunk_size_samples // samples_per_latent
-            ol = overlap_samples // samples_per_latent // 2
-            c_start = 0
-            c_end = y_chunk.shape[-1]
-            if i > 0:
-                t_start += ol
-                c_start += ol
-            if i < num_chunks - 1:
-                t_end -= ol
-                c_end -= ol
-            y_final[:, :, t_start:t_end] = y_chunk[:, :, c_start:c_end]
+        latents = torch.cat(latent_chunks, dim=-1) if latent_chunks else torch.empty(0)
+        info["latent_chunk_lengths"] = latent_chunk_lengths
+        info["stft_frames_per_chunk"] = stft_frames_per_chunk
+        # Store expected sample lengths per chunk (before any padding trimming at decode)
+        info["chunk_expected_lengths"] = [e - s for (s, e) in chunks]
+        info["latents_shape"] = tuple(latents.shape)
+        if debug:
+            print(f"[encode_audio] ---- PIPELINE END ----")
+            print(f"[encode_audio] concatenated latents shape={latents.shape}")
+            print(f"[encode_audio] metadata={info}")
+        return latents, info
 
-        return y_final
-    
-    def decode_audio(self,
-                     latents: torch.Tensor,
-                     chunked: bool = False,
-                     overlap: int = 32,
-                     chunk_size: int = 128,
-                     packed_input: bool = True,
-                     **kwargs):
-        """
-        Latents -> spectrogram (self.decode applies inverse pre_transform) -> ISTFT -> waveform.
-        If chunked=True decodes overlapping latent segments and reassembles waveform.
-        packed_input=True means decoder returns stacked spectrogram (2C).
-        """
+    def decode_audio(
+        self,
+        latents: torch.Tensor,
+        info: Dict[str, Any],
+        *,
+        stereo: bool = True,
+        chunked: bool = False,
+        pack_complex: bool = True,
+        debug: bool = False,
+        remove_padding: bool = True,
+        **istft_kwargs,
+    ) -> torch.Tensor:
+        """Decode concatenated latents back to waveform with optional chunked Hann crossfade reconstruction."""
+        if latents.dim() < 3:
+            raise ValueError("latents expected >=3D with time axis last")
+        original_length = info.get("original_length")
+        padded_length = info.get("padded_length", original_length)
+        chunk_boundaries: List[Tuple[int,int]] = info.get("chunk_boundaries", [(0, original_length)])
+        latent_chunk_lengths: List[int] = info.get("latent_chunk_lengths", [latents.shape[-1]])
+        overlap_size = info.get("overlap_size", 0)
+
         if not chunked:
-            S_rec = self.decode(latents, **kwargs)
-            if packed_input:
-                S_rec = self._unpack_complex(S_rec)
-            wav = self.istft(S_rec, **kwargs)
+            if debug:
+                print("[decode_audio] ---- PIPELINE START (single chunk) ----")
+                print(f"[decode_audio] latent tensor shape={latents.shape}")
+                print(f"[decode_audio] pack_complex={pack_complex}, ISTFT kwargs={istft_kwargs}")
+            spec = self.decode(latents)
+            spec_complex = self._unpack_complex(spec) if pack_complex else (spec if torch.is_complex(spec) else spec)
+            if debug:
+                print(f"[decode_audio] decoder output spec shape={spec.shape}")
+                print(f"[decode_audio] spec converted to complex shape={spec_complex.shape}")
+
+            expected_frames = (info.get("stft_frames_per_chunk", [spec_complex.shape[-1]]) or [spec_complex.shape[-1]])[0]
+            cur_frames = spec_complex.shape[-1]
+            target_len = istft_kwargs.get("length")
+            if target_len is None:
+                target_len = original_length or (info.get("chunk_expected_lengths", [None])[0])
+            istft_args = dict(istft_kwargs)
+            if target_len is not None:
+                istft_args["length"] = target_len
+            wav = self.istft(spec_complex, **istft_args)
+            if remove_padding and wav.shape[-1] >= original_length:
+                wav = wav[..., :original_length]
+            if debug:
+                print(f"[decode_audio] ISTFT -> waveform shape={wav.shape} (trimmed_to_original={remove_padding})")
+                print("[decode_audio] ---- PIPELINE END ----")
             return wav
 
-        n_fft      = kwargs.get("n_fft", 2048)
-        hop_length = kwargs.get("hop_length", n_fft // 4)
-        samples_per_latent = int(getattr(self, "downsampling_ratio", hop_length))
-        total_size_latent = latents.shape[-1]
-        batch_size = latents.shape[0]
-        hop_latent = chunk_size - overlap
+        if sum(latent_chunk_lengths) != latents.shape[-1]:
+            raise ValueError("Sum of latent_chunk_lengths does not match latents time axis.")
+        fade_in, fade_out = self._hann_crossfade_windows(overlap_size)
+        if fade_in is not None:
+            fade_in = fade_in.to(latents.device)
+            fade_out = fade_out.to(latents.device)
 
-        chunks = []
-        for start in range(0, total_size_latent - chunk_size + 1, hop_latent):
-            end = start + chunk_size
-            chunks.append(latents[:, :, start:end])
-        if end != total_size_latent:
-            chunks.append(latents[:, :, -chunk_size:])
-        chunks = torch.stack(chunks)  # [N, B, D, Lc]
-        num_chunks = chunks.shape[0]
+        # Split latents
+        cursor = 0
+        lat_list: List[torch.Tensor] = []
+        for L in latent_chunk_lengths:
+            lat_list.append(latents[..., cursor:cursor+L])
+            cursor += L
 
-        waveform_len = total_size_latent * samples_per_latent
-        out_channels = getattr(self, "out_channels", None)
-        if out_channels is None:
-            for k in ["out_channels", "channels", "n_channels"]:
-                if hasattr(self.decoder, k):
-                    out_channels = int(getattr(self.decoder, k))
-                    break
-        if out_channels is None:
-            out_channels = 1
-        y_final = torch.zeros((batch_size, out_channels, waveform_len), dtype=latents.dtype, device=latents.device)
-
-        for i in range(num_chunks):
-            y_chunk_lat = chunks[i]
-            S_chunk = self.decode(y_chunk_lat, **kwargs)
-            if packed_input:
-                S_chunk = self._unpack_complex(S_chunk)
-            wav_chunk = self.istft(S_chunk, **kwargs)
-            if i == num_chunks - 1:
-                t_end = waveform_len
-                t_start = t_end - wav_chunk.shape[-1]
+        decoded_wave_chunks: List[torch.Tensor] = []
+        for i, lat_chunk in enumerate(lat_list):
+            if debug:
+                print(f"[decode_audio] ---- CHUNK {i} ----")
+                print(f"[decode_audio] latent slice shape={lat_chunk.shape} expected_samples={chunk_boundaries[i] if i < len(chunk_boundaries) else None}")
+            spec_chunk = self.decode(lat_chunk)
+            spec_complex = self._unpack_complex(spec_chunk) if pack_complex else (spec_chunk if torch.is_complex(spec_chunk) else spec_chunk)
+            if debug:
+                print(f"[decode_audio] decoder output spec shape={spec_chunk.shape}")
+                print(f"[decode_audio] spec converted to complex shape={spec_complex.shape}")
+            expected_len = (chunk_boundaries[i][1] - chunk_boundaries[i][0]) if i < len(chunk_boundaries) else None
+            if expected_len is not None:
+                wav_chunk = self.istft(spec_complex, length=expected_len, **istft_kwargs)
             else:
-                t_start = i * hop_latent * samples_per_latent
-                t_end = t_start + chunk_size * samples_per_latent
-            ol = (overlap // 2) * samples_per_latent
-            c_start = 0
-            c_end = wav_chunk.shape[-1]
-            if i > 0:
-                t_start += ol
-                c_start += ol
-            if i < num_chunks - 1:
-                t_end -= ol
-                c_end -= ol
-            y_final[:, :, t_start:t_end] = wav_chunk[:, :, c_start:c_end]
+                wav_chunk = self.istft(spec_complex, **istft_kwargs)
+            decoded_wave_chunks.append(wav_chunk)
+            if debug:
+                print(f"[decode_audio] ISTFT -> wav_chunk shape={wav_chunk.shape}")
 
-        return y_final
+        out = torch.zeros(decoded_wave_chunks[0].shape[0], decoded_wave_chunks[0].shape[1], padded_length,
+                          device=decoded_wave_chunks[0].device, dtype=decoded_wave_chunks[0].dtype)
+        for i, ((s, e), wav_chunk) in enumerate(zip(chunk_boundaries, decoded_wave_chunks)):
+            expected_len = e - s
+            if wav_chunk.shape[-1] != expected_len:
+                diff = expected_len - wav_chunk.shape[-1]
+                if diff > 0:
+                    wav_chunk = torch.nn.functional.pad(wav_chunk, (0, diff))
+                else:
+                    wav_chunk = wav_chunk[..., :expected_len]
+            if overlap_size > 0 and fade_in is not None:
+                if i > 0:
+                    wav_chunk[..., :overlap_size] *= fade_in.view(1,1,-1)
+                if i < len(decoded_wave_chunks) - 1:
+                    wav_chunk[..., -overlap_size:] *= fade_out.view(1,1,-1)
+            out[..., s:e] += wav_chunk
+        if remove_padding and out.shape[-1] >= original_length:
+            out = out[..., :original_length]
+        if debug:
+            print("[decode_audio] overlap-add reconstruction completed.")
+            print(f"[decode_audio] final waveform shape={out.shape} (trimmed_to_original={remove_padding})")
+            print("[decode_audio] ---- PIPELINE END ----")
+        return out
 
     @classmethod
     def from_config(cls, cfg: Dict[str, Any]) -> "AutoEncoder":

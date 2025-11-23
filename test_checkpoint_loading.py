@@ -8,6 +8,7 @@ from omegaconf import OmegaConf
 
 from ar_spectra.models.autoencoder import AutoEncoder
 from ar_spectra.training_utils.initialization import resolve_auto_channels
+from inference import _extract_autoencoder_state
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -63,11 +64,7 @@ def test_epoch_029_checkpoint_loads_without_missing_keys() -> None:
     checkpoint = torch.load(ckpt_path, map_location="cpu")
 
     if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-        state_dict = {
-            k.replace("autoencoder.", ""): v
-            for k, v in checkpoint["state_dict"].items()
-            if k.startswith("autoencoder.")
-        }
+        state_dict = _extract_autoencoder_state(checkpoint["state_dict"])
     else:
         state_dict = checkpoint
 
