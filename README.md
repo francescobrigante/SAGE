@@ -48,13 +48,13 @@ This project extends these paradigms into the **complex domain**, enabling expli
 
 ---
 
-## 🧩 Repository Structure
+## 🧩 Repository Structure and Info
 
-# AutoEncoder Construction Guide
+## AutoEncoder Construction Guide
 
 This project lets you build the AutoEncoder in multiple interchangeable ways. All approaches produce an AutoEncoder instance; pick the one that best fits your workflow or tooling.
 
-## 1) From a dict “spec” (same shape as JSON configs)
+### 1) From a dict “spec” (same shape as Hydra YAML blocks)
 
 ```python
 from ar_spectra.models.autoencoder import AutoEncoder
@@ -75,7 +75,7 @@ ae = AutoEncoder(
 )
 ```
 
-## 2) Passing classes directly (no constructor args)
+### 2) Passing classes directly (no constructor args)
 
 ```python
 from ar_spectra.models.autoencoders.SeaNET_AE import SEANetEncoder2d, SEANetDecoder2d
@@ -84,7 +84,7 @@ from ar_spectra.models.autoencoder import AutoEncoder
 ae = AutoEncoder(encoder=SEANetEncoder2d, decoder=SEANetDecoder2d)
 ```
 
-## 3) Passing class paths as strings (no constructor args)
+### 3) Passing class paths as strings (no constructor args)
 
 ```python
 from ar_spectra.models.autoencoder import AutoEncoder
@@ -95,7 +95,7 @@ ae = AutoEncoder(
 )
 ```
 
-## 4) Passing prebuilt instances
+### 4) Passing prebuilt instances
 
 ```python
 from ar_spectra.models.autoencoders.SeaNET_AE import SEANetEncoder2d, SEANetDecoder2d
@@ -106,12 +106,13 @@ dec = SEANetDecoder2d(input_size=64)
 ae = AutoEncoder(encoder=enc, decoder=dec)
 ```
 
-## 5) From a model config dict 
+### 5) From a Hydra YAML config
 
 ```python
+from omegaconf import OmegaConf
 from ar_spectra.models.autoencoder import AutoEncoder
 
-# cfg is your experiment config loaded from JSON (e.g., ar_spectra/config/experiments/SEANet_STFT.json)
+cfg = OmegaConf.load("conf/model/SEANet_cplx_model.yaml")
 ae = AutoEncoder.from_config(cfg["model"])
 ```
 
@@ -128,6 +129,39 @@ To prevent silent shape mismatches, the constructor validates channels:
 - Without a VAE bottleneck: encoder output channels must equal decoder input channels.
 - With VAEBottleneck: encoder channels must be 2 × decoder input (mean + logvar).
 - With SkipBottleneck: encoder channels must equal decoder input.
+
+---
+
+## 🚀 Inference Workflow
+
+The inference stack is controlled entirely by `conf/inference.yaml` and the helper script `inference.py`. Training configs (`conf/data/*.yaml`) are no longer required at runtime: the dataset defined inside `inference.yaml` is used both to infer channel dimensions and to feed evaluation batches.
+
+### Key Blocks in `conf/inference.yaml`
+- `checkpoint`: absolute or project-relative path to the `.ckpt` file to restore.
+- `model_config_path`: YAML describing the architecture (must contain a `model` section).
+- `sample_rate`, `mono`, `chunked`, `overlap`, `chunk_size`, `segment_*`: global encode/decode options.
+- `dataset`: spec used to infer model/audio channels and (when `dataset_inference.enabled=false`) to process data.
+- `dataset_inference`: optional override that enables batched inference over a dataset, with its own loader settings and chunking overrides.
+- `input_wav` / `output_wav`: enables single-file reconstruction with optional trimming via `max_seconds` or `max_frames`.
+
+The dataset block follows the same spec format used in training; the resolver `prepare_dataset_spec` makes paths absolute, normalizes STFT parameters, and optionally forces mono audio when requested.
+
+### Running Inference
+1. **Edit `conf/inference.yaml`:**
+    - Point `checkpoint` to the trained weights.
+    - Ensure `model_config_path` references the architecture that produced the checkpoint.
+    - Configure the `dataset` block with the audio source and STFT settings used at train time (set `cac`, `stereo`, etc.).
+    - Optionally enable `dataset_inference.enabled` to iterate over an entire dataset; otherwise only the single-file path is run.
+2. **Launch the script:**
+    ```bash
+    uv run inference.py        # or: python inference.py
+    ```
+    Hydra picks up `conf/inference.yaml` as the default configuration. CLI overrides are possible (e.g. `python inference.py chunked=true chunk_size=64`).
+3. **Inspect outputs:**
+    - Single-file reconstructions land at `output_wav`.
+    - Dataset runs write to `dataset_inference.output_dir` (optionally saving inputs if `save_input_audio=true`).
+
+At startup the script instantiates the configured dataset, deduces spectrogram/audio channels, patches the model definition, loads the checkpoint, and runs the selected inference modes. Errors such as missing files or invalid chunk parameters are reported via the Rich-colored logger.
 
 ---
 
@@ -224,13 +258,13 @@ Relevant options:
 - `trainer.strategy`: strategy identifier (`auto`, `ddp`, `deepspeed`, etc.).
 - `device` (in `trainer.yaml`): target device string (`cuda` or `cpu`).
 
-### 9. JSON Configuration Consumption
+### 9. Hydra Composition Tips
 
-An alternative configuration path: supply a monolithic JSON experiment file. Activate by setting:
+Configs are grouped under `conf/` (e.g. `model/`, `data/`, `trainer/`). Select different variants by overriding the group on the CLI:
 ```bash
-python train.py trainer.use_json=true trainer.json_path=ar_spectra/conf/experiments/SEANet_STFT.json
+python train.py model=SEANet_cplx_model data=data trainer=trainer
 ```
-When `trainer.use_json=true`, all hierarchical overrides are ignored and the specified JSON is loaded directly. This supports archival reproduction and cross-framework benchmarks.
+Hydra merges the requested groups with `conf/config.yaml` defaults. Replace the group names with any other file in the corresponding directory and combine with per-parameter overrides from §2 to explore new experiments without editing files.
 
 ### 10. Reproducibility Guidelines
 
