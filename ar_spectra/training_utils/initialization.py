@@ -139,7 +139,11 @@ def build_datasets_and_loaders(cfg: Dict[str, Any]) -> DataInitResult:
     ``train_dataset``, ``eval_dataset`` and their corresponding dataloaders.
     """
 
-    train_ds = instantiate_from_spec(cfg["train_dataset"])
+    seed_value = int(cfg.get("seed", 42))
+    train_spec = copy.deepcopy(cfg["train_dataset"])
+    train_kwargs = train_spec.setdefault("kwargs", {}) or {}
+    train_kwargs.setdefault("seed", seed_value)
+    train_ds = instantiate_from_spec(train_spec)
     dl_cfg = cfg.get("train_dataloader", {}) or {}
     num_workers = int(dl_cfg.get("num_workers", 8))
 
@@ -157,7 +161,13 @@ def build_datasets_and_loaders(cfg: Dict[str, Any]) -> DataInitResult:
     )
 
     eval_spec = cfg.get("eval_dataset", None)
-    eval_ds = instantiate_from_spec(eval_spec) if eval_spec else None
+    if eval_spec:
+        eval_spec = copy.deepcopy(eval_spec)
+        eval_kwargs = eval_spec.setdefault("kwargs", {}) or {}
+        eval_kwargs.setdefault("seed", seed_value)
+        eval_ds = instantiate_from_spec(eval_spec)
+    else:
+        eval_ds = None
     dl_eval_cfg = cfg.get("eval_dataloader", {}) or {}
 
     if eval_ds is not None:

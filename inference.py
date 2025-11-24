@@ -23,6 +23,7 @@ from ar_spectra.training_utils.initialization import (
     resolve_auto_channels,
     resolve_chunk_sizes,
 )
+from ar_spectra.training_utils.reproducibility import configure_reproducibility
 
 console = Console()
 
@@ -48,6 +49,13 @@ def _to_plain_dict(node: Optional[Any]) -> Dict[str, Any]:
     if isinstance(node, dict):
         return copy.deepcopy(node)
     return {}
+
+
+def _ensure_dataset_seed(spec: Dict[str, Any], seed: int) -> Dict[str, Any]:
+    copy_spec = copy.deepcopy(spec)
+    kwargs = copy_spec.setdefault("kwargs", {}) or {}
+    kwargs.setdefault("seed", int(seed))
+    return copy_spec
 
 
 def save_audio(waveform: torch.Tensor, target_path: Path, sample_rate: int) -> None:
@@ -372,6 +380,10 @@ def main(cfg: DictConfig) -> None:
         except (TypeError, ValueError):
             return fallback
 
+    seed = int(cfg.get("seed", 42))
+    deterministic_flag = bool(cfg.get("deterministic", True))
+    configure_reproducibility(seed, deterministic=deterministic_flag, warn=warn)
+
     if not cfg.get("model_config_path"):
         err("inference.yaml must define model_config_path")
         return
@@ -492,6 +504,8 @@ def main(cfg: DictConfig) -> None:
         err("Unable to resolve dataset specification for inferring model channels.")
         return
 
+    channel_dataset_spec = _ensure_dataset_seed(channel_dataset_spec, seed)
+
     channel_cfg_stub = {"train_dataset": {"kwargs": channel_dataset_spec.get("kwargs", {}) or {}}}
 
     try:
@@ -579,6 +593,8 @@ def main(cfg: DictConfig) -> None:
                 "chunk_size_latent": dataset_cfg_block.get("chunk_size", chunk_size_latent_global),
                 "overlap_latent": dataset_cfg_block.get("overlap", overlap_latent_global),
             }
+
+            inference_dataset_spec = _ensure_dataset_seed(inference_dataset_spec, seed)
 
             try:
                 dataset_obj = instantiate_from_spec(copy.deepcopy(inference_dataset_spec))
