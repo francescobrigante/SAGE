@@ -375,31 +375,6 @@ class AutoencoderValDemoCallback(pl.Callback):
         right = pad - left
         return F.pad(x, (left, right), mode="constant", value=0.0)
 
-    @staticmethod
-    def _resolve_istft_kwargs(training_params: dict, override_params: dict) -> dict:
-        """
-        - Parte dai parametri di training (dataset.kwargs)
-        - Applica override; se un valore è "auto", usa quello di training
-        - Filtra solo le chiavi ISTFT supportate
-        """
-        # NOTE: do not rely on passing 'length' here anymore; ISTFT length will be handled elsewhere/ignored if not present
-        allowed = {"n_fft", "hop_length", "win_length", "center", "normalized", "window",}
-        base = {k: v for k, v in (training_params or {}).items() if k in allowed}
-        for k, v in (override_params or {}).items():
-            if k not in allowed:
-                continue
-            if isinstance(v, str) and v.lower() == "auto":
-                # tiene il valore di training (se esiste), altrimenti non impostare
-                if k not in base:
-                    base.pop(k, None)
-                continue
-            base[k] = v
-        # rimuovi eventuali "auto" residui
-        for k in list(base.keys()):
-            if isinstance(base[k], str) and base[k].lower() == "auto":
-                base.pop(k, None)
-        return base
-
     @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx: int = 0):
         # logga solo sul primo batch di ogni epoca, con frequenza every_n_epochs
@@ -431,33 +406,13 @@ class AutoencoderValDemoCallback(pl.Callback):
             latents = pl_module.autoencoder.encode(encoder_input)
             sp_decoded = pl_module.autoencoder.decode(latents)
 
-            # accept either pl_module.stft_params or the engine fallback pl_module.engine.stft_params
-            training_stft = dict(
-                getattr(pl_module, "stft_params", None)
-                or getattr(getattr(pl_module, "engine", None), "stft_params", {})
-                or {}
-            )
-            istft_kwargs = self._resolve_istft_kwargs(training_stft, self.istft_params)
-
-
+            target_len = reals_wav.shape[-1]
             try:
-                decoded = pl_module.autoencoder.istft(sp_decoded, **istft_kwargs)
-                encoder_input_istft = pl_module.autoencoder.istft(encoder_input, **istft_kwargs)
-                encoder_input_bis = encoder_input_istft
-
-            # TODO: specifica eccezioni ISTFT
-            except Exception as e:
-                # fallback: prova con i parametri di training, che dovrebbero essere coerenti
-                warn(f"Validation demo ISTFT failed with demo params ({e.__class__.__name__}: {e}). Retrying with training params.")
-                fallback_kwargs = self._resolve_istft_kwargs(training_stft, {})
-                decoded = pl_module.autoencoder.istft(sp_decoded, **fallback_kwargs)
-                encoder_input_istft = pl_module.autoencoder.istft(encoder_input, **fallback_kwargs)
-                encoder_input_bis = encoder_input_istft
-
-            except Exception as e:
-                decoded = pl_module.autoencoder.istft(sp_decoded, self.istft_params)
-                encoder_input_istft = pl_module.autoencoder.istft(encoder_input, **self.istft_params)
-                encoder_input_bis = encoder_input_istft
+                decoded = pl_module.autoencoder.istft(sp_decoded, target_length=target_len)
+                encoder_input_istft = pl_module.autoencoder.istft(encoder_input, target_length=target_len)
+            except Exception as exc:
+                warn(f"Validation demo ISTFT failed ({type(exc).__name__}: {exc}). Skipping demo logging for this batch.")
+                return
             
             # allinea a reals e applica target length opzionale
             from .autoencoders import trim_to_shortest  # reuse helper

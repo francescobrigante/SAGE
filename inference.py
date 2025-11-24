@@ -71,7 +71,6 @@ def _encode_decode_batch(
     chunk_size_samples: int,
     overlap_samples: int,
     pack_complex: bool,
-    stft_kwargs: Dict[str, Any],
     debug: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     with torch.no_grad():
@@ -82,7 +81,6 @@ def _encode_decode_batch(
             overlap_size=overlap_samples,
             pack_complex=pack_complex,
             debug=debug,
-            **stft_kwargs,
         )
         recon = autoencoder.decode_audio(
             latents,
@@ -90,7 +88,6 @@ def _encode_decode_batch(
             chunked=chunked,
             pack_complex=pack_complex,
             debug=debug,
-            **stft_kwargs,
         )
     return recon, latents
 
@@ -102,7 +99,6 @@ def run_single_file_inference(
     output_path: Path,
     device: torch.device,
     cfg: DictConfig,
-    stft_common_kwargs: Dict[str, Any],
     hop_length: int,
     win_length: int,
     center_flag: bool,
@@ -180,7 +176,6 @@ def run_single_file_inference(
         chunk_size_samples=chunk_size_samples,
         overlap_samples=overlap_samples,
         pack_complex=pack_complex,
-        stft_kwargs=stft_common_kwargs,
         debug=debug,
     )
     ok(f"Encoded audio -> latents shape={tuple(latents.shape)}")
@@ -198,7 +193,6 @@ def run_dataset_inference(
     dataset_cfg: Dict[str, Any],
     project_root: Path,
     device: torch.device,
-    stft_common_kwargs: Dict[str, Any],
     hop_length: int,
     samples_per_latent: int,
     frames_per_latent: int,
@@ -334,7 +328,6 @@ def run_dataset_inference(
             chunk_size_samples=chunk_size_samples,
             overlap_samples=overlap_samples,
             pack_complex=pack_complex,
-            stft_kwargs=stft_common_kwargs,
             debug=debug,
         )
 
@@ -478,12 +471,19 @@ def main(cfg: DictConfig) -> None:
     stft_common_kwargs: Dict[str, Any] = {"n_fft": n_fft, "hop_length": hop_length}
     if "win_length" in stft_params:
         stft_common_kwargs["win_length"] = win_length
-    if "center" in stft_params:
-        stft_common_kwargs["center"] = center_flag
+    stft_common_kwargs.setdefault("win_length", win_length)
+
+    if not center_flag:
+        warn("Forcing center=True for inference to keep waveform length consistent.")
+    stft_common_kwargs["center"] = True
+
     if "normalized" in stft_params:
         stft_common_kwargs["normalized"] = bool(stft_params.get("normalized", False))
+    stft_common_kwargs.setdefault("normalized", False)
+
     if "onesided" in stft_params:
         stft_common_kwargs["onesided"] = bool(stft_params.get("onesided", True))
+    stft_common_kwargs.setdefault("onesided", True)
 
     channel_dataset_spec = (
         prepared_dataset_spec_mode if dataset_mode and prepared_dataset_spec_mode else prepared_dataset_spec_base
@@ -544,6 +544,12 @@ def main(cfg: DictConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     autoenc.to(device)
 
+    try:
+        autoenc.set_stft_config(stft_common_kwargs)
+    except Exception as exc:
+        err(f"Invalid STFT configuration for inference: {exc}")
+        return
+
     samples_per_latent = autoenc.infer_downsampling_ratio(hop_length=hop_length)
     frames_per_latent = max(1, samples_per_latent // hop_length)
 
@@ -587,7 +593,6 @@ def main(cfg: DictConfig) -> None:
                     dataset_cfg=dataset_cfg_block,
                     project_root=project_root,
                     device=device,
-                    stft_common_kwargs=stft_common_kwargs,
                     hop_length=hop_length,
                     samples_per_latent=samples_per_latent,
                     frames_per_latent=frames_per_latent,
@@ -617,7 +622,6 @@ def main(cfg: DictConfig) -> None:
             output_path=output_path,
             device=device,
             cfg=cfg,
-            stft_common_kwargs=stft_common_kwargs,
             hop_length=hop_length,
             win_length=win_length,
             center_flag=center_flag,

@@ -1,17 +1,17 @@
 from __future__ import annotations
-import torch
-import torch.nn as nn
-from typing import Dict, Any
-import json
+
 import importlib
+import json
+import warnings
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+
 import torch
 import torch.nn as nn
-import warnings
-from ar_spectra.models.bottlenecks import VAEBottleneck, SkipBottleneck
-from rich.console import Console
+
+from ar_spectra.models.bottlenecks import SkipBottleneck, VAEBottleneck
 from ar_spectra.training_utils.pre_transform import create_pre_transform
-import torchaudio
+from rich.console import Console
 
 console = Console()
 def warn(msg):   console.print(msg, style="bold yellow")
@@ -47,6 +47,66 @@ def instantiate_from_spec(spec: Dict[str, Any]) -> Any:
     return cls(*args, **kwargs)
 
 
+@dataclass
+class STFTConfig:
+    """Canonical STFT configuration shared across encode/decode helpers."""
+
+    n_fft: int
+    hop_length: int
+    win_length: int
+    center: bool = True
+    normalized: bool = False
+    onesided: bool = True
+    window: Optional[Union[str, torch.Tensor]] = None
+    _window_cache: Dict[Tuple[torch.device, torch.dtype], torch.Tensor] = field(default_factory=dict, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.n_fft <= 0:
+            raise ValueError("n_fft must be a positive integer")
+        if self.hop_length <= 0:
+            raise ValueError("hop_length must be a positive integer")
+        if self.win_length <= 0:
+            raise ValueError("win_length must be a positive integer")
+        if self.win_length > self.n_fft:
+            raise ValueError("win_length cannot exceed n_fft")
+        if not self.center:
+            raise ValueError("center must be set to True to guarantee waveform length consistency")
+
+    def to_public_dict(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
+            "n_fft": int(self.n_fft),
+            "hop_length": int(self.hop_length),
+            "win_length": int(self.win_length),
+            "center": bool(self.center),
+            "normalized": bool(self.normalized),
+            "onesided": bool(self.onesided),
+        }
+        if isinstance(self.window, str):
+            data["window"] = self.window
+        return data
+
+    def get_window(self, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        key = (device, dtype)
+        if key in self._window_cache:
+            return self._window_cache[key]
+
+        if isinstance(self.window, torch.Tensor):
+            win = self.window.to(device=device, dtype=dtype)
+        elif self.window is None:
+            win = torch.hann_window(self.win_length, dtype=dtype, device=device)
+        elif isinstance(self.window, str):
+            factory_name = f"{self.window.lower()}_window"
+            factory = getattr(torch, factory_name, None)
+            if factory is None:
+                raise ValueError(f"Unsupported window factory '{self.window}'.")
+            win = factory(self.win_length, dtype=dtype, device=device)
+        else:
+            raise TypeError("window must be None, Tensor or string identifier")
+
+        self._window_cache[key] = win
+        return win
+
+
 class AutoEncoder(nn.Module):
     """
     Generic container. Manages forward pass encoder->decoder.
@@ -59,6 +119,7 @@ class AutoEncoder(nn.Module):
         bottleneck: Optional[Union[nn.Module, Dict[str, Any], str, type]] = None,
         return_latent: bool = False,
         pre_transform: Optional[Union[str, Dict[str, Any]]] = None,
+        stft_config: Optional[Union[STFTConfig, Dict[str, Any]]] = None,
     ) -> None:
         super().__init__()
         # Allow passing either direct instances or specs / class names
@@ -84,6 +145,10 @@ class AutoEncoder(nn.Module):
             self.pre_transform = create_pre_transform(pre_transform)
         except Exception:
             self.pre_transform = None
+
+        self._stft_config: Optional[STFTConfig] = None
+        if stft_config is not None:
+            self.set_stft_config(stft_config)
         
         # Consistency checks encoder/decoder vs bottleneck 
         def _get_enc_dim(m):
@@ -192,84 +257,109 @@ class AutoEncoder(nn.Module):
         self.downsampling_ratio = samples_per_latent
         return self.downsampling_ratio
 
-    def encode(self, audio, skip_bottleneck: bool = False, return_info=False, iterate_batch=False, debug=False, **kwargs):
-        # Separate STFT/ISTFT kwargs that should NOT go to encoder/bottleneck forward.
-        STFT_PARAM_KEYS = {"n_fft", "hop_length", "win_length", "window", "center", "normalized", "onesided", "length"}
-        encode_kwargs = {k: v for k, v in kwargs.items() if k not in STFT_PARAM_KEYS}
-        info = {}
-        if self.encoder is not None:
-            if iterate_batch:
-                latents = []
-                for i in range(audio.shape[0]):
-                    x_i = audio[i:i+1]
-                    if getattr(self, "pre_transform", None) is not None:
-                        try:
-                            x_i = self.pre_transform.transform(x_i)
-                        except Exception:
-                            pass
-                    latents.append(self.encoder(x_i))  # encoder forward should not receive STFT params
-                latents = torch.cat(latents, dim=0)
-            else:
-                x = audio
-                if getattr(self, "pre_transform", None) is not None:
-                    try:
-                        x = self.pre_transform.transform(x)
-                    except Exception:
-                        pass
-                if debug:
-                    print(f"[AutoEncoder.encode] input to encoder shape={x.shape}")
-                latents = self.encoder(x)  # avoid passing unrelated kwargs
-                if debug:
-                    print(f"[AutoEncoder.encode] encoder output latents shape={latents.shape}")
+    def set_stft_config(self, config: Union[STFTConfig, Dict[str, Any]]) -> None:
+        """Store a normalized STFT configuration used by audio helpers.
+
+        The configuration is typically sourced from dataset YAML files.
+        Only a single canonical configuration is kept to avoid diverging
+        parameters across encode/decode utilities.
+        """
+
+        if isinstance(config, STFTConfig):
+            new_cfg = config
+        elif isinstance(config, dict):
+            cfg = dict(config)
+            missing = [k for k in ("n_fft", "hop_length") if k not in cfg]
+            if missing:
+                raise ValueError(f"Missing STFT keys: {missing}")
+            n_fft = int(cfg["n_fft"])
+            hop = int(cfg["hop_length"])
+            win_length = int(cfg.get("win_length", n_fft))
+            center = bool(cfg.get("center", True))
+            normalized = bool(cfg.get("normalized", False))
+            onesided = bool(cfg.get("onesided", True))
+            window = cfg.get("window", None)
+            if isinstance(window, torch.Tensor):
+                window = window.detach()
+            new_cfg = STFTConfig(
+                n_fft=n_fft,
+                hop_length=hop,
+                win_length=win_length,
+                center=center,
+                normalized=normalized,
+                onesided=onesided,
+                window=window,
+            )
         else:
-            latents = audio
+            raise TypeError("config must be a dict or STFTConfig instance")
 
-        info["pre_bottleneck_latents"] = latents
+        self._stft_config = new_cfg
 
-        # JSON config is the ground truth: if SkipBottleneck is set we never apply VAEs or others.
+    def stft_config_dict(self) -> Optional[Dict[str, Any]]:
+        return None if self._stft_config is None else self._stft_config.to_public_dict()
+
+    def _require_stft_config(self) -> STFTConfig:
+        if self._stft_config is None:
+            raise RuntimeError(
+                "STFT configuration is not set. Call set_stft_config() with the dataset parameters before using audio helpers."
+            )
+        return self._stft_config
+
+    def encode(
+        self,
+        inputs: torch.Tensor,
+        *,
+        return_info: bool = False,
+        debug: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, Any]]]:
+        """Run encoder (and optional bottleneck) on a spectrogram batch."""
+
+        x = inputs
+        if self.pre_transform is not None:
+            try:
+                x = self.pre_transform.transform(x)
+            except Exception as exc:
+                warn(f"pre_transform.transform failed ({type(exc).__name__}: {exc}); continuing without it.")
+
+        if debug:
+            print(f"[AutoEncoder.encode] encoder input shape={tuple(x.shape)}")
+
+        latents = self.encoder(x)
+
+        if debug:
+            print(f"[AutoEncoder.encode] encoder output shape={tuple(latents.shape)}")
+
+        info: Dict[str, Any] = {"pre_bottleneck_latents": latents}
+
         if self.bottleneck is not None:
-            # Pass only non-STFT kwargs to bottleneck.
-            latents, bottleneck_info = self.bottleneck.encode(latents, return_info=True, **encode_kwargs)
+            latents, bottleneck_info = self.bottleneck.encode(latents, return_info=True)
             info.update(bottleneck_info)
-        
+
+        if debug and self.bottleneck is not None:
+            print(f"[AutoEncoder.encode] bottleneck output shape={tuple(latents.shape)}")
+
         if return_info:
             return latents, info
         return latents
 
-    def decode(self, latents, skip_bottleneck: bool = False, iterate_batch=False, debug=False, **kwargs):
-        # Filter out STFT-related kwargs that belong to ISTFT only.
-        STFT_PARAM_KEYS = {"n_fft", "hop_length", "win_length", "window", "center", "normalized", "onesided", "length"}
-        decode_kwargs = {k: v for k, v in kwargs.items() if k not in STFT_PARAM_KEYS}
-        if self.bottleneck is not None:
-            if iterate_batch:
-                decoded = []
-                for i in range(latents.shape[0]):
-                    dec_i = self.bottleneck.decode(latents[i:i+1])  # bottleneck decode receives no STFT params
-                    decoded.append(dec_i)
-                latents = torch.cat(decoded, dim=0)
-            else:
-                latents = self.bottleneck.decode(latents)
+    def decode(self, latents: torch.Tensor, *, debug: bool = False) -> torch.Tensor:
+        """Run optional bottleneck decode followed by the decoder module."""
 
-        if iterate_batch:
-            decoded = []
-            for i in range(latents.shape[0]):
-                y_i = self.decoder(latents[i:i+1], **decode_kwargs)
-                if getattr(self, "pre_transform", None) is not None:
-                    try:
-                        y_i = self.pre_transform.inverse(y_i)
-                    except Exception:
-                        pass
-                decoded.append(y_i)
-            decoded = torch.cat(decoded, dim=0)
-        else:
-            decoded = self.decoder(latents, **decode_kwargs)
-            if getattr(self, "pre_transform", None) is not None:
-                try:
-                    decoded = self.pre_transform.inverse(decoded)
-                except Exception:
-                    pass
+        z = latents
+        if self.bottleneck is not None:
+            z = self.bottleneck.decode(z)
+
+        decoded = self.decoder(z)
+
+        if self.pre_transform is not None:
+            try:
+                decoded = self.pre_transform.inverse(decoded)
+            except Exception as exc:
+                warn(f"pre_transform.inverse failed ({type(exc).__name__}: {exc}); returning raw decoder output.")
+
         if debug:
-            print(f"[AutoEncoder.decode] decoder output shape={decoded.shape}")
+            print(f"[AutoEncoder.decode] output shape={tuple(decoded.shape)}")
+
         return decoded
           
     def _maybe_add_nyquist(self, S: torch.Tensor, n_fft: int, onesided: bool) -> torch.Tensor:
@@ -280,111 +370,92 @@ class AutoEncoder(nn.Module):
             return torch.cat([S, nyq], dim=-2)
         return S
     
-    def stft(self, audio: torch.Tensor, **kwargs):
-        """
-        Compute complex STFT of a waveform batch.
-        audio: [B, C, T]
-        Returns: complex tensor [B, C, F, TT]
-        """
+    def stft(self, audio: torch.Tensor) -> torch.Tensor:
+        """Compute the STFT using the canonical configuration."""
+
         if torch.is_complex(audio):
-            raise ValueError("stft expects real waveform input.")
-        n_fft      = kwargs.get("n_fft", 1024)
-        hop_length = kwargs.get("hop_length", n_fft // 4)
-        win_length = kwargs.get("win_length", n_fft)
-        window     = kwargs.get("window", torch.hann_window(win_length, device=audio.device, dtype=audio.dtype))
-        center     = bool(kwargs.get("center", True))
-        normalized = bool(kwargs.get("normalized", False))
-        onesided   = kwargs.get("onesided", True)
+            raise ValueError("stft expects real-valued waveforms")
+
+        cfg = self._require_stft_config()
+
+        if audio.dim() != 3:
+            raise ValueError(f"Expected waveform shape [B, C, T], got {tuple(audio.shape)}")
 
         B, C, T = audio.shape
-        specs = []
-        for c in range(C):
-            S_c = torch.stft(audio[:, c, :],
-                             n_fft=n_fft,
-                             hop_length=hop_length,
-                             win_length=win_length,
-                             window=window,
-                             center=center,
-                             normalized=normalized,
-                             onesided=onesided,
-                             return_complex=True)
-            specs.append(S_c.unsqueeze(1))
-        return torch.cat(specs, dim=1)  # [B, C, F, TT]
+        window = cfg.get_window(audio.device, audio.dtype)
+
+        audio_bc = audio.reshape(B * C, T)
+        spec_bc = torch.stft(
+            audio_bc,
+            n_fft=cfg.n_fft,
+            hop_length=cfg.hop_length,
+            win_length=cfg.win_length,
+            window=window,
+            center=True,
+            normalized=cfg.normalized,
+            onesided=cfg.onesided,
+            return_complex=True,
+        )
+
+        F_bins, frames = spec_bc.shape[-2], spec_bc.shape[-1]
+        spec = spec_bc.reshape(B, C, F_bins, frames)
+        return spec
         
-    def istft(self, spec: torch.Tensor, **kwargs):
-        """
-        Inverse STFT.
-        Accepts either complex spectrogram [B, C, F, T] or stacked real/imag [B, 2C, F, T] (or [2C, F, T]).
-        Returns real waveform [B, C, T].
-        """
-        # Inline replacement for previous to_complex()
+    def istft(self, spec: torch.Tensor, target_length: Optional[int] = None) -> torch.Tensor:
+        """Invert the STFT using the canonical configuration."""
+
+        cfg = self._require_stft_config()
+
         if torch.is_complex(spec):
             S = spec
-        elif spec.dim() == 4:  # [B, 2C, F, T]
-            B, Cx, F, T = spec.shape
-            assert Cx % 2 == 0, "Channel count must be even (real/imag)."
-            C = Cx // 2
-            real = spec[:, :C]
-            imag = spec[:, C:]
-            S = torch.complex(real, imag)
-        elif spec.dim() == 3:  # [2C, F, T] (rare path)
-            Cx, F, T = spec.shape
-            assert Cx % 2 == 0, "Channel count must be even (real/imag)."
-            C = Cx // 2
-            real = spec[:C]
-            imag = spec[C:]
-            S = torch.complex(real, imag)
+        elif spec.dim() == 4:
+            S = self._unpack_complex(spec)
+        elif spec.dim() == 3:
+            S = self._unpack_complex(spec.unsqueeze(0)).squeeze(0)
         else:
             raise ValueError(f"Unsupported spectrogram shape {tuple(spec.shape)}")
 
-        n_fft      = kwargs.get("n_fft")
-        hop_length = kwargs.get("hop_length")
-        win_length = kwargs.get("win_length")
-        window     = kwargs.get("window")
-        center     = bool(kwargs.get("center", True))
-        target_length = kwargs.get("length", None) 
-        normalized = bool(kwargs.get("normalized", False))
-        onesided   = kwargs.get("onesided", None)
-        
-        if normalized is None:
-            normalized = False
-        if window is None and win_length is not None:
-            real_dtype = torch.float32 if S.dtype == torch.complex64 else torch.float64
-            window = torch.hann_window(win_length, dtype=real_dtype, device=S.device)
+        window_dtype = torch.float32 if S.dtype == torch.complex64 else torch.float64
+        window = cfg.get_window(S.device, window_dtype)
 
-        F_bins = S.shape[-2]
-        if onesided is None:
-            if n_fft is not None and (F_bins == n_fft // 2 or F_bins == n_fft // 2 + 1):
-                onesided = True
-            else:
-                onesided = (n_fft is not None and F_bins == n_fft // 2 + 1)
+        S = self._maybe_add_nyquist(S, cfg.n_fft, cfg.onesided)
 
-        S = self._maybe_add_nyquist(S, n_fft, onesided)
+        frames = S.shape[-1]
+        if target_length is None:
+            target_length = max(cfg.hop_length * max(frames - 1, 0), 0)
 
-        T_frames = S.shape[-1]
-        if target_length is None and hop_length is not None:
-            frames = max(T_frames - 1, 0)
-            if center:
-                # For centered STFT the original segment length is frames*hop (padded part is trimmed internally).
-                target_length = hop_length * frames
-            else:
-                base_win = win_length or n_fft
-                if base_win is not None:
-                    target_length = hop_length * frames + base_win
-
-        if S.dim() == 4:  # [B, C, F, T]
+        if S.dim() == 4:
             B, C, F_bins, T_frames = S.shape
-            Sbc = S.reshape(B*C, F_bins, T_frames).contiguous()
-            y = torch.istft(Sbc, n_fft=n_fft, hop_length=hop_length, win_length=win_length,
-                            window=window, center=center, normalized=normalized,
-                            onesided=onesided, return_complex=False, length=target_length)
-            return y.reshape(B, C, -1)
-        elif S.dim() == 3:  # [B, F, T]
-            return torch.istft(S, n_fft=n_fft, hop_length=hop_length, win_length=win_length,
-                               window=window, center=center, normalized=normalized,
-                               onesided=onesided, return_complex=False, length=target_length)
-        else:
-            raise RuntimeError(f"Unexpected complex shape {S.shape}")
+            Sbc = S.reshape(B * C, F_bins, T_frames).contiguous()
+            wav_bc = torch.istft(
+                Sbc,
+                n_fft=cfg.n_fft,
+                hop_length=cfg.hop_length,
+                win_length=cfg.win_length,
+                window=window,
+                center=True,
+                normalized=cfg.normalized,
+                onesided=cfg.onesided,
+                return_complex=False,
+                length=target_length,
+            )
+            return wav_bc.reshape(B, C, -1)
+
+        if S.dim() == 3:
+            return torch.istft(
+                S,
+                n_fft=cfg.n_fft,
+                hop_length=cfg.hop_length,
+                win_length=cfg.win_length,
+                window=window,
+                center=True,
+                normalized=cfg.normalized,
+                onesided=cfg.onesided,
+                return_complex=False,
+                length=target_length,
+            )
+
+        raise RuntimeError(f"Unexpected complex shape {S.shape}")
 
 
     # =============================
@@ -431,86 +502,76 @@ class AutoEncoder(nn.Module):
         overlap_size: int = 0,
         pack_complex: bool = True,
         debug: bool = False,
-        **stft_kwargs,
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        """Encode raw waveform(s) into latents with optional chunking + overlap.
+        """Encode raw waveforms into latents using the canonical STFT setup."""
 
-        Accepts audio [T], [C,T], or [B,C,T]; normalizes to [B,C,T].
-        When chunked, splits into overlapping chunks with step chunk_size-overlap_size.
-        Returns concatenated latents and info dict for decode_audio.
-        """
-        # Normalize shape
+        _ = self._require_stft_config()
+
         if audio.dim() == 1:
             audio = audio.unsqueeze(0).unsqueeze(0)
         elif audio.dim() == 2:
             audio = audio.unsqueeze(0)
         elif audio.dim() != 3:
             raise ValueError(f"audio must be 1D/2D/3D, got {tuple(audio.shape)}")
-        B, C, T_total = audio.shape
+
+        B, C, total_len = audio.shape
         if stereo and C == 1:
             audio = audio.repeat(1, 2, 1)
             C = 2
         if not stereo and C > 2:
-            raise ValueError("If stereo=False expected mono or stereo only.")
-        if debug:
-            print("[encode_audio] ---- PIPELINE START ----")
-            print(f"[encode_audio] input waveform shape={audio.shape} (B={B}, C={C}, T={T_total})")
-            print(f"[encode_audio] chunked={chunked}, chunk_size={chunk_size}, overlap_size={overlap_size}")
-            print(f"[encode_audio] STFT kwargs={stft_kwargs}")
+            raise ValueError("Expected mono or stereo input when stereo=False")
 
         info: Dict[str, Any] = {
-            "original_length": T_total,
-            "chunked": chunked,
-            "overlap_size": overlap_size,
+            "original_length": total_len,
+            "chunked": bool(chunked),
+            "overlap_size": int(overlap_size),
+            "stft_config": self.stft_config_dict(),
+            "pack_complex": bool(pack_complex),
+            "stereo": bool(stereo),
         }
+
         if not chunked:
-            chunks = [(0, T_total)]
-            padded_length = T_total
+            chunks: List[Tuple[int, int]] = [(0, total_len)]
+            padded_length = total_len
         else:
             if chunk_size <= 0:
                 raise ValueError("chunk_size must be > 0 when chunked=True")
-            chunks, padded_length = self._plan_chunks(T_total, chunk_size, overlap_size)
-            if padded_length > T_total:
-                pad_amt = padded_length - T_total
-                audio = torch.nn.functional.pad(audio, (0, pad_amt))
-            info["padded_length"] = padded_length
+            chunks, padded_length = self._plan_chunks(total_len, chunk_size, overlap_size)
+            if padded_length > total_len:
+                pad = padded_length - total_len
+                audio = torch.nn.functional.pad(audio, (0, pad))
+        info["padded_length"] = padded_length
         info["chunk_boundaries"] = chunks
+        info["chunk_expected_lengths"] = [e - s for s, e in chunks]
 
         latent_chunks: List[torch.Tensor] = []
-        latent_chunk_lengths: List[int] = []
-        stft_frames_per_chunk: List[int] = []
+        latent_lengths: List[int] = []
+        stft_frames: List[int] = []
 
-        for i, (s, e) in enumerate(chunks):
-            wav_chunk = audio[:, :, s:e]
+        for idx, (start, end) in enumerate(chunks):
+            wav_chunk = audio[:, :, start:end]
             if debug:
-                print(f"[encode_audio] ---- CHUNK {i} ----")
-                print(f"[encode_audio] slice samples=({s}, {e}) -> wav_chunk shape={wav_chunk.shape}")
-            spec = self.stft(wav_chunk, **stft_kwargs)  # complex [B,C,F,TT]
-            if debug:
-                print(f"[encode_audio] STFT -> complex spec shape={spec.shape}")
-            spec_in = self._pack_complex(spec) if pack_complex else spec
-            if debug:
-                packing_msg = "packed real/imag (2*C channels)" if pack_complex else "kept complex tensor"
-                print(f"[encode_audio] spec post-pack: shape={spec_in.shape} ({packing_msg})")
-            lat = self.encode(spec_in)
-            if debug:
-                print(f"[encode_audio] encoder output latents shape={lat.shape}")
+                print(f"[encode_audio] chunk={idx} samples=({start},{end}) waveform_shape={tuple(wav_chunk.shape)}")
+            spec = self.stft(wav_chunk)
+            stft_frames.append(spec.shape[-1])
+            spec_ready = self._pack_complex(spec) if pack_complex else spec
+            lat = self.encode(spec_ready)
             latent_chunks.append(lat)
-            latent_chunk_lengths.append(lat.shape[-1])
-            stft_frames_per_chunk.append(spec.shape[-1])
+            latent_lengths.append(lat.shape[-1])
             if debug:
-                print(f"[encode_audio] chunk {i} wav {wav_chunk.shape} spec {spec_in.shape} lat {lat.shape}")
+                print(f"[encode_audio] chunk={idx} latents_shape={tuple(lat.shape)}")
 
-        latents = torch.cat(latent_chunks, dim=-1) if latent_chunks else torch.empty(0)
-        info["latent_chunk_lengths"] = latent_chunk_lengths
-        info["stft_frames_per_chunk"] = stft_frames_per_chunk
-        # Store expected sample lengths per chunk (before any padding trimming at decode)
-        info["chunk_expected_lengths"] = [e - s for (s, e) in chunks]
+        if not latent_chunks:
+            raise RuntimeError("encode_audio produced no chunks; check input length and chunk configuration")
+
+        latents = torch.cat(latent_chunks, dim=-1) if len(latent_chunks) > 1 else latent_chunks[0]
+        info["latent_chunk_lengths"] = latent_lengths
+        info["stft_frames_per_chunk"] = stft_frames
         info["latents_shape"] = tuple(latents.shape)
+
         if debug:
-            print(f"[encode_audio] ---- PIPELINE END ----")
-            print(f"[encode_audio] concatenated latents shape={latents.shape}")
-            print(f"[encode_audio] metadata={info}")
+            print(f"[encode_audio] finished: latents_shape={tuple(latents.shape)} metadata={info}")
+
         return latents, info
 
     def decode_audio(
@@ -520,84 +581,83 @@ class AutoEncoder(nn.Module):
         *,
         stereo: bool = True,
         chunked: bool = False,
-        pack_complex: bool = True,
+        pack_complex: Optional[bool] = None,
         debug: bool = False,
         remove_padding: bool = True,
-        **istft_kwargs,
     ) -> torch.Tensor:
-        """Decode concatenated latents back to waveform with optional chunked Hann crossfade reconstruction."""
+        """Invert the encoding pipeline returning waveform batches."""
+
         if latents.dim() < 3:
-            raise ValueError("latents expected >=3D with time axis last")
-        original_length = info.get("original_length")
-        padded_length = info.get("padded_length", original_length)
-        chunk_boundaries: List[Tuple[int,int]] = info.get("chunk_boundaries", [(0, original_length)])
-        latent_chunk_lengths: List[int] = info.get("latent_chunk_lengths", [latents.shape[-1]])
-        overlap_size = info.get("overlap_size", 0)
+            raise ValueError("latents expected to have at least 3 dimensions")
+
+        cfg_in_info = info.get("stft_config")
+        if cfg_in_info is not None:
+            current = self.stft_config_dict()
+            if current != cfg_in_info:
+                self.set_stft_config(cfg_in_info)
+
+        pack_complex = info.get("pack_complex", True) if pack_complex is None else bool(pack_complex)
+
+        original_length = int(info.get("original_length", 0) or 0)
+        padded_length = int(info.get("padded_length", original_length) or original_length)
+        overlap_size = int(info.get("overlap_size", 0) or 0)
+        chunk_boundaries: List[Tuple[int, int]] = info.get("chunk_boundaries", [(0, original_length)])
+        latent_lengths: List[int] = info.get("latent_chunk_lengths", [latents.shape[-1]])
 
         if not chunked:
             if debug:
-                print("[decode_audio] ---- PIPELINE START (single chunk) ----")
-                print(f"[decode_audio] latent tensor shape={latents.shape}")
-                print(f"[decode_audio] pack_complex={pack_complex}, ISTFT kwargs={istft_kwargs}")
+                print(f"[decode_audio] single chunk path latents_shape={tuple(latents.shape)}")
             spec = self.decode(latents)
-            spec_complex = self._unpack_complex(spec) if pack_complex else (spec if torch.is_complex(spec) else spec)
-            if debug:
-                print(f"[decode_audio] decoder output spec shape={spec.shape}")
-                print(f"[decode_audio] spec converted to complex shape={spec_complex.shape}")
+            spec_complex = self._unpack_complex(spec) if pack_complex else spec
+            target_len = original_length or info.get("chunk_expected_lengths", [None])[0]
+            waveform = self.istft(spec_complex, target_length=target_len)
+            if remove_padding and original_length:
+                waveform = waveform[..., :original_length]
+            return waveform
 
-            expected_frames = (info.get("stft_frames_per_chunk", [spec_complex.shape[-1]]) or [spec_complex.shape[-1]])[0]
-            cur_frames = spec_complex.shape[-1]
-            target_len = istft_kwargs.get("length")
-            if target_len is None:
-                target_len = original_length or (info.get("chunk_expected_lengths", [None])[0])
-            istft_args = dict(istft_kwargs)
-            if target_len is not None:
-                istft_args["length"] = target_len
-            wav = self.istft(spec_complex, **istft_args)
-            if remove_padding and wav.shape[-1] >= original_length:
-                wav = wav[..., :original_length]
-            if debug:
-                print(f"[decode_audio] ISTFT -> waveform shape={wav.shape} (trimmed_to_original={remove_padding})")
-                print("[decode_audio] ---- PIPELINE END ----")
-            return wav
+        if sum(latent_lengths) != latents.shape[-1]:
+            raise ValueError("latent_chunk_lengths do not cover the latent time dimension")
 
-        if sum(latent_chunk_lengths) != latents.shape[-1]:
-            raise ValueError("Sum of latent_chunk_lengths does not match latents time axis.")
         fade_in, fade_out = self._hann_crossfade_windows(overlap_size)
         if fade_in is not None:
             fade_in = fade_in.to(latents.device)
             fade_out = fade_out.to(latents.device)
 
-        # Split latents
         cursor = 0
-        lat_list: List[torch.Tensor] = []
-        for L in latent_chunk_lengths:
-            lat_list.append(latents[..., cursor:cursor+L])
-            cursor += L
+        chunks: List[torch.Tensor] = []
+        for length in latent_lengths:
+            chunks.append(latents[..., cursor:cursor + length])
+            cursor += length
 
-        decoded_wave_chunks: List[torch.Tensor] = []
-        for i, lat_chunk in enumerate(lat_list):
+        decoded_chunks: List[torch.Tensor] = []
+        expected_lengths = info.get("chunk_expected_lengths", [None] * len(chunks))
+
+        for idx, lat_chunk in enumerate(chunks):
             if debug:
-                print(f"[decode_audio] ---- CHUNK {i} ----")
-                print(f"[decode_audio] latent slice shape={lat_chunk.shape} expected_samples={chunk_boundaries[i] if i < len(chunk_boundaries) else None}")
+                print(f"[decode_audio] chunk={idx} latent_shape={tuple(lat_chunk.shape)}")
             spec_chunk = self.decode(lat_chunk)
-            spec_complex = self._unpack_complex(spec_chunk) if pack_complex else (spec_chunk if torch.is_complex(spec_chunk) else spec_chunk)
-            if debug:
-                print(f"[decode_audio] decoder output spec shape={spec_chunk.shape}")
-                print(f"[decode_audio] spec converted to complex shape={spec_complex.shape}")
-            expected_len = (chunk_boundaries[i][1] - chunk_boundaries[i][0]) if i < len(chunk_boundaries) else None
-            if expected_len is not None:
-                wav_chunk = self.istft(spec_complex, length=expected_len, **istft_kwargs)
-            else:
-                wav_chunk = self.istft(spec_complex, **istft_kwargs)
-            decoded_wave_chunks.append(wav_chunk)
-            if debug:
-                print(f"[decode_audio] ISTFT -> wav_chunk shape={wav_chunk.shape}")
+            spec_complex = self._unpack_complex(spec_chunk) if pack_complex else spec_chunk
+            target_len = expected_lengths[idx] if idx < len(expected_lengths) else None
+            wav_chunk = self.istft(spec_complex, target_length=target_len)
+            decoded_chunks.append(wav_chunk)
 
-        out = torch.zeros(decoded_wave_chunks[0].shape[0], decoded_wave_chunks[0].shape[1], padded_length,
-                          device=decoded_wave_chunks[0].device, dtype=decoded_wave_chunks[0].dtype)
-        for i, ((s, e), wav_chunk) in enumerate(zip(chunk_boundaries, decoded_wave_chunks)):
-            expected_len = e - s
+        if not decoded_chunks:
+            raise RuntimeError("decode_audio received empty decoded chunk list")
+
+        if len(chunk_boundaries) != len(decoded_chunks):
+            raise ValueError("chunk metadata does not match decoded chunks")
+
+        base_chunk = decoded_chunks[0]
+        out = torch.zeros(
+            base_chunk.shape[0],
+            base_chunk.shape[1],
+            padded_length,
+            device=base_chunk.device,
+            dtype=base_chunk.dtype,
+        )
+
+        for idx, ((start, end), wav_chunk) in enumerate(zip(chunk_boundaries, decoded_chunks)):
+            expected_len = end - start
             if wav_chunk.shape[-1] != expected_len:
                 diff = expected_len - wav_chunk.shape[-1]
                 if diff > 0:
@@ -605,17 +665,18 @@ class AutoEncoder(nn.Module):
                 else:
                     wav_chunk = wav_chunk[..., :expected_len]
             if overlap_size > 0 and fade_in is not None:
-                if i > 0:
-                    wav_chunk[..., :overlap_size] *= fade_in.view(1,1,-1)
-                if i < len(decoded_wave_chunks) - 1:
-                    wav_chunk[..., -overlap_size:] *= fade_out.view(1,1,-1)
-            out[..., s:e] += wav_chunk
-        if remove_padding and out.shape[-1] >= original_length:
+                if idx > 0:
+                    wav_chunk[..., :overlap_size] *= fade_in.view(1, 1, -1)
+                if idx < len(decoded_chunks) - 1:
+                    wav_chunk[..., -overlap_size:] *= fade_out.view(1, 1, -1)
+            out[..., start:end] += wav_chunk
+
+        if remove_padding and original_length:
             out = out[..., :original_length]
+
         if debug:
-            print("[decode_audio] overlap-add reconstruction completed.")
-            print(f"[decode_audio] final waveform shape={out.shape} (trimmed_to_original={remove_padding})")
-            print("[decode_audio] ---- PIPELINE END ----")
+            print(f"[decode_audio] reconstructed waveform shape={tuple(out.shape)}")
+
         return out
 
     @classmethod
