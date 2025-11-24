@@ -10,7 +10,6 @@ from ar_spectra.models.autoencoder import AutoEncoder
 from ar_spectra.training_utils.initialization import resolve_auto_channels
 from inference import _extract_autoencoder_state
 
-
 def _find_repo_root(start: Path) -> Path:
     for candidate in (start, *start.parents):
         if (candidate / "conf").is_dir() and (candidate / "ar_spectra").is_dir():
