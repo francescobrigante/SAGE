@@ -229,34 +229,6 @@ class AutoEncoder(nn.Module):
         imag = S[:, C:]
         return torch.complex(real, imag)
 
-    def infer_downsampling_ratio(self, hop_length: int) -> int:
-        """
-        Deduce total temporal downsampling factor of the encoder (frames -> latents)
-        and compute samples_per_latent = hop_length * total_time_stride.
-        Saves self.downsampling_ratio and returns it.
-        Requires the encoder to expose an attribute 'ratios' (list of pairs [k, s] or dicts).
-        """
-        ratios = getattr(self.encoder, "ratios", None)
-        if ratios is None:
-            # Simple fallback
-            self.downsampling_ratio = hop_length
-            return self.downsampling_ratio
-        strides = []
-        for r in ratios:
-            # Supports formats: [kernel, stride] or dict {"stride": s} / {"time": s}
-            if isinstance(r, (list, tuple)) and len(r) >= 2:
-                strides.append(int(r[1]))
-            elif isinstance(r, dict):
-                val = r.get("stride", r.get("time", None))
-                if val is not None:
-                    strides.append(int(val))
-        total_time_stride = 1
-        for s in strides:
-            total_time_stride *= s
-        samples_per_latent = hop_length * total_time_stride
-        self.downsampling_ratio = samples_per_latent
-        return self.downsampling_ratio
-
     def set_stft_config(self, config: Union[STFTConfig, Dict[str, Any]]) -> None:
         """Store a normalized STFT configuration used by audio helpers.
 
