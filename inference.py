@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import hydra
 import torch
@@ -307,10 +307,32 @@ def run_dataset_inference(
         f"dataset_size={dataset_len}"
     )
 
+    name_counts: Dict[str, int] = {}
+    # Track filename occurrences to avoid clobbering when the same stem repeats.
+
+    def resolve_output_stem(sample_idx: int, src_path: Optional[str]) -> str:
+        if src_path:
+            stem = Path(src_path).stem
+            base = f"{file_prefix}{stem}" if file_prefix else stem
+        else:
+            base = f"{file_prefix}_{sample_idx:06d}" if file_prefix else f"_{sample_idx:06d}"
+
+        occur = name_counts.get(base, 0)
+        name_counts[base] = occur + 1
+        if occur > 0:
+            return f"{base}_{occur:02d}"
+        return base
+
     total_processed = 0
     total_saved = 0
 
-    for batch_idx, (spec_batch, wav_batch) in enumerate(dataloader):
+    for batch_idx, batch in enumerate(dataloader):
+        if isinstance(batch, (list, tuple)) and len(batch) == 3:
+            spec_batch, wav_batch, metadata_batch = batch
+        else:
+            spec_batch, wav_batch = batch  # type: ignore[misc]
+            metadata_batch = None
+
         if spec_batch is not None:
             _ = spec_batch
 
@@ -323,6 +345,23 @@ def run_dataset_inference(
                 break
             if remaining < wav_batch.size(0):
                 wav_batch = wav_batch[:remaining]
+                if metadata_batch is not None:
+                    metadata_batch = metadata_batch[:remaining]
+
+        metadata_paths: List[Optional[str]]
+        if metadata_batch is None:
+            metadata_paths = [None] * wav_batch.size(0)
+        else:
+            metadata_paths = list(metadata_batch)
+            if len(metadata_paths) < wav_batch.size(0):
+                metadata_paths = metadata_paths + [None] * (wav_batch.size(0) - len(metadata_paths))
+            elif len(metadata_paths) > wav_batch.size(0):
+                metadata_paths = metadata_paths[: wav_batch.size(0)]
+
+        output_stems: List[str] = []
+        for i in range(wav_batch.size(0)):
+            src_path = metadata_paths[i]
+            output_stems.append(resolve_output_stem(total_processed + i, src_path))
 
         wav_batch = wav_batch.to(device)
 
@@ -348,12 +387,19 @@ def run_dataset_inference(
         if save_inputs and input_dir is not None:
             for i in range(wav_batch.size(0)):
                 sample_idx = total_processed + i
-                save_audio(wav_batch[i], input_dir / f"{file_prefix}_{sample_idx:06d}_in.wav", sample_rate)
+                save_audio(
+                    wav_batch[i],
+                    input_dir / f"{output_stems[i]}_in.wav",
+                    sample_rate,
+                )
 
         if save_waveforms:
             for i in range(recon_batch.size(0)):
-                sample_idx = total_processed + i
-                save_audio(recon_batch[i], output_dir / f"{file_prefix}_{sample_idx:06d}.wav", sample_rate)
+                save_audio(
+                    recon_batch[i],
+                    output_dir / f"{output_stems[i]}.wav",
+                    sample_rate,
+                )
                 total_saved += 1
 
         total_processed += wav_batch.size(0)
@@ -603,6 +649,14 @@ def main(cfg: DictConfig) -> None:
                 dataset_obj = None
 
             if dataset_obj is not None:
+                if hasattr(dataset_obj, "enable_return_paths"):
+                    try:
+                        dataset_obj.enable_return_paths()
+                    except Exception:
+                        warn("Could not enable return_paths on dataset; falling back to index-based naming.")
+                elif hasattr(dataset_obj, "return_paths"):
+                    setattr(dataset_obj, "return_paths", True)
+
                 run_dataset_inference(
                     autoenc,
                     dataset=dataset_obj,
