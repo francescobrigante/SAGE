@@ -25,4 +25,5 @@ dependencies = [
     "lion-pytorch>=0.2.3",
     "triton>=3.5.1",
     "pytest>=9.0.1",
+    "cdpam>=0.0.6",
 ]

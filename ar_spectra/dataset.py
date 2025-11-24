@@ -70,6 +70,7 @@ class OnTheFlySTFTDataset(Dataset):
         length: Optional[int] = None,
         target_frames: Optional[int] = None,
         full_waveform: bool = False,
+        return_paths: bool = False,
     ):
         super().__init__()
         self.audio_dir = Path(audio_dir).expanduser().resolve()
@@ -92,6 +93,8 @@ class OnTheFlySTFTDataset(Dataset):
         self.max_t_retries = int(max_t_retries)
         self.max_replacements = int(max_replacements)
         self.full_waveform = bool(full_waveform)
+        # When true, __getitem__ returns the source file path for downstream naming.
+        self.return_paths = bool(return_paths)
 
         # --- Gestione granulare dello skip ---
         if isinstance(skip_broken_files, bool):
@@ -194,6 +197,10 @@ class OnTheFlySTFTDataset(Dataset):
         self._warned_channel_mismatch: int = 0
         # NEW: flag per warning singolo sul fallback mp3
         self._warned_torchaudio_mp3_partial_fail: int = 0
+
+    def enable_return_paths(self) -> None:
+        """Enable returning source file paths alongside samples."""
+        self.return_paths = True
 
     def _reset_rng(self):
         mixed = (self._base_seed & 0xFFFFFFFF) ^ ((self._epoch * 0x9E3779B1) & 0xFFFFFFFF)
@@ -384,6 +391,8 @@ class OnTheFlySTFTDataset(Dataset):
                     continue
 
                 wav = wav.contiguous()
+                if self.return_paths:
+                    return None, wav, str(path)
                 return None, wav
 
             # Segment extraction: MP3 may be loaded by offset; other formats load full then crop
@@ -492,6 +501,8 @@ class OnTheFlySTFTDataset(Dataset):
                 S = S.contiguous()
 
             orig_waveform = orig_waveform.contiguous()
+            if self.return_paths:
+                return S, orig_waveform, str(path)
             return S, orig_waveform
 
         raise RuntimeError("Too many consecutive invalid samples in the dataset. Check dataset or STFT parameters.")

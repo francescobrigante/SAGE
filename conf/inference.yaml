@@ -2,12 +2,17 @@
 # Inference configuration for AutoEncoder/VAE
 #############################################
 
+#######################################
+# SECTION ONLY FOR SINGLE FILE INFERENCE
+#######################################
+
+
 # Path to a trained checkpoint, relative to project root
-checkpoint: "/home/cerovaz/repos/ICML/Eulero_BackBone/checkpoints/epoch_039.ckpt"
+checkpoint: "/home/cerovaz/repos/ICML/Eulero_BackBone/checkpoints/all_losses_cplx_24.ckpt"
 
 # Input and output audio files (relative to project root)
-input_wav: "/home/cerovaz/repos/data/jamendo_full/test/388.mp3"
-output_wav: "/home/cerovaz/repos/ICML/Eulero_BackBone/runs/casos/pizzeria/388_recon.wav"
+input_wav: ""
+output_wav: ""
 
 # Target sample rate for inference. If different from input, audio
 # will be resampled. Should match training sample_rate.
@@ -22,6 +27,11 @@ overlap: 32
 chunk_size: null           # latent steps; null = default (128)
 segment_seconds: null     # seconds per chunk; exclusive with segment_frames/chunk_size
 segment_frames: null       # STFT frames per chunk; exclusive with segment_seconds/chunk_size
+
+
+#######################################
+# SECTION ONLY FOR DATASET INFERENCE
+#######################################
 
 # Dataset specification used for inference (independent from training configs)
 dataset:
@@ -53,7 +63,7 @@ max_frames: null         # es: 128 (frame STFT)
 # Dataset inference (set enabled=true to iterate over an entire dataset)
 dataset_inference:
   enabled: true           # run batched inference when true
-  output_dir: "runs/inference/dataset_outputs"
+  output_dir: "runs/inference/cplx_dataset_outputs_24epoch"
   file_prefix: ""
   batch_size: 32
   num_workers: 4

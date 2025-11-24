@@ -69,7 +69,7 @@ def project_down(tokens,     # batched high-dimensional data with dims (b,d,n)
     A = A.float()
     if A.shape[-1] > proj_dims: 
         if method=='umap':
-            from umap import UMAP
+            from umap import UMAP # type: ignore
             proj_data = UMAP(n_components=proj_dims, n_neighbors=n_neighbors, min_dist=min_dist,
                             metric='correlation', **kwargs).fit_transform(A.cpu().numpy())
             proj_data = torch.from_numpy(proj_data).to(tokens.device)

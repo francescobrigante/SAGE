@@ -57,25 +57,45 @@ class DataInitResult:
 
 
 def collate_stft(batch):
-    """Default collate function for STFT datasets returning (S, wav).
+    """Default collate function for STFT datasets returning (S, wav[, meta]).
 
-    Ensures all tensors in the batch have identical shapes before stacking.
+    Supports optional metadata (e.g., source paths) by forwarding them as a list
+    without altering legacy behaviour when metadata is absent.
     """
 
-    Ss, wavs = zip(*batch)
-    first_spec = Ss[0]
+    if not batch:
+        raise ValueError("collate_stft received an empty batch")
 
+    first = batch[0]
+    if not isinstance(first, tuple):
+        raise TypeError(f"collate_stft expects tuples, got {type(first).__name__}")
+
+    if len(first) == 3:
+        Ss, wavs, metas = zip(*batch)
+    elif len(first) == 2:
+        Ss, wavs = zip(*batch)
+        metas = None
+    else:
+        raise ValueError(f"collate_stft expects 2 or 3 items per sample, got {len(first)}")
+
+    first_spec = Ss[0]
     if first_spec is None:
         assert all(x is None for x in Ss), "Mixed spectrogram/None batches are not supported."
         w0 = wavs[0].shape
         assert all(x.shape == w0 for x in wavs), f"Wav shapes differ: {[x.shape for x in wavs]}"
-        return None, torch.stack(wavs, 0)
+        stacked_specs = None
+    else:
+        s0 = first_spec.shape
+        w0 = wavs[0].shape
+        assert all(x.shape == s0 for x in Ss), f"STFT shapes differ: {[x.shape for x in Ss]}"
+        assert all(x.shape == w0 for x in wavs), f"Wav shapes differ: {[x.shape for x in wavs]}"
+        stacked_specs = torch.stack(Ss, 0)
 
-    s0 = first_spec.shape
-    w0 = wavs[0].shape
-    assert all(x.shape == s0 for x in Ss), f"STFT shapes differ: {[x.shape for x in Ss]}"
-    assert all(x.shape == w0 for x in wavs), f"Wav shapes differ: {[x.shape for x in wavs]}"
-    return torch.stack(Ss, 0), torch.stack(wavs, 0)
+    stacked_wavs = torch.stack(wavs, 0)
+
+    if metas is not None:
+        return stacked_specs, stacked_wavs, list(metas)
+    return stacked_specs, stacked_wavs
 
 
 def infer_channels_from_dataset_or_batch(
