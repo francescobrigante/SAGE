@@ -72,6 +72,16 @@ class AutoencoderEngine(nn.Module):
         self.teacher_model = teacher_model
         self.sample_rate = sample_rate
         self.stft_params = stft_params or {}   # training params
+        if not self.stft_params:
+            raise ValueError("stft_params must be provided to AutoencoderEngine for audio reconstruction")
+
+        self.autoencoder.set_stft_config(self.stft_params)
+        if self.teacher_model is not None and hasattr(self.teacher_model, "set_stft_config"):
+            try:
+                self.teacher_model.set_stft_config(self.stft_params)
+            except Exception as exc:
+                warn(f"Failed to propagate STFT config to teacher model ({type(exc).__name__}: {exc})")
+
         self.val_stft_params = None            # eval params injected by train.py
 
         # training policy
@@ -294,50 +304,6 @@ class AutoencoderEngine(nn.Module):
             return None
         return self.teacher_model.encode(encoder_input, return_info=False)
 
-    def _resolve_istft_kwargs(self, override: Optional[dict] = None) -> dict:
-        # training path (unchanged): base = training, override replaces
-        # Do not require/expect 'length' here anymore. If present, it will be ignored.
-        allowed = {"n_fft", "hop_length", "win_length", "center", "normalized", "window", "onesided"}
-        base = {k: v for k, v in (self.stft_params or {}).items() if k in allowed}
-        if override:
-            for k, v in override.items():
-                if k not in allowed:
-                    continue
-                if isinstance(v, str) and v.lower() == "auto":
-                    if k not in base:
-                        base.pop(k, None)
-                    continue
-                base[k] = v
-        for k in list(base.keys()):
-            if isinstance(base[k], str) and base[k].lower() == "auto":
-                base.pop(k, None)
-        return base
-
-    def _resolve_eval_istft_kwargs(self) -> dict:
-        """
-        Validation: usa come base i parametri dell'eval; se un campo è 'auto' o mancante,
-        fallback ai parametri di training.
-        """
-        # Keep eval/training ISTFT keys minimal; 'length' is not required and will be ignored if supplied
-        allowed = {"n_fft", "hop_length", "win_length", "center", "normalized", "window", "onesided"}
-        train_base = {k: v for k, v in (self.stft_params or {}).items() if k in allowed}
-        eval_raw = getattr(self, "val_stft_params", None) or {}
-        eval_clean = {}
-        for k, v in eval_raw.items():
-            if k not in allowed:
-                continue
-            if isinstance(v, str) and v.lower() == "auto":
-                continue  # lascia il fallback al training
-            eval_clean[k] = v
-        # fallback prima, poi override con eval pulito (eval ha priorità)
-        out = dict(train_base)
-        out.update(eval_clean)
-        # ripulisci eventuali 'auto' avanzati (da training unlikely)
-        for k in list(out.keys()):
-            if isinstance(out[k], str) and out[k].lower() == "auto":
-                out.pop(k, None)
-        return out
-
     def _align_freq_bins(self, s_hat: torch.Tensor, s_ref: torch.Tensor) -> torch.Tensor:
         """
         Rende compatibili i tensori spettrali lungo l'asse delle frequenze:
@@ -409,15 +375,7 @@ class AutoencoderEngine(nn.Module):
             err(f"Failed to align spectrogram F dimension ({e}).")
             sp_decoded_aligned = sp_decoded
 
-        # ISTFT
-        istft_kwargs = self._resolve_istft_kwargs()
-        if istft_kwargs:
-            decoded = self.autoencoder.istft(sp_decoded_aligned, **istft_kwargs)
-        else:
-            raise ValueError(
-                "autoencoder.istft failed and no usable istft params available. "
-                "Ensure 'n_fft' (e correlati) are present in the dataset kwargs or resolved from config."
-            )
+        decoded = self.autoencoder.istft(sp_decoded_aligned, target_length=orig_waveforms.shape[-1])
 
         # allinea alle waveform reali (non usare l’inversione dell’input)
         decoded, orig_waveforms = trim_to_shortest(decoded, orig_waveforms)
@@ -497,14 +455,7 @@ class AutoencoderEngine(nn.Module):
         latents, _ = self.autoencoder.encode(encoder_input, return_info=True)
         sp_decoded = self.autoencoder.decode(latents)
         
-        istft_kwargs = self._resolve_eval_istft_kwargs()
-        if istft_kwargs:
-            decoded = self.autoencoder.istft(sp_decoded, **istft_kwargs)
-        else:
-            raise ValueError(
-                "autoencoder.istft failed and no usable istft params available. "
-                "Ensure ISTFT params are present in eval/train kwargs."
-            )
+        decoded = self.autoencoder.istft(sp_decoded, target_length=orig_waveforms.shape[-1])
         decoded, orig_waveforms = trim_to_shortest(decoded, orig_waveforms)
 
         val_loss_dict: Dict[str, float] = {}

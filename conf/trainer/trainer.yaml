@@ -38,7 +38,7 @@ trainer:
 wandb:
   project: ICML_2026
   name: SEANet_STFT_losses
-  use_wandb: false
+  use_wandb: true
 
 # Spectrogram normalization applied at encoder input and inverted at decoder output
 pre_transform:

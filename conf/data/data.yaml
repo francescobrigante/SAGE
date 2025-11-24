@@ -1,4 +1,5 @@
 # Data & Demo configuration (split from original JSON)
+# /home/ec2-user/cerovaz/data/Jamendo_full/train
 train_dataset:
   class: ar_spectra.dataset.OnTheFlySTFTDataset
   kwargs:
