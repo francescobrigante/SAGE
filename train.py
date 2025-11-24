@@ -17,6 +17,7 @@ from ar_spectra.training_utils.initialization import (
     build_datasets_and_loaders,
     build_training_wrapper_from_cfg,
 )
+from ar_spectra.training_utils.reproducibility import configure_reproducibility
 from tqdm import tqdm
 from rich.console import Console
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
@@ -295,6 +296,8 @@ def main(cfg: DictConfig):
 
     cfg = unified
     seed = int(cfg.get("seed", 42))
+    deterministic_flag = bool(cfg.get("trainer", {}).get("deterministic", True))
+    configure_reproducibility(seed, deterministic=deterministic_flag, warn=warn)
     seed_everything(seed, workers=True)
 
     # Base directory centralized
@@ -309,8 +312,6 @@ def main(cfg: DictConfig):
     profiler_dir.mkdir(parents=True, exist_ok=True)
     media_dir = runs_dir / "media"
     media_dir.mkdir(parents=True, exist_ok=True)
-
-    torch.backends.cudnn.benchmark = True
 
     # Datasets, dataloaders and wrapper initialization (single source of truth)
     wrapper, data_init = build_training_wrapper_from_cfg(cfg)
@@ -464,6 +465,7 @@ def main(cfg: DictConfig):
         profiler=profiler,
         check_val_every_n_epoch=int(cfg.get("trainer", {}).get("check_val_every_n_epoch", 1500)),
         val_check_interval=cfg.get("trainer", {}).get("val_check_interval", None),
+        deterministic=deterministic_flag,
     )
 
     trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl if eval_dl is not None else None)

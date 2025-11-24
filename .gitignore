@@ -23,5 +23,4 @@ outputs/
 runs/
 .github/
 runs/
-test_checkpoint_loading.py
-test_checkpoint_loading.py
+
