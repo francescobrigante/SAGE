@@ -40,36 +40,80 @@ def load_audio_tensor(path):
 
 def estimate_time_shift_torch(x, y, sr, max_shift_seconds=1.0):
     """
-    Estimate the relative time shift between two audio tensors.
+    Estimate the relative time shift (lag) between two audio tensors using
+    cross-correlation computed via FFT.
+
+    The goal is to find an integer lag (in samples) such that the predicted
+    signal `y` is maximally aligned with the reference signal `x`. We do this
+    by maximizing the (normalized) similarity between the two waveforms over a
+    bounded range of lags.
+
+    Mathematically, for two discrete-time signals x[n] and y[n], the
+    cross-correlation of y with respect to x at lag ℓ is
+
+        r_yx[ℓ] = sum_n y[n] * x[n + ℓ].
+
+    For each lag ℓ, r_yx[ℓ] measures how similar y is to a time-shifted version
+    of x. The lag ℓ that maximizes r_yx[ℓ] is (approximately) the lag that
+    minimizes the mean squared error between y[n] and x[n + ℓ]. In other words,
+    it is the time shift that best aligns the two signals.
+
+    This function:
+      1. Averages over channels to obtain mono waveforms (shape (T,)).
+      2. Truncates both signals to the same length T (minimum of their lengths).
+      3. Removes the DC component from both signals (mean subtraction), which
+         stabilizes the correlation.
+      4. Computes the full cross-correlation r_yx[ℓ] using FFT:
+             correlate(y, x) = conv(y, flip(x))
+         implemented as:
+             irfft( rfft(y) * rfft(flip(x)) ).
+      5. Constructs the corresponding array of lags ℓ in samples.
+      6. Restricts the search to |ℓ| <= max_shift_seconds * sr if
+         max_shift_seconds > 0, so only "reasonable" delays are considered.
+      7. Returns the lag (in samples) with the maximum cross-correlation value.
+
+    By convention in this implementation:
+      - `x` is the reference (target) signal.
+      - `y` is the estimated (predicted) signal.
+      - A positive lag L > 0 means that `y` is delayed with respect to `x`
+        (i.e., y[t] ≈ x[t - L]).
+      - A negative lag L < 0 means that `y` is advanced with respect to `x`
+        (i.e., y[t] ≈ x[t - L], with L < 0).
+
+    This lag can then be used to time-align the signals before computing
+    waveform-based metrics such as SI-SDR or STFT-based losses.
 
     Args:
         x (torch.Tensor): Reference audio tensor of shape (1, C, T).
         y (torch.Tensor): Estimated audio tensor of shape (1, C, T).
         sr (int): Sampling rate in Hz.
-        max_shift_seconds (float, optional): Maximum absolute lag (in seconds) explored during cross-correlation.
+        max_shift_seconds (float, optional): Maximum absolute lag (in seconds)
+            to search over when estimating the delay. If <= 0, the full
+            correlation support is used.
 
     Returns:
-        int: Optimal lag in samples. Positive values indicate that y is delayed with respect to x, while negative values indicate that y is advanced.
+        int: Estimated lag in samples. Positive values indicate that `y` is
+        delayed relative to `x`, negative values indicate that `y` is advanced.
     """
     device = x.device
 
-    # media sui canali: (1, C, T) -> (T,)
+    # average over channels: (1, C, T) -> (T,)
     x_m = x.mean(dim=1).squeeze(0)
     y_m = y.mean(dim=1).squeeze(0)
 
-    # Assicurati che entrambi i segnali condividano lo stesso supporto temporale
+    # Ensure both signals share the same temporal support
     T = min(x_m.shape[-1], y_m.shape[-1])
     x_m = x_m[..., :T]
     y_m = y_m[..., :T]
 
-    # Rimuovi il componente DC per stabilizzare la correlazione
+    # Remove the DC component to stabilize the correlation
     x_m = x_m - x_m.mean()
     y_m = y_m - y_m.mean()
 
     Nx = Ny = T
     L = Nx + Ny - 1  # lunghezza della correlazione 'full' = 2T - 1
 
-    # lunghezza FFT come potenza di 2 >= L
+    # FFT length as a power of two >= L
     n_fft = 1
     while n_fft < L:
         n_fft *= 2
@@ -83,8 +127,8 @@ def estimate_time_shift_torch(x, y, sr, max_shift_seconds=1.0):
     corr_full = torch.fft.irfft(Y * X_flip, n=n_fft)  # (n_fft,)
     corr_full = corr_full[:L]  # (L,)
 
-    # lags come in scipy.signal.correlate(y, x, mode='full'):
-    # indice k corrisponde a lag = k - (Nx - 1)
+    # lags as in scipy.signal.correlate(y, x, mode='full'):
+    # index k corresponds to lag = k - (Nx - 1)
     lags = torch.arange(-Nx + 1, Ny, device=device)  # [-T+1, ..., T-1], shape (L,)
 
     max_shift = int(max_shift_seconds * sr)
@@ -159,7 +203,7 @@ def match_pairs(target_dir, preds_dir, allowed_ext=None):
 def main():
     parser = argparse.ArgumentParser(description="Compare SI-SDR and STFTLoss between two directories (predictions vs. targets).")
     parser.add_argument("--target_dir", default="/home/cerovaz/repos/data/jamendo_full/test_trimmed")
-    parser.add_argument("--preds_dir", default="/home/cerovaz/repos/ICML/Eulero_BackBone/runs/inference/real_dataset_outputs_24epoch")
+    parser.add_argument("--preds_dir", default="/home/cerovaz/repos/ICML/Eulero_BackBone/runs/inference/simple_cplx_dataset_outputs_24epoch")
     parser.add_argument("--extensions", type=str, default="")
     parser.add_argument("--csv_out", type=str, default="")
     args = parser.parse_args()
