@@ -21,6 +21,8 @@ trainer:
   epochs: 100
   amp: false
   log_interval: 1
+  deterministic: false
+  strict_deterministic: false
   ckpt_dir: checkpoints/seanet_stft
   profile: false
   check_val_every_n_epoch: 1

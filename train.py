@@ -297,7 +297,15 @@ def main(cfg: DictConfig):
     cfg = unified
     seed = int(cfg.get("seed", 42))
     deterministic_flag = bool(cfg.get("trainer", {}).get("deterministic", True))
-    configure_reproducibility(seed, deterministic=deterministic_flag, warn=warn)
+    strict_deterministic_flag = bool(
+        cfg.get("trainer", {}).get("strict_deterministic", False)
+    )
+    configure_reproducibility(
+        seed,
+        deterministic=deterministic_flag,
+        strict_deterministic=strict_deterministic_flag,
+        warn=warn,
+    )
     seed_everything(seed, workers=True)
 
     # Base directory centralized
