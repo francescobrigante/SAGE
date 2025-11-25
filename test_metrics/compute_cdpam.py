@@ -7,6 +7,9 @@ import numpy as np
 import cdpam
 from tqdm import tqdm
 import csv
+from ar_spectra.training_utils.reproducibility import configure_reproducibility
+
+configure_reproducibility(seed=42, deterministic=False, strict_deterministic=False)
 
 def ensure_batch(x):
     """
