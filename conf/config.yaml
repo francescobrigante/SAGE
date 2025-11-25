@@ -5,7 +5,7 @@
 
 defaults:
   - data: data
-  - model: SEANet_real_model
+  - model: SEANet_cplx_model
   - trainer: trainer
   - _self_
 

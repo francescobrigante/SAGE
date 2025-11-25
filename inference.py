@@ -428,7 +428,13 @@ def main(cfg: DictConfig) -> None:
 
     seed = int(cfg.get("seed", 42))
     deterministic_flag = bool(cfg.get("deterministic", True))
-    configure_reproducibility(seed, deterministic=deterministic_flag, warn=warn)
+    strict_deterministic_flag = bool(cfg.get("strict_deterministic", False))
+    configure_reproducibility(
+        seed,
+        deterministic=deterministic_flag,
+        strict_deterministic=strict_deterministic_flag,
+        warn=warn,
+    )
 
     if not cfg.get("model_config_path"):
         err("inference.yaml must define model_config_path")
