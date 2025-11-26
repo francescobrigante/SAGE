@@ -344,8 +344,13 @@ class AutoencoderEngine(nn.Module):
         encoder_input = sp_reals
         if self.force_input_mono and encoder_input.shape[1] > 1:
             encoder_input = encoder_input.mean(dim=1, keepdim=True)
-        loss_info["encoder_input"] = encoder_input  # spettrogramma GT
-        loss_info["reals"] = orig_waveforms         # waveform GT
+
+        spectral_target = encoder_input
+        if self.autoencoder.pre_transform_applies_to_target:
+            spectral_target = self.autoencoder.apply_pre_transform_to_target(spectral_target)
+
+        loss_info["encoder_input"] = spectral_target
+        loss_info["reals"] = orig_waveforms
 
         warmed_up = (global_step >= self.warmup_steps)
 
@@ -366,16 +371,36 @@ class AutoencoderEngine(nn.Module):
             loss_info["latents"] = latents
 
         # Decode STFT -> waveform
-        sp_decoded = self.autoencoder.decode(latents)   # spettrogramma predetto
+        sp_decoded = self.autoencoder.decode(latents, apply_inverse=False)
+        sp_decoded_linear = (
+            self.autoencoder.apply_inverse_pre_transform(sp_decoded)
+            if self.autoencoder.has_pre_transform
+            else sp_decoded
+        )
+
+        if self.autoencoder.pre_transform_applies_to_target:
+            sp_decoded_for_losses = sp_decoded
+        elif self.autoencoder.pre_transform_applies_inverse:
+            sp_decoded_for_losses = sp_decoded_linear
+        else:
+            sp_decoded_for_losses = sp_decoded
+
         # Allinea la dimensione in frequenza per le loss spettrali
         try:
-            sp_decoded_aligned = self._align_freq_bins(sp_decoded, encoder_input)
+            sp_decoded_aligned = self._align_freq_bins(sp_decoded_for_losses, spectral_target)
         except Exception as e:
             # fallback conservativo: mantieni l'originale ma segnala chiaramente
             err(f"Failed to align spectrogram F dimension ({e}).")
-            sp_decoded_aligned = sp_decoded
+            sp_decoded_aligned = sp_decoded_for_losses
 
-        decoded = self.autoencoder.istft(sp_decoded_aligned, target_length=orig_waveforms.shape[-1])
+        # Preparazione per le loss su waveform: forziamo l'inversione
+        try:
+            sp_decoded_linear_aligned = self._align_freq_bins(sp_decoded_linear, encoder_input)
+        except Exception as e:
+            err(f"Failed to align spectrogram for waveform losses ({e}).")
+            sp_decoded_linear_aligned = sp_decoded_linear
+
+        decoded = self.autoencoder.istft(sp_decoded_linear_aligned, target_length=orig_waveforms.shape[-1])
 
         # allinea alle waveform reali (non usare l’inversione dell’input)
         decoded, orig_waveforms = trim_to_shortest(decoded, orig_waveforms)
@@ -383,6 +408,7 @@ class AutoencoderEngine(nn.Module):
         loss_info["decoded"] = decoded              # waveform predetta
         loss_info["reals"] = orig_waveforms         # waveform GT
         loss_info["sp_decoded"] = sp_decoded_aligned  # usa il tensore allineato per le loss
+        loss_info["sp_decoded_linear"] = sp_decoded_linear_aligned
 
         # decoded/reals shape attesa: (B, C_audio, N)
         if self.audio_channels == 2:
@@ -453,9 +479,19 @@ class AutoencoderEngine(nn.Module):
             encoder_input = encoder_input.mean(dim=1, keepdim=True)
 
         latents, _ = self.autoencoder.encode(encoder_input, return_info=True)
-        sp_decoded = self.autoencoder.decode(latents)
-        
-        decoded = self.autoencoder.istft(sp_decoded, target_length=orig_waveforms.shape[-1])
+        sp_decoded = self.autoencoder.decode(latents, apply_inverse=False)
+        sp_decoded_linear = (
+            self.autoencoder.apply_inverse_pre_transform(sp_decoded)
+            if self.autoencoder.has_pre_transform
+            else sp_decoded
+        )
+
+        try:
+            sp_decoded_linear = self._align_freq_bins(sp_decoded_linear, encoder_input)
+        except Exception as exc:
+            err(f"Validation spectrogram alignment failed ({type(exc).__name__}: {exc}).")
+
+        decoded = self.autoencoder.istft(sp_decoded_linear, target_length=orig_waveforms.shape[-1])
         decoded, orig_waveforms = trim_to_shortest(decoded, orig_waveforms)
 
         val_loss_dict: Dict[str, float] = {}
