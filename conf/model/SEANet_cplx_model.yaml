@@ -5,13 +5,12 @@ model:
     # Spectrogram normalization applied at encoder input and inverted at decoder output
     pre_transform:
       type: power_norm          # none | log_mag | power_norm
+      apply_inverse: false # set apply_inverse: false to apply the normalization only before the encoder
       config:
         eps: 1.0e-8
         alpha: 0.65
         beta: 0.35
-    apply_inverse: false # set apply_inverse: false to apply the normalization only before the encoder
 
-    
   encoder:
     class: ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d
     kwargs:
