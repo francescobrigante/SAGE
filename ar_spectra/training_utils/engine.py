@@ -328,16 +328,38 @@ class AutoencoderEngine(nn.Module):
             "Controlla n_fft/hop oppure normalizza l'output del decoder."
         )
 
-    def compute(self, batch: Tuple[torch.Tensor, torch.Tensor], global_step: int) -> Dict[str, Any]:
-        """
-        batch: (sp_reals, orig_waveforms)
-        Ritorna:
-          - phase: "gen" | "disc"
-          - gen_total (tensor), gen_breakdown (dict[str,tensor])
-          - disc_total, disc_breakdown (se presente)
-          - loss_info: dict con tensori utili (encoder_input, latents, decoded, reals, ...)
-          - stats: {data_std, latent_std}
-        """
+        def compute(self, batch: Tuple[torch.Tensor, torch.Tensor], global_step: int) -> Dict[str, Any]:
+                """Compute forward and loss breakdown for a training batch.
+
+                The method orchestrates the end-to-end path ``spectrogram -> encoder ->
+                bottleneck -> decoder`` and prepares the tensors required by every
+                generator/discriminator loss.
+
+                Pre-transform handling follows the configuration stored on
+                ``self.autoencoder``:
+
+                * ``apply_encoder``: encoder inputs are normalized before being fed to
+                    the network.
+                * ``apply_target``: when enabled, the same normalized representation is
+                    used as loss target (``loss_info["encoder_input"]``), ensuring
+                    spectrogram losses compare tensors in the transformed domain.
+                * ``apply_inverse``: regardless of this flag, waveform-domain losses
+                    always receive inverse-transformed spectrograms through
+                    ``loss_info["decoded"]`` so that audio reconstruction happens in the
+                    linear domain.
+
+                Args:
+                        batch: Tuple ``(sp_reals, orig_waveforms)`` containing the reference
+                                spectrograms and waveforms produced by the dataset.
+                        global_step: Current optimization step, used to control warm-up and
+                                adversarial phase alternation.
+
+                Returns:
+                        Dict[str, Any]: A payload that includes the selected training phase,
+                        scalar losses, detailed loss breakdowns, cached tensors required by
+                        the loss modules, and auxiliary statistics (``data_std`` and
+                        ``latent_std``).
+                """
         sp_reals, orig_waveforms = batch
         loss_info: Dict[str, Any] = {}
 
@@ -345,10 +367,12 @@ class AutoencoderEngine(nn.Module):
         if self.force_input_mono and encoder_input.shape[1] > 1:
             encoder_input = encoder_input.mean(dim=1, keepdim=True)
 
+        # we apply pre-transform if needed
         spectral_target = encoder_input
         if self.autoencoder.pre_transform_applies_to_target:
             spectral_target = self.autoencoder.apply_pre_transform_to_target(spectral_target)
 
+        # we store transformed target and original waveforms
         loss_info["encoder_input"] = spectral_target
         loss_info["reals"] = orig_waveforms
 
@@ -372,12 +396,16 @@ class AutoencoderEngine(nn.Module):
 
         # Decode STFT -> waveform
         sp_decoded = self.autoencoder.decode(latents, apply_inverse=False)
+        
+        # if has pre-transform, invert it otherwise use decoded as is (linear)
         sp_decoded_linear = (
             self.autoencoder.apply_inverse_pre_transform(sp_decoded)
             if self.autoencoder.has_pre_transform
             else sp_decoded
         )
 
+        # select spectrogram for losses: if we applied pre-transform to target, use decoded with pre-transform;
+        # if we applied inverse pre-transform, use linear decoded; otherwise use decoded as is
         if self.autoencoder.pre_transform_applies_to_target:
             sp_decoded_for_losses = sp_decoded
         elif self.autoencoder.pre_transform_applies_inverse:
@@ -389,11 +417,11 @@ class AutoencoderEngine(nn.Module):
         try:
             sp_decoded_aligned = self._align_freq_bins(sp_decoded_for_losses, spectral_target)
         except Exception as e:
-            # fallback conservativo: mantieni l'originale ma segnala chiaramente
+            # conservative fallback: maintain the original but clearly report
             err(f"Failed to align spectrogram F dimension ({e}).")
             sp_decoded_aligned = sp_decoded_for_losses
 
-        # Preparazione per le loss su waveform: forziamo l'inversione
+        # we prepare the aligned spectrogram for waveform reconstruction
         try:
             sp_decoded_linear_aligned = self._align_freq_bins(sp_decoded_linear, encoder_input)
         except Exception as e:
@@ -405,12 +433,12 @@ class AutoencoderEngine(nn.Module):
         # allinea alle waveform reali (non usare l’inversione dell’input)
         decoded, orig_waveforms = trim_to_shortest(decoded, orig_waveforms)
 
-        loss_info["decoded"] = decoded              # waveform predetta
+        loss_info["decoded"] = decoded              # waveform pred
         loss_info["reals"] = orig_waveforms         # waveform GT
-        loss_info["sp_decoded"] = sp_decoded_aligned  # usa il tensore allineato per le loss
-        loss_info["sp_decoded_linear"] = sp_decoded_linear_aligned
+        loss_info["sp_decoded"] = sp_decoded_aligned  # use aligned tensor for losses
+        loss_info["sp_decoded_linear"] = sp_decoded_linear_aligned # linear spectra for waveform losses
 
-        # decoded/reals shape attesa: (B, C_audio, N)
+        # decoded/reals expected shape: (B, C_audio, N)
         if self.audio_channels == 2:
             loss_info["decoded_left"] = decoded[:, 0:1, :]
             loss_info["decoded_right"] = decoded[:, 1:2, :]
@@ -473,6 +501,10 @@ class AutoencoderEngine(nn.Module):
 
     @torch.no_grad()
     def compute_validation(self, batch: Tuple[torch.Tensor, torch.Tensor]) -> Dict[str, float]:
+        """
+        batch: (sp_reals, orig_waveforms)
+        Same logic as compute(), but only for eval losses and no grad.
+        """
         sp_reals, orig_waveforms = batch
         encoder_input = sp_reals
         if self.force_input_mono and encoder_input.shape[1] > 1:
