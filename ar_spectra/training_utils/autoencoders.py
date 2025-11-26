@@ -396,26 +396,45 @@ class AutoencoderValDemoCallback(pl.Callback):
             reals_wav = reals_wav[:self.max_demos, ...]
 
         with torch.no_grad():
-            # forza mono se richiesto dal wrapper/engine
-            encoder_input = sp_reals
-            if getattr(pl_module.engine, "force_input_mono", False) and encoder_input.shape[1] > 1:
-                encoder_input = encoder_input.mean(dim=1, keepdim=True)
+            force_mono = bool(getattr(pl_module.engine, "force_input_mono", False))
+            waveform_input = reals_wav
+            if force_mono and waveform_input.shape[1] > 1:
+                waveform_input = waveform_input.mean(dim=1, keepdim=True)
+            waveform_input = waveform_input.contiguous()
 
-            # encode/decode nel dominio STFT -> istft in audio
-            latents = pl_module.autoencoder.encode(encoder_input)
-            sp_decoded = pl_module.autoencoder.decode(latents)
+            pack_complex = not bool(getattr(pl_module.autoencoder.encoder, "is_complex", False))
+            stereo_flag = not force_mono
 
-            target_len = reals_wav.shape[-1]
             try:
-                decoded = pl_module.autoencoder.istft(sp_decoded, target_length=target_len)
-                encoder_input_istft = pl_module.autoencoder.istft(encoder_input, target_length=target_len)
+                latents, encode_info = pl_module.autoencoder.encode_audio(
+                    waveform_input,
+                    stereo=stereo_flag,
+                    chunked=False,
+                    overlap_size=0,
+                    pack_complex=pack_complex,
+                    debug=False,
+                )
+                decoded = pl_module.autoencoder.decode_audio(
+                    latents,
+                    encode_info,
+                    stereo=stereo_flag,
+                    chunked=False,
+                    pack_complex=pack_complex,
+                    debug=False,
+                )
             except Exception as exc:
-                warn(f"Validation demo ISTFT failed ({type(exc).__name__}: {exc}). Skipping demo logging for this batch.")
+                warn(
+                    f"Validation demo inference pipeline failed ({type(exc).__name__}: {exc}). "
+                    "Skipping demo logging for this batch."
+                )
                 return
-            
+
+            decoded = decoded.detach()
+            reference_audio = waveform_input.detach()
+
             # allinea a reals e applica target length opzionale
             from .autoencoders import trim_to_shortest  # reuse helper
-            decoded, reals_wav = trim_to_shortest(decoded.detach(), reals_wav.detach())
+            decoded, reference_audio = trim_to_shortest(decoded, reference_audio)
 
             sr = int(self.sample_rate or getattr(pl_module.engine, "sample_rate", 44100))
             if self.target_seconds is not None and self.target_seconds > 0:
@@ -427,14 +446,15 @@ class AutoencoderValDemoCallback(pl.Callback):
 
             if target_len != decoded.shape[-1]:
                 decoded = self._crop_or_pad(decoded, target_len)
-                reals_wav = self._crop_or_pad(reals_wav, target_len)
-                input_encoder_istft = self._crop_or_pad(encoder_input_istft, target_len)
+                reference_audio = self._crop_or_pad(reference_audio, target_len)
+
+            input_encoder_audio = reference_audio
 
             # interleave reals e fakes per salvataggio
             from einops import rearrange
-            reals_fakes = rearrange([reals_wav, decoded], 'i b d n -> (b i) d n')
+            reals_fakes = rearrange([reference_audio, decoded], 'i b d n -> (b i) d n')
             reals_fakes = rearrange(reals_fakes, 'b d n -> d (b n)')
-            encoder_input_istft = rearrange([reals_wav, input_encoder_istft], 'i b d n -> (b i) d n')
+            encoder_input_istft = rearrange([reference_audio, input_encoder_audio], 'i b d n -> (b i) d n')
             encoder_input_istft = rearrange(encoder_input_istft, 'b d n -> d (b n)')
 
             # path di salvataggio
@@ -456,8 +476,8 @@ class AutoencoderValDemoCallback(pl.Callback):
             # Pre-normalize per evitare clipping: scala se il picco supera 1.0
             eps = 1e-9
             # assicurati che tutti i tensori stiano sullo stesso device prima di fare torch.stack()
-            device = getattr(pl_module, "device", None) or (reals_wav.device if torch.is_tensor(reals_wav) else torch.device("cpu"))
-            peak_real = (reals_wav.abs().max().detach().to(device) if torch.is_tensor(reals_wav) else torch.tensor(0.0, device=device))
+            device = getattr(pl_module, "device", None) or (reference_audio.device if torch.is_tensor(reference_audio) else torch.device("cpu"))
+            peak_real = (reference_audio.abs().max().detach().to(device) if torch.is_tensor(reference_audio) else torch.tensor(0.0, device=device))
             peak_dec = (decoded.abs().max().detach().to(device) if torch.is_tensor(decoded) else torch.tensor(0.0, device=device))
             peak_enc = (encoder_input_istft.abs().max().detach().to(device) if torch.is_tensor(encoder_input_istft) else torch.tensor(0.0, device=device))
             global_peak = float(torch.max(torch.stack([peak_real, peak_dec, peak_enc, torch.tensor(eps, device=device)])).item())

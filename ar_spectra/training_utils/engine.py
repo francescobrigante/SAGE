@@ -160,9 +160,7 @@ class AutoencoderEngine(nn.Module):
                 phase_block = spectral_cfg.get(phase_chosen, {}) or {}
                 configs_phase = phase_block.get("config", phase_block) or {}
                 self.phase_loss = PhaseCosineDistance(**configs_phase)
-                
-          
-                    
+                 
         # per evitare AttributeError in rami opzionali
         self.lrstft = None
 
