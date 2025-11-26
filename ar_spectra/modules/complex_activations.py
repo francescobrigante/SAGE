@@ -288,6 +288,36 @@ class Abs_SiLU(nn.Module):
         return gate * z / (mag + 1e-8)
 
 
+@torch.jit.script
+def snake_complex(x: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
+    # x: (B, C, L, ...) complesso
+    # alpha: (1, C, 1, ...) reale
+    shape = x.shape
+    x = x.reshape(shape[0], shape[1], -1)
+
+    # Evita divisioni per zero
+    a = alpha + 1e-9
+
+    # Cast di alpha al dtype di x (complesso) per evitare mismatch
+    a_c = a.to(x.dtype)
+    alpha_c = alpha.to(x.dtype)
+
+    x = x + a_c.reciprocal() * torch.sin(alpha_c * x).pow(2)
+
+    x = x.reshape(shape)
+    return x
+
+
+class Snake1dComplex(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        # alpha reale, ma verrà castato a complesso al volo
+        self.alpha = nn.Parameter(torch.ones(1, channels, 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x deve essere complesso: dtype=torch.complex64 / complex128
+        return snake_complex(x, self.alpha)
+
 # Register alias for "eulero.nn" 
 
 _this = sys.modules[__name__]

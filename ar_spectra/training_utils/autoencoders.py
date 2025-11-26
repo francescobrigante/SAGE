@@ -144,9 +144,13 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
 
         # Set optional spectrogram normalization on the core autoencoder
         try:
-            self.engine.autoencoder.pre_transform = create_pre_transform(pre_transform_spec)
-            if self.engine.autoencoder.pre_transform is not None:
-                ok("Applied spectrogram pre_transform to AutoEncoder")
+            if pre_transform_spec is not None:
+                self.engine.autoencoder.pre_transform = create_pre_transform(pre_transform_spec)
+            current_transform = getattr(self.engine.autoencoder, "pre_transform", None)
+            if current_transform is not None:
+                ok(f"AutoEncoder pre_transform active: {type(current_transform).__name__}")
+            else:
+                ok("AutoEncoder pre_transform disabled")
         except Exception as e:
             warn(f"Failed to create/apply pre_transform ({type(e).__name__}: {e})")
 

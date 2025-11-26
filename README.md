@@ -116,6 +116,8 @@ cfg = OmegaConf.load("conf/model/SEANet_cplx_model.yaml")
 ae = AutoEncoder.from_config(cfg["model"])
 ```
 
+> **Heads-up:** the spectrogram pre/post normalization now lives inside the model block. When you need power or log magnitude normalization, add the `pre_transform` entry under `model.autoencoder` (see the default `conf/model/SEANet_cplx_model.yaml`). Trainer-level overrides are no longer applied automatically.
+
 ---
 
 ## How the pieces work together

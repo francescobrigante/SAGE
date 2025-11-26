@@ -2,6 +2,50 @@ import torch
 from typing import Optional, Dict, Any, Union
 
 
+def _spectrogram_to_complex(S: torch.Tensor) -> torch.Tensor:
+    """Convert supported spectrogram layouts to a complex tensor."""
+    if torch.is_complex(S):
+        return S
+    if S.dim() == 4:
+        B, Cx, F, T = S.shape
+        if Cx % 2 != 0:
+            raise ValueError(f"Expected even channels (2C) for CAC input, got {Cx}")
+        C = Cx // 2
+        Sview = S.view(B, C, 2, F, T)
+        real = Sview[:, :, 0, :, :]
+        imag = Sview[:, :, 1, :, :]
+        return torch.complex(real, imag)
+    if S.dim() == 3:
+        Cx, F, T = S.shape
+        if Cx % 2 != 0:
+            raise ValueError(f"Expected even channels (2C) for CAC input, got {Cx}")
+        C = Cx // 2
+        Sview = S.view(C, 2, F, T)
+        real = Sview[:, 0, :, :]
+        imag = Sview[:, 1, :, :]
+        return torch.complex(real, imag)
+    raise ValueError(f"Unsupported spectrogram shape for CAC conversion: {tuple(S.shape)}")
+
+
+def _spectrogram_from_complex(S: torch.Tensor, like: torch.Tensor) -> torch.Tensor:
+    """Project a complex spectrogram back to the original layout."""
+    if torch.is_complex(like):
+        return S
+    if like.dim() == 4:
+        B, C, F, T = S.shape
+        real = S.real
+        imag = S.imag
+        out = torch.stack((real, imag), dim=2).reshape(B, 2 * C, F, T)
+        return out.to(like.dtype)
+    if like.dim() == 3:
+        C, F, T = S.shape
+        real = S.real
+        imag = S.imag
+        out = torch.stack((real, imag), dim=1).reshape(2 * C, F, T)
+        return out.to(like.dtype)
+    raise ValueError(f"Unsupported spectrogram shape for CAC restore: {tuple(like.shape)}")
+
+
 class IdentityTransform:
     def __init__(self):
         pass
@@ -28,66 +72,60 @@ class LogMagnitudeTransform:
         self.eps = float(eps)
         self.alpha = float(alpha)
 
-    @staticmethod
-    def _to_complex(S: torch.Tensor) -> torch.Tensor:
-        if torch.is_complex(S):
-            return S
-        if S.dim() == 4:
-            B, Cx, F, T = S.shape
-            if Cx % 2 != 0:
-                raise ValueError(f"Expected even channels (2C) for CAC input, got {Cx}")
-            C = Cx // 2
-            Sview = S.view(B, C, 2, F, T)
-            real = Sview[:, :, 0, :, :]
-            imag = Sview[:, :, 1, :, :]
-            return torch.complex(real, imag)
-        if S.dim() == 3:
-            Cx, F, T = S.shape
-            if Cx % 2 != 0:
-                raise ValueError(f"Expected even channels (2C) for CAC input, got {Cx}")
-            C = Cx // 2
-            Sview = S.view(C, 2, F, T)
-            real = Sview[:, 0, :, :]
-            imag = Sview[:, 1, :, :]
-            return torch.complex(real, imag)
-        raise ValueError(f"Unsupported spectrogram shape for CAC conversion: {tuple(S.shape)}")
-
-    @staticmethod
-    def _from_complex(S: torch.Tensor, like: torch.Tensor) -> torch.Tensor:
-        # Return in the same representation as `like`
-        if torch.is_complex(like):
-            return S
-        # complex-as-channels
-        if like.dim() == 4:
-            B, C, F, T = S.shape
-            real = S.real
-            imag = S.imag
-            out = torch.stack((real, imag), dim=2).reshape(B, 2 * C, F, T)
-            return out.to(like.dtype)
-        if like.dim() == 3:
-            C, F, T = S.shape
-            real = S.real
-            imag = S.imag
-            out = torch.stack((real, imag), dim=1).reshape(2 * C, F, T)
-            return out.to(like.dtype)
-        raise ValueError(f"Unsupported spectrogram shape for CAC restore: {tuple(like.shape)}")
-
     def transform(self, S_in: torch.Tensor) -> torch.Tensor:
-        S = self._to_complex(S_in)
+        S = _spectrogram_to_complex(S_in)
         mag = torch.abs(S)
         # unit complex with safe denom
         unit = S / (mag + self.eps)
         mag_n = torch.log1p(self.alpha * mag)
         Sout = unit * mag_n
-        return self._from_complex(Sout, S_in)
+        return _spectrogram_from_complex(Sout, S_in)
 
     def inverse(self, S_in: torch.Tensor) -> torch.Tensor:
-        S = self._to_complex(S_in)
+        S = _spectrogram_to_complex(S_in)
         mag_n = torch.abs(S)
         unit = S / (mag_n + self.eps)
         mag = torch.expm1(mag_n) / self.alpha
         Sout = unit * mag
-        return self._from_complex(Sout, S_in)
+        return _spectrogram_from_complex(Sout, S_in)
+
+
+class PowerMagnitudeTransform:
+    """Apply the beta·|S|^alpha rescaling used by ``normalize_complex`` while preserving phase.
+
+    Args:
+        alpha: Power-law exponent applied to the magnitude.
+        beta: Multiplicative scale applied after the exponent.
+        eps: Numerical stability term used only when extracting phase.
+    """
+
+    def __init__(self, alpha: float = 1.0, beta: float = 1.0, eps: float = 1e-8):
+        if alpha <= 0.0:
+            raise ValueError("alpha must be strictly positive for power-law rescaling")
+        if beta <= 0.0:
+            raise ValueError("beta must be strictly positive for power-law rescaling")
+        self.alpha = float(alpha)
+        self.beta = float(beta)
+        self.eps = float(eps)
+
+    def transform(self, S_in: torch.Tensor) -> torch.Tensor:
+        S = _spectrogram_to_complex(S_in)
+        mag = torch.abs(S)
+        unit = S / (mag + self.eps)
+        # magnitude follows beta_rescale * |x|**alpha_rescale
+        mag_scaled = self.beta * mag.pow(self.alpha)
+        Sout = unit * mag_scaled
+        return _spectrogram_from_complex(Sout, S_in)
+
+    def inverse(self, S_in: torch.Tensor) -> torch.Tensor:
+        S = _spectrogram_to_complex(S_in)
+        mag = torch.abs(S)
+        mag_scaled = mag / self.beta
+        # undo the normalize_complex exponentiation
+        mag_restored = mag_scaled.clamp_min(0.0).pow(1.0 / self.alpha)
+        unit = S / (mag + self.eps)
+        Sout = unit * mag_restored
+        return _spectrogram_from_complex(Sout, S_in)
 
 
 def create_pre_transform(spec: Optional[Union[str, Dict[str, Any]]]):
@@ -97,6 +135,7 @@ def create_pre_transform(spec: Optional[Union[str, Dict[str, Any]]]):
     - None or {type: identity}: returns IdentityTransform
     - "identity"
     - "log_mag" or {"type":"log_mag", "config": {eps, alpha}}
+    - "power_mag" or {"type":"power_mag", "config": {alpha, beta, eps}}
     """
     if spec is None:
         return IdentityTransform()
@@ -106,6 +145,8 @@ def create_pre_transform(spec: Optional[Union[str, Dict[str, Any]]]):
             return IdentityTransform()
         if key in ("log_mag", "logmag", "log_magnitude"):
             return LogMagnitudeTransform()
+        if key in ("power_mag", "powermag", "power", "power_norm"):
+            return PowerMagnitudeTransform()
         raise ValueError(f"Unknown pre_transform string spec: {spec}")
     if not isinstance(spec, dict):
         raise ValueError(f"Unsupported pre_transform spec type: {type(spec).__name__}")
@@ -115,4 +156,6 @@ def create_pre_transform(spec: Optional[Union[str, Dict[str, Any]]]):
         return IdentityTransform()
     if t in ("log_mag", "logmag", "log_magnitude"):
         return LogMagnitudeTransform(**cfg)
+    if t in ("power_mag", "powermag", "power", "power_norm"):
+        return PowerMagnitudeTransform(**cfg)
     raise ValueError(f"Unknown pre_transform type: {t}")

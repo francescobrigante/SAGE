@@ -275,6 +275,9 @@ def main(cfg: DictConfig):
         unified = legacy_cfg
     else:
         # Rebuild unified experiment dictionary
+        trainer_pre_transform = cfg.trainer.get("pre_transform", None)
+        if trainer_pre_transform is not None:
+            trainer_pre_transform = OmegaConf.to_container(trainer_pre_transform, resolve=True)
         unified = {
             "seed": int(cfg.trainer.seed),
             "device": cfg.device if hasattr(cfg, "device") else cfg.trainer.get("device", "cuda"),
@@ -290,7 +293,7 @@ def main(cfg: DictConfig):
             "wandb": OmegaConf.to_container(cfg.trainer.get("wandb", {}), resolve=True),
             "eval_loss_config": OmegaConf.to_container(cfg.trainer.get("eval_loss_config", {}), resolve=True),
             "loss_config": OmegaConf.to_container(cfg.trainer.get("loss_config", {}), resolve=True),
-            "pre_transform": OmegaConf.to_container(cfg.trainer.get("pre_transform", {}), resolve=True),
+            "pre_transform": trainer_pre_transform,
         }
         ok("Hydra composition complete")
 
