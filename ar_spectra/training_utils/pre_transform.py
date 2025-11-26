@@ -1,5 +1,5 @@
 import torch
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, Tuple
 
 
 def _spectrogram_to_complex(S: torch.Tensor) -> torch.Tensor:
@@ -159,3 +159,34 @@ def create_pre_transform(spec: Optional[Union[str, Dict[str, Any]]]):
     if t in ("power_mag", "powermag", "power", "power_norm"):
         return PowerMagnitudeTransform(**cfg)
     raise ValueError(f"Unknown pre_transform type: {t}")
+
+
+def resolve_pre_transform(spec: Optional[Union[str, Dict[str, Any]]]) -> Tuple[Optional[Any], bool, bool]:
+    """Return (transform, apply_to_encoder, apply_inverse).
+
+    Control keys accepted in dict specs:
+      - apply_encoder / apply_to_encoder: bool
+      - apply_inverse / apply_decoder: bool
+
+    They are stripped before instantiating the transform. ``None`` yields
+    (None, True, True) meaning no transform will be applied.
+    """
+
+    apply_encoder = True
+    apply_inverse = True
+
+    if spec is None:
+        return None, apply_encoder, apply_inverse
+
+    core_spec: Optional[Union[str, Dict[str, Any]]] = spec
+
+    if isinstance(spec, dict):
+        apply_encoder = bool(spec.get("apply_encoder", spec.get("apply_to_encoder", True)))
+        apply_inverse = bool(spec.get("apply_inverse", spec.get("apply_decoder", True)))
+        control_keys = {"apply_encoder", "apply_to_encoder", "apply_inverse", "apply_decoder"}
+        core_spec = {k: v for k, v in spec.items() if k not in control_keys}
+        if not core_spec:
+            core_spec = {"type": "identity"}
+
+    transform = create_pre_transform(core_spec)
+    return transform, apply_encoder, apply_inverse

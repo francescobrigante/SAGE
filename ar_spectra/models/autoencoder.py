@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 
 from ar_spectra.models.bottlenecks import SkipBottleneck, VAEBottleneck
-from ar_spectra.training_utils.pre_transform import create_pre_transform
+from ar_spectra.training_utils.pre_transform import resolve_pre_transform
 from rich.console import Console
 
 def ok(msg):     console.print(msg, style="bold green")
@@ -145,12 +145,17 @@ class AutoEncoder(nn.Module):
             if bottleneck is not None else None
         )
         # Optional spectrogram normalization applied at encoder input and
-        # inverted after decoder output (before losses / ISTFT).
+        # optionally inverted after decoder output.
+        self.pre_transform: Optional[Any] = None
+        self._pre_transform_apply_encoder: bool = True
+        self._pre_transform_apply_inverse: bool = True
         try:
-            self.pre_transform = create_pre_transform(pre_transform)
-            info(f"Pre-transform set to: {type(self.pre_transform).__name__}")
+            self.configure_pre_transform(pre_transform)
+            info(self.pre_transform_description())
         except Exception:
             self.pre_transform = None
+            self._pre_transform_apply_encoder = True
+            self._pre_transform_apply_inverse = True
 
         self._stft_config: Optional[STFTConfig] = None
         if stft_config is not None:
@@ -321,7 +326,7 @@ class AutoEncoder(nn.Module):
         """Run encoder (and optional bottleneck) on a spectrogram batch."""
 
         x = inputs
-        if self.pre_transform is not None:
+        if self.pre_transform is not None and self._pre_transform_apply_encoder:
             try:
                 x = self.pre_transform.transform(x)
             except Exception as exc:
@@ -357,7 +362,7 @@ class AutoEncoder(nn.Module):
 
         decoded = self.decoder(z)
 
-        if self.pre_transform is not None:
+        if self.pre_transform is not None and self._pre_transform_apply_inverse:
             try:
                 decoded = self.pre_transform.inverse(decoded)
             except Exception as exc:
@@ -367,6 +372,23 @@ class AutoEncoder(nn.Module):
             print(f"[AutoEncoder.decode] output shape={tuple(decoded.shape)}")
 
         return decoded
+
+    def configure_pre_transform(self, spec: Optional[Union[str, Dict[str, Any]]]) -> None:
+        transform, apply_encoder, apply_inverse = resolve_pre_transform(spec)
+        self.pre_transform = transform
+        self._pre_transform_apply_encoder = apply_encoder
+        self._pre_transform_apply_inverse = apply_inverse
+
+    def pre_transform_description(self) -> str:
+        if self.pre_transform is None:
+            return "Pre-transform disabled."
+        modes: List[str] = []
+        if self._pre_transform_apply_encoder:
+            modes.append("encode")
+        if self._pre_transform_apply_inverse:
+            modes.append("decode")
+        mode_desc = "/".join(modes) if modes else "none"
+        return f"Pre-transform set to: {type(self.pre_transform).__name__} (applied on {mode_desc})"
           
     def _maybe_add_nyquist(self, S: torch.Tensor, n_fft: int, onesided: bool) -> torch.Tensor:
         F = S.shape[-2]
