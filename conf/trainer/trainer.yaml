@@ -5,7 +5,7 @@ device: cuda
 optimizer:
   type: RAdam
   config:
-    lr: 4e-3
+    lr: 1e-3
     weight_decay: 1e-5
     decoupled_weight_decay: true
 
@@ -42,14 +42,6 @@ wandb:
   name: SEANet_STFT_losses
   use_wandb: true
 
-# Spectrogram normalization applied at encoder input and inverted at decoder output
-pre_transform:
-  type: none          # none | log_mag | power_norm
-  config:
-    eps: 1.0e-8
-    alpha: 0.65
-    beta: 0.35
-
 eval_loss_config:
   sisdr:
     zero_mean: true
@@ -71,20 +63,7 @@ loss_config:
       config:
         reduction: mean
 
-    mrstft:
-      config:
-        reduction: mean
-        factor_sc: 0.0
-        factor_mag: 0.5
-        linear_mag: true
-        factor_linear_mag: 1.0
-
-    cosine_phase_loss:
-      config:
-        reduction: mean
-        energy_weighted: false
-
-    weights: { stft_mse: 1.0, mrstft: 4.0, cosine_phase_loss: 2.0 }
+    weights: { stft_mse: 1.0}
 
 # Legacy fallback controls
 use_json: false

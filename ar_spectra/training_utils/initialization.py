@@ -246,6 +246,11 @@ def build_training_wrapper_from_cfg(cfg: Dict[str, Any]) -> Tuple["AutoencoderTr
     autoenc = AutoEncoder.from_config(model_cfg)
     optimizer_spec = cfg.get("optimizer", None)
     scheduler_spec = cfg.get("scheduler", None)
+    pre_transform_spec = cfg.get("pre_transform", None)
+    if pre_transform_spec is None:
+        pre_transform_spec = cfg.get("model", {}).get("autoencoder", {}).get("pre_transform")
+    if isinstance(pre_transform_spec, dict):
+        pre_transform_spec = copy.deepcopy(pre_transform_spec)
 
     from ar_spectra.training_utils.autoencoders import AutoencoderTrainingWrapper
 
@@ -265,7 +270,7 @@ def build_training_wrapper_from_cfg(cfg: Dict[str, Any]) -> Tuple["AutoencoderTr
         stft_params=cfg.get("train_dataset", {}).get("kwargs", {}),
         optimizer_spec=optimizer_spec,
         scheduler_spec=scheduler_spec,
-        pre_transform_spec=cfg.get("pre_transform", None),
+        pre_transform_spec=pre_transform_spec,
     )
 
     return wrapper, data_init

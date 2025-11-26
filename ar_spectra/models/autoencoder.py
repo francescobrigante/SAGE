@@ -13,6 +13,11 @@ from ar_spectra.models.bottlenecks import SkipBottleneck, VAEBottleneck
 from ar_spectra.training_utils.pre_transform import create_pre_transform
 from rich.console import Console
 
+def ok(msg):     console.print(msg, style="bold green")
+def warn(msg):   console.print(msg, style="bold yellow")
+def err(msg):    console.print(msg, style="bold red")
+def info(msg):   console.print(msg, style="cyan")
+
 console = Console()
 def warn(msg):   console.print(msg, style="bold yellow")
 
@@ -143,6 +148,7 @@ class AutoEncoder(nn.Module):
         # inverted after decoder output (before losses / ISTFT).
         try:
             self.pre_transform = create_pre_transform(pre_transform)
+            info(f"Pre-transform set to: {type(self.pre_transform).__name__}")
         except Exception:
             self.pre_transform = None
 
