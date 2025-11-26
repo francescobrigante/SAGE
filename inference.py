@@ -395,6 +395,8 @@ def run_dataset_inference(
 
         if save_waveforms:
             for i in range(recon_batch.size(0)):
+                peak = recon_batch[i].abs().max().clamp(min=1.0)
+                recon_batch[i] = recon_batch[i] / peak
                 save_audio(
                     recon_batch[i],
                     output_dir / f"{output_stems[i]}.wav",
