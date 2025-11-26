@@ -15,7 +15,6 @@ from einops import rearrange
 from safetensors.torch import save_model
 from ..interface.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 from .engine import AutoencoderEngine  
-from .pre_transform import create_pre_transform
 from ..models.autoencoder import AutoEncoder
 from ..models.discriminators import EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, BigVGANDiscriminator
 from ..models.bottlenecks import VAEBottleneck
@@ -145,12 +144,8 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         # Set optional spectrogram normalization on the core autoencoder
         try:
             if pre_transform_spec is not None:
-                self.engine.autoencoder.pre_transform = create_pre_transform(pre_transform_spec)
-            current_transform = getattr(self.engine.autoencoder, "pre_transform", None)
-            if current_transform is not None:
-                ok(f"AutoEncoder pre_transform active: {type(current_transform).__name__}")
-            else:
-                ok("AutoEncoder pre_transform disabled")
+                self.engine.autoencoder.configure_pre_transform(pre_transform_spec)
+            ok(self.engine.autoencoder.pre_transform_description())
         except Exception as e:
             warn(f"Failed to create/apply pre_transform ({type(e).__name__}: {e})")
 
