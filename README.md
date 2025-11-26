@@ -116,7 +116,7 @@ cfg = OmegaConf.load("conf/model/SEANet_cplx_model.yaml")
 ae = AutoEncoder.from_config(cfg["model"])
 ```
 
-> **Heads-up:** the spectrogram pre/post normalization now lives inside the model block. When you need power or log magnitude normalization, add the `pre_transform` entry under `model.autoencoder` (see the default `conf/model/SEANet_cplx_model.yaml`). Trainer-level overrides are no longer applied automatically, and you can skip the decoder inverse pass by adding `apply_inverse: false` when you only want the transform on the encoder input.
+> **Heads-up:** the spectrogram pre/post normalization now lives inside the model block. When you need power or log magnitude normalization, add the `pre_transform` entry under `model.autoencoder` (see the default `conf/model/SEANet_cplx_model.yaml`). Trainer-level overrides are no longer applied automatically. You can skip the decoder inverse pass by adding `apply_inverse: false`; set `apply_target: true` to evaluate spectrogram losses in the normalized domain, while waveform-based losses will still run on the inverse-transformed spectrogram to keep the audio reconstruction stable.
 
 ---
 

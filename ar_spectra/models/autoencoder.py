@@ -149,6 +149,7 @@ class AutoEncoder(nn.Module):
         self.pre_transform: Optional[Any] = None
         self._pre_transform_apply_encoder: bool = True
         self._pre_transform_apply_inverse: bool = True
+        self._pre_transform_apply_target: bool = False
         try:
             self.configure_pre_transform(pre_transform)
             info(self.pre_transform_description())
@@ -156,6 +157,7 @@ class AutoEncoder(nn.Module):
             self.pre_transform = None
             self._pre_transform_apply_encoder = True
             self._pre_transform_apply_inverse = True
+            self._pre_transform_apply_target = False
 
         self._stft_config: Optional[STFTConfig] = None
         if stft_config is not None:
@@ -268,6 +270,38 @@ class AutoEncoder(nn.Module):
         imag = S[:, C:]
         return torch.complex(real, imag)
 
+    def _apply_pre_transform(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.pre_transform is None:
+            return tensor
+        return self.pre_transform.transform(tensor)
+
+    def _apply_inverse_pre_transform(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.pre_transform is None:
+            return tensor
+        return self.pre_transform.inverse(tensor)
+
+    def apply_pre_transform_to_target(self, tensor: torch.Tensor) -> torch.Tensor:
+        if not self.pre_transform_applies_to_target:
+            return tensor
+        return self._apply_pre_transform(tensor)
+
+    def apply_inverse_pre_transform(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.pre_transform is None:
+            return tensor
+        return self._apply_inverse_pre_transform(tensor)
+
+    @property
+    def has_pre_transform(self) -> bool:
+        return self.pre_transform is not None
+
+    @property
+    def pre_transform_applies_to_target(self) -> bool:
+        return self.pre_transform is not None and self._pre_transform_apply_target
+
+    @property
+    def pre_transform_applies_inverse(self) -> bool:
+        return self.pre_transform is not None and self._pre_transform_apply_inverse
+
     def set_stft_config(self, config: Union[STFTConfig, Dict[str, Any]]) -> None:
         """Store a normalized STFT configuration used by audio helpers.
 
@@ -328,7 +362,7 @@ class AutoEncoder(nn.Module):
         x = inputs
         if self.pre_transform is not None and self._pre_transform_apply_encoder:
             try:
-                x = self.pre_transform.transform(x)
+                x = self._apply_pre_transform(x)
             except Exception as exc:
                 warn(f"pre_transform.transform failed ({type(exc).__name__}: {exc}); continuing without it.")
 
@@ -353,7 +387,13 @@ class AutoEncoder(nn.Module):
             return latents, info
         return latents
 
-    def decode(self, latents: torch.Tensor, *, debug: bool = False) -> torch.Tensor:
+    def decode(
+        self,
+        latents: torch.Tensor,
+        *,
+        debug: bool = False,
+        apply_inverse: Optional[bool] = None,
+    ) -> torch.Tensor:
         """Run optional bottleneck decode followed by the decoder module."""
 
         z = latents
@@ -362,9 +402,12 @@ class AutoEncoder(nn.Module):
 
         decoded = self.decoder(z)
 
-        if self.pre_transform is not None and self._pre_transform_apply_inverse:
+        if apply_inverse is None:
+            apply_inverse = self._pre_transform_apply_inverse
+
+        if self.pre_transform is not None and apply_inverse:
             try:
-                decoded = self.pre_transform.inverse(decoded)
+                decoded = self._apply_inverse_pre_transform(decoded)
             except Exception as exc:
                 warn(f"pre_transform.inverse failed ({type(exc).__name__}: {exc}); returning raw decoder output.")
 
@@ -374,10 +417,11 @@ class AutoEncoder(nn.Module):
         return decoded
 
     def configure_pre_transform(self, spec: Optional[Union[str, Dict[str, Any]]]) -> None:
-        transform, apply_encoder, apply_inverse = resolve_pre_transform(spec)
+        transform, apply_encoder, apply_inverse, apply_target = resolve_pre_transform(spec)
         self.pre_transform = transform
         self._pre_transform_apply_encoder = apply_encoder
         self._pre_transform_apply_inverse = apply_inverse
+        self._pre_transform_apply_target = apply_target
 
     def pre_transform_description(self) -> str:
         if self.pre_transform is None:
@@ -387,6 +431,8 @@ class AutoEncoder(nn.Module):
             modes.append("encode")
         if self._pre_transform_apply_inverse:
             modes.append("decode")
+        if self._pre_transform_apply_target:
+            modes.append("target")
         mode_desc = "/".join(modes) if modes else "none"
         return f"Pre-transform set to: {type(self.pre_transform).__name__} (applied on {mode_desc})"
           
@@ -635,8 +681,9 @@ class AutoEncoder(nn.Module):
         if not chunked:
             if debug:
                 print(f"[decode_audio] single chunk path latents_shape={tuple(latents.shape)}")
-            spec = self.decode(latents)
-            spec_complex = self._unpack_complex(spec) if pack_complex else spec
+            spec = self.decode(latents, apply_inverse=False)
+            spec_linear = self.apply_inverse_pre_transform(spec)
+            spec_complex = self._unpack_complex(spec_linear) if pack_complex else spec_linear
             target_len = original_length or info.get("chunk_expected_lengths", [None])[0]
             waveform = self.istft(spec_complex, target_length=target_len)
             if remove_padding and original_length:
@@ -663,8 +710,9 @@ class AutoEncoder(nn.Module):
         for idx, lat_chunk in enumerate(chunks):
             if debug:
                 print(f"[decode_audio] chunk={idx} latent_shape={tuple(lat_chunk.shape)}")
-            spec_chunk = self.decode(lat_chunk)
-            spec_complex = self._unpack_complex(spec_chunk) if pack_complex else spec_chunk
+            spec_chunk = self.decode(lat_chunk, apply_inverse=False)
+            spec_chunk_linear = self.apply_inverse_pre_transform(spec_chunk)
+            spec_complex = self._unpack_complex(spec_chunk_linear) if pack_complex else spec_chunk_linear
             target_len = expected_lengths[idx] if idx < len(expected_lengths) else None
             wav_chunk = self.istft(spec_complex, target_length=target_len)
             decoded_chunks.append(wav_chunk)
