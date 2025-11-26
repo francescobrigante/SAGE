@@ -7,7 +7,7 @@ model:
     kwargs:
       input_size: auto           # will be patched at runtime
       dimension: 64
-      n_filters: 8
+      n_filters: 32
       n_residual_layers: 1
       ratios: [[4,2],[1,2],[4,2]]
       activation: CReLU
@@ -24,7 +24,7 @@ model:
     kwargs:
       channels: auto             # will be patched at runtime
       input_size: 64
-      n_filters: 8
+      n_filters: 32
       n_residual_layers: 1
       ratios: [[4,2],[1,2],[4,2]]
       activation: CReLU
