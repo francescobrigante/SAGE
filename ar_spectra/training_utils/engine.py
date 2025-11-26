@@ -328,38 +328,38 @@ class AutoencoderEngine(nn.Module):
             "Controlla n_fft/hop oppure normalizza l'output del decoder."
         )
 
-        def compute(self, batch: Tuple[torch.Tensor, torch.Tensor], global_step: int) -> Dict[str, Any]:
-                """Compute forward and loss breakdown for a training batch.
+    def compute(self, batch: Tuple[torch.Tensor, torch.Tensor], global_step: int) -> Dict[str, Any]:
+        """Compute forward and loss breakdown for a training batch.
 
-                The method orchestrates the end-to-end path ``spectrogram -> encoder ->
-                bottleneck -> decoder`` and prepares the tensors required by every
-                generator/discriminator loss.
+        The method orchestrates the end-to-end path ``spectrogram -> encoder ->
+        bottleneck -> decoder`` and prepares the tensors required by every
+        generator/discriminator loss.
 
-                Pre-transform handling follows the configuration stored on
-                ``self.autoencoder``:
+        Pre-transform handling follows the configuration stored on
+        ``self.autoencoder``:
 
-                * ``apply_encoder``: encoder inputs are normalized before being fed to
-                    the network.
-                * ``apply_target``: when enabled, the same normalized representation is
-                    used as loss target (``loss_info["encoder_input"]``), ensuring
-                    spectrogram losses compare tensors in the transformed domain.
-                * ``apply_inverse``: regardless of this flag, waveform-domain losses
-                    always receive inverse-transformed spectrograms through
-                    ``loss_info["decoded"]`` so that audio reconstruction happens in the
-                    linear domain.
+        * ``apply_encoder``: encoder inputs are normalized before being fed to
+            the network.
+        * ``apply_target``: when enabled, the same normalized representation is
+            used as loss target (``loss_info["encoder_input"]``), ensuring
+            spectrogram losses compare tensors in the transformed domain.
+        * ``apply_inverse``: regardless of this flag, waveform-domain losses
+            always receive inverse-transformed spectrograms through
+            ``loss_info["decoded"]`` so that audio reconstruction happens in the
+            linear domain.
 
-                Args:
-                        batch: Tuple ``(sp_reals, orig_waveforms)`` containing the reference
-                                spectrograms and waveforms produced by the dataset.
-                        global_step: Current optimization step, used to control warm-up and
-                                adversarial phase alternation.
+        Args:
+                batch: Tuple ``(sp_reals, orig_waveforms)`` containing the reference
+                        spectrograms and waveforms produced by the dataset.
+                global_step: Current optimization step, used to control warm-up and
+                        adversarial phase alternation.
 
-                Returns:
-                        Dict[str, Any]: A payload that includes the selected training phase,
-                        scalar losses, detailed loss breakdowns, cached tensors required by
-                        the loss modules, and auxiliary statistics (``data_std`` and
-                        ``latent_std``).
-                """
+        Returns:
+                Dict[str, Any]: A payload that includes the selected training phase,
+                scalar losses, detailed loss breakdowns, cached tensors required by
+                the loss modules, and auxiliary statistics (``data_std`` and
+                ``latent_std``).
+        """
         sp_reals, orig_waveforms = batch
         loss_info: Dict[str, Any] = {}
 
