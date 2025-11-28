@@ -117,6 +117,14 @@ class AutoencoderEngine(nn.Module):
  
          # reconstruction losses: spectral può non essere presente nella config -> protegge l'accesso
         spectral_cfg = self.loss_config.get("spectral")
+        self.apply_pre_transform_to_wave_losses = False
+        if spectral_cfg and isinstance(spectral_cfg, dict):
+            self.apply_pre_transform_to_wave_losses = bool(spectral_cfg.get("apply_pre_transform_to_wave_losses", False))
+        if self.apply_pre_transform_to_wave_losses and not self.autoencoder.has_pre_transform:
+            warn(
+                "apply_pre_transform_to_wave_losses requested but the autoencoder has no pre_transform; disabling this option."
+            )
+            self.apply_pre_transform_to_wave_losses = False
         if spectral_cfg and isinstance(spectral_cfg, dict):
             # JSON corrente: "spectral": { "stft_mse": { "config": {...} }, "weights": {...} }
             stft_mse_block = spectral_cfg.get("stft_mse", {}) or {}
@@ -143,15 +151,34 @@ class AutoencoderEngine(nn.Module):
                 mrstft_block = spectral_cfg.get(chosen, {}) or {}
                 # accetta sia {"config": {...}} sia dizionario piatto
                 configs_mrstft = mrstft_block.get("config", mrstft_block) or {}
+                if not isinstance(configs_mrstft, dict):
+                    raise TypeError(f"Expected dict for spectral.{chosen}.config, got {type(configs_mrstft).__name__}")
+                configs_mrstft = dict(configs_mrstft)
                 if chosen in ("mrstft_stable_audio",):
                     # Variante auraloss classica
+                    if self.apply_pre_transform_to_wave_losses:
+                        warn(
+                            "apply_pre_transform_to_wave_losses is not supported with 'mrstft_stable_audio'; proceeding without additional normalization."
+                        )
                     self.mrstft = auraloss.MultiResolutionSTFTLoss(**configs_mrstft)
                 elif chosen == "mrstft_sc":
                     # Variante basata su Spectral Convergence
-                    self.mrstft = MultiResSpectralConvergence(**configs_mrstft)
+                    extra_kwargs = {}
+                    if self.apply_pre_transform_to_wave_losses:
+                        extra_kwargs = {
+                            "apply_pre_transform": True,
+                            "pre_transform": self.autoencoder.pre_transform,
+                        }
+                    self.mrstft = MultiResSpectralConvergence(**configs_mrstft, **extra_kwargs)
                 elif chosen == "mrstft":
                     # Variante basata su MSE complesso
-                    self.mrstft = MultiResolutionSpectrogramLoss(**configs_mrstft)
+                    extra_kwargs = {}
+                    if self.apply_pre_transform_to_wave_losses:
+                        extra_kwargs = {
+                            "apply_pre_transform": True,
+                            "pre_transform": self.autoencoder.pre_transform,
+                        }
+                    self.mrstft = MultiResolutionSpectrogramLoss(**configs_mrstft, **extra_kwargs)
                 
             if len(phase_keys) ==0:
                 self.phase_loss = None
@@ -582,6 +609,8 @@ class AutoencoderEngine(nn.Module):
             except Exception:
                 params = {}
             ok(f"- {type(self.mrstft).__name__}: {params}")
+            if self.apply_pre_transform_to_wave_losses:
+                ok("  -> pre_transform applied to waveform spectral losses")
         if self.phase_loss is not None:
             try:
                 params = self._extract_hparams(self.phase_loss)
