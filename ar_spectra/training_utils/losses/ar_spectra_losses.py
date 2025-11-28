@@ -1,8 +1,10 @@
+import warnings
+from typing import Any, Optional, Sequence, Tuple
+
 import torch
 import torch.nn as nn
-from typing import Optional, Sequence, Tuple
-from typing_extensions import Literal
 import torchaudio
+from typing_extensions import Literal
 
 def to_complex_spectrogram(X: torch.Tensor) -> torch.Tensor:
     """
@@ -305,6 +307,9 @@ class MultiResSpectralConvergence(nn.Module):
         win_lengths: Optional[Sequence[int]] = (512, 1024, 2048),
         eps: float = 1e-7,
         window = torch.hann_window,
+        *,
+        apply_pre_transform: bool = False,
+        pre_transform: Optional[Any] = None,
     ):
         super().__init__()
         if len(fft_sizes) != len(hop_sizes):
@@ -314,6 +319,15 @@ class MultiResSpectralConvergence(nn.Module):
         self.eps = eps
         self.window = window
         self.win_lengths = win_lengths if win_lengths is not None else fft_sizes
+        if apply_pre_transform and pre_transform is None:
+            warnings.warn(
+                "apply_pre_transform=True but no pre_transform provided; disabling transform for MultiResSpectralConvergence.",
+                RuntimeWarning,
+            )
+            apply_pre_transform = False
+        self._apply_pre_transform = apply_pre_transform
+        self._pre_transform = pre_transform
+        self.sc_loss = ComplexSpectralConvergence(reduction="mean", eps=eps)
 
     def _stft(self, x: torch.Tensor, n_fft: int, hop: int, win_length: int,
               window: torch.Tensor) -> torch.Tensor:
@@ -351,7 +365,10 @@ class MultiResSpectralConvergence(nn.Module):
             S_hat = self._stft(wav_hat, n_fft, hop, win_length, window)   # (B,C,F,T')
             S_gt  = self._stft(wav_gt , n_fft, hop, win_length, window)
 
-            sc = ComplexSpectralConvergence()(S_hat, S_gt)  # scalar per-batch (mean)
+            if self._apply_pre_transform:
+                S_hat = self._pre_transform.transform(S_hat)
+                S_gt = self._pre_transform.transform(S_gt)
+            sc = self.sc_loss(S_hat, S_gt)  # scalar per-batch (mean)
             sc_vals.append(sc)
 
         sc_vals = torch.stack(sc_vals, dim=0)  # (R,)
@@ -444,6 +461,8 @@ class MultiResolutionSpectrogramLoss(nn.Module):
         eps_mag: float = 1e-8,
         reduction: str = "mean",
         return_details: bool = False,
+        apply_pre_transform: bool = False,
+        pre_transform: Optional[Any] = None,
     ):
         super().__init__()
         self.fft_sizes = fft_sizes
@@ -474,6 +493,14 @@ class MultiResolutionSpectrogramLoss(nn.Module):
         self.return_details = return_details
 
         self.sc_loss = ComplexSpectralConvergence(reduction='mean', eps=eps)
+        if apply_pre_transform and pre_transform is None:
+            warnings.warn(
+                "apply_pre_transform=True but no pre_transform provided; disabling transform for MultiResolutionSpectrogramLoss.",
+                RuntimeWarning,
+            )
+            apply_pre_transform = False
+        self._apply_pre_transform = apply_pre_transform and pre_transform is not None
+        self._pre_transform = pre_transform if self._apply_pre_transform else None
 
     def _stft(self, x: torch.Tensor, n_fft: int, hop: int, win_len: int, window: torch.Tensor) -> torch.Tensor:
         B, C, T = x.shape
@@ -503,6 +530,10 @@ class MultiResolutionSpectrogramLoss(nn.Module):
 
             S_hat = self._stft(wav_hat, n_fft, hop, win_len, window)
             S_gt = self._stft(wav_gt, n_fft, hop, win_len, window)
+
+            if self._apply_pre_transform:
+                S_hat = self._pre_transform.transform(S_hat)
+                S_gt = self._pre_transform.transform(S_gt)
 
             # Spectral convergence
             loss_sc = self.sc_loss(S_hat, S_gt)
@@ -561,7 +592,7 @@ class MRMelLoss(nn.Module):
 
     The total loss L_Mel is defined as the aggregation (mean or sum) over all resolutions r:
 
-        L_Mel = Reduce_r( || log(M^{(r)}(\hat{y}) + \epsilon) - log(M^{(r)}(y) + \epsilon) ||_1 )
+    L_Mel = Reduce_r( || log(M^{(r)}(\hat{y}) + \epsilon) - log(M^{(r)}(y) + \epsilon) ||_1 )
 
     Where:
       - M^{(r)} is the Mel-spectrogram projection at resolution r.

@@ -59,11 +59,25 @@ eval_loss_config:
 
 loss_config:
   spectral:
+    apply_pre_transform_to_wave_losses: false
     stft_mse:
       config:
         reduction: mean
 
-    weights: { stft_mse: 1.0}
+    mrstft:
+      config:
+        reduction: mean
+        factor_sc: 0.0
+        factor_mag: 0.5
+        linear_mag: true
+        factor_linear_mag: 1.0
+
+    cosine_phase_loss:
+      config:
+        reduction: mean
+        energy_weighted: false
+
+    weights: { stft_mse: 1.0, mrstft: 0.2, cosine_phase_loss: 0.05}
 
 # Legacy fallback controls
 use_json: false
