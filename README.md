@@ -45,7 +45,7 @@ Choose a single workflow and stick to it—either Astral `uv` or a classic virtu
 
 1. **Pick configurations** under `conf/` for the dataset, trainer, and model—you must reference the correct YAML files before launching training. Best practice is to keep the shipped YAML files as templates and apply overrides through Hydra CLI flags or copies stored under `conf/config.yaml`.
 2. **Start training** with the environment option you selected:
-   - `uv run python train.py`
+   - `uv run train.py`
    - `python train.py`
 3. **Override hyperparameters** directly from the command line when needed, for example:
    ```bash
@@ -58,7 +58,7 @@ Choose a single workflow and stick to it—either Astral `uv` or a classic virtu
 
 Configure `conf/inference.yaml` (checkpoint, model, data) and run the matching command for your environment choice:
 ```bash
-uv run python inference.py
+uv run inference.py
 # or
 python inference.py
 ```
