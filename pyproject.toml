@@ -27,4 +27,5 @@ dependencies = [
     "pytest>=9.0.1",
     "cdpam>=0.0.6",
     "resampy>=0.4.3",
+    "frechet-audio-distance>=0.1.2",
 ]
