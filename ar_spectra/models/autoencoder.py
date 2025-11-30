@@ -370,6 +370,8 @@ class AutoEncoder(nn.Module):
             print(f"[AutoEncoder.encode] encoder input shape={tuple(x.shape)}")
 
         latents = self.encoder(x)
+        if debug:
+            print(f"Latents shape after encoder: {tuple(latents.shape)}")
 
         if debug:
             print(f"[AutoEncoder.encode] encoder output shape={tuple(latents.shape)}")
