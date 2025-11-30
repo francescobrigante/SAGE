@@ -61,6 +61,15 @@ def _class_path(obj: Union[str, type, nn.Module]) -> str:
 
 
 def _canonicalize_module_spec(module_like: Union[nn.Module, Dict[str, Any], str, type, None]) -> Optional[Dict[str, Any]]:
+    """Convert encoder/decoder references into exportable configuration dicts.
+
+    Training code may build the autoencoder by passing instantiated modules,
+    fully-qualified class names, or already-normalised spec dictionaries.  When
+    we later embed the architecture inside checkpoints we need a consistent
+    representation so inference can rebuild the same modules.  This helper
+    performs that normalisation while also preserving lightweight metadata such
+    as ``target_channels`` when it is exposed by the module instance.
+    """
     if module_like is None:
         return None
     if isinstance(module_like, dict):
@@ -610,196 +619,16 @@ class AutoEncoder(nn.Module):
         w = torch.hann_window(2 * overlap_size, periodic=False)
         return w[:overlap_size], w[overlap_size:]
 
-    def encode_audio(
-        self,
-        audio: torch.Tensor,
-        *,
-        stereo: bool = True,
-        chunked: bool = False,
-        chunk_size: int = 0,
-        overlap_size: int = 0,
-        pack_complex: bool = True,
-        debug: bool = False,
-    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        """Encode raw waveforms into latents using the canonical STFT setup."""
-
-        _ = self._require_stft_config()
-
-        if audio.dim() == 1:
-            audio = audio.unsqueeze(0).unsqueeze(0)
-        elif audio.dim() == 2:
-            audio = audio.unsqueeze(0)
-        elif audio.dim() != 3:
-            raise ValueError(f"audio must be 1D/2D/3D, got {tuple(audio.shape)}")
-
-        B, C, total_len = audio.shape
-        if stereo and C == 1:
-            audio = audio.repeat(1, 2, 1)
-            C = 2
-        if not stereo and C > 2:
-            raise ValueError("Expected mono or stereo input when stereo=False")
-
-        info: Dict[str, Any] = {
-            "original_length": total_len,
-            "chunked": bool(chunked),
-            "overlap_size": int(overlap_size),
-            "stft_config": self.stft_config_dict(),
-            "pack_complex": bool(pack_complex),
-            "stereo": bool(stereo),
-        }
-
-        if not chunked:
-            chunks: List[Tuple[int, int]] = [(0, total_len)]
-            padded_length = total_len
-        else:
-            if chunk_size <= 0:
-                raise ValueError("chunk_size must be > 0 when chunked=True")
-            chunks, padded_length = self._plan_chunks(total_len, chunk_size, overlap_size)
-            if padded_length > total_len:
-                pad = padded_length - total_len
-                audio = torch.nn.functional.pad(audio, (0, pad))
-        info["padded_length"] = padded_length
-        info["chunk_boundaries"] = chunks
-        info["chunk_expected_lengths"] = [e - s for s, e in chunks]
-
-        latent_chunks: List[torch.Tensor] = []
-        latent_lengths: List[int] = []
-        stft_frames: List[int] = []
-
-        for idx, (start, end) in enumerate(chunks):
-            wav_chunk = audio[:, :, start:end]
-            if debug:
-                print(f"[encode_audio] chunk={idx} samples=({start},{end}) waveform_shape={tuple(wav_chunk.shape)}")
-            spec = self.stft(wav_chunk)
-            stft_frames.append(spec.shape[-1])
-            spec_ready = self._pack_complex(spec) if pack_complex else spec
-            lat = self.encode(spec_ready)
-            latent_chunks.append(lat)
-            latent_lengths.append(lat.shape[-1])
-            if debug:
-                print(f"[encode_audio] chunk={idx} latents_shape={tuple(lat.shape)}")
-
-        if not latent_chunks:
-            raise RuntimeError("encode_audio produced no chunks; check input length and chunk configuration")
-
-        latents = torch.cat(latent_chunks, dim=-1) if len(latent_chunks) > 1 else latent_chunks[0]
-        info["latent_chunk_lengths"] = latent_lengths
-        info["stft_frames_per_chunk"] = stft_frames
-        info["latents_shape"] = tuple(latents.shape)
-
-        if debug:
-            print(f"[encode_audio] finished: latents_shape={tuple(latents.shape)} metadata={info}")
-
-        return latents, info
-
-    def decode_audio(
-        self,
-        latents: torch.Tensor,
-        info: Dict[str, Any],
-        *,
-        stereo: bool = True,
-        chunked: bool = False,
-        pack_complex: Optional[bool] = None,
-        debug: bool = False,
-        remove_padding: bool = True,
-    ) -> torch.Tensor:
-        """Invert the encoding pipeline returning waveform batches."""
-
-        if latents.dim() < 3:
-            raise ValueError("latents expected to have at least 3 dimensions")
-
-        cfg_in_info = info.get("stft_config")
-        if cfg_in_info is not None:
-            current = self.stft_config_dict()
-            if current != cfg_in_info:
-                self.set_stft_config(cfg_in_info)
-
-        pack_complex = info.get("pack_complex", True) if pack_complex is None else bool(pack_complex)
-
-        original_length = int(info.get("original_length", 0) or 0)
-        padded_length = int(info.get("padded_length", original_length) or original_length)
-        overlap_size = int(info.get("overlap_size", 0) or 0)
-        chunk_boundaries: List[Tuple[int, int]] = info.get("chunk_boundaries", [(0, original_length)])
-        latent_lengths: List[int] = info.get("latent_chunk_lengths", [latents.shape[-1]])
-
-        if not chunked:
-            if debug:
-                print(f"[decode_audio] single chunk path latents_shape={tuple(latents.shape)}")
-            spec = self.decode(latents, apply_inverse=False)
-            spec_linear = self.apply_inverse_pre_transform(spec)
-            spec_complex = self._unpack_complex(spec_linear) if pack_complex else spec_linear
-            target_len = original_length or info.get("chunk_expected_lengths", [None])[0]
-            waveform = self.istft(spec_complex, target_length=target_len)
-            if remove_padding and original_length:
-                waveform = waveform[..., :original_length]
-            return waveform
-
-        if sum(latent_lengths) != latents.shape[-1]:
-            raise ValueError("latent_chunk_lengths do not cover the latent time dimension")
-
-        fade_in, fade_out = self._hann_crossfade_windows(overlap_size)
-        if fade_in is not None:
-            fade_in = fade_in.to(latents.device)
-            fade_out = fade_out.to(latents.device)
-
-        cursor = 0
-        chunks: List[torch.Tensor] = []
-        for length in latent_lengths:
-            chunks.append(latents[..., cursor:cursor + length])
-            cursor += length
-
-        decoded_chunks: List[torch.Tensor] = []
-        expected_lengths = info.get("chunk_expected_lengths", [None] * len(chunks))
-
-        for idx, lat_chunk in enumerate(chunks):
-            if debug:
-                print(f"[decode_audio] chunk={idx} latent_shape={tuple(lat_chunk.shape)}")
-            spec_chunk = self.decode(lat_chunk, apply_inverse=False)
-            spec_chunk_linear = self.apply_inverse_pre_transform(spec_chunk)
-            spec_complex = self._unpack_complex(spec_chunk_linear) if pack_complex else spec_chunk_linear
-            target_len = expected_lengths[idx] if idx < len(expected_lengths) else None
-            wav_chunk = self.istft(spec_complex, target_length=target_len)
-            decoded_chunks.append(wav_chunk)
-
-        if not decoded_chunks:
-            raise RuntimeError("decode_audio received empty decoded chunk list")
-
-        if len(chunk_boundaries) != len(decoded_chunks):
-            raise ValueError("chunk metadata does not match decoded chunks")
-
-        base_chunk = decoded_chunks[0]
-        out = torch.zeros(
-            base_chunk.shape[0],
-            base_chunk.shape[1],
-            padded_length,
-            device=base_chunk.device,
-            dtype=base_chunk.dtype,
-        )
-
-        for idx, ((start, end), wav_chunk) in enumerate(zip(chunk_boundaries, decoded_chunks)):
-            expected_len = end - start
-            if wav_chunk.shape[-1] != expected_len:
-                diff = expected_len - wav_chunk.shape[-1]
-                if diff > 0:
-                    wav_chunk = torch.nn.functional.pad(wav_chunk, (0, diff))
-                else:
-                    wav_chunk = wav_chunk[..., :expected_len]
-            if overlap_size > 0 and fade_in is not None:
-                if idx > 0:
-                    wav_chunk[..., :overlap_size] *= fade_in.view(1, 1, -1)
-                if idx < len(decoded_chunks) - 1:
-                    wav_chunk[..., -overlap_size:] *= fade_out.view(1, 1, -1)
-            out[..., start:end] += wav_chunk
-
-        if remove_padding and original_length:
-            out = out[..., :original_length]
-
-        if debug:
-            print(f"[decode_audio] reconstructed waveform shape={tuple(out.shape)}")
-
-        return out
-
+    
     def export_model_config(self) -> Dict[str, Any]:
+        """Summarise the architecture for inclusion in checkpoints and exports.
+
+        The resulting dictionary is what gets embedded in ``inference_config``
+        blobs.  It contains the canonical encoder/decoder/bottleneck specs plus
+        the narrow ``autoencoder`` options (e.g. ``return_latent`` and
+        ``pre_transform``) required to rebuild an identical model in a new
+        process.
+        """
         config: Dict[str, Any] = {}
 
         if self._autoencoder_export_config:
@@ -818,6 +647,14 @@ class AutoEncoder(nn.Module):
 
     @classmethod
     def from_config(cls, cfg: Dict[str, Any]) -> "AutoEncoder":
+        """Instantiate the model from the payload produced by ``export_model_config``.
+        It's used in train for building the model from the cfg passed to the trainer.
+        Also, this is the entry point used by ``fast_inference`` when loading
+        checkpoints.  It interprets the recorded module specs, handles the
+        optional ``skip_bottleneck`` convenience, and recreates the
+        ``AutoEncoder`` with the same structural flags that were active during
+        training.
+        """
         ae_kwargs = cfg.get("autoencoder", {}) or {}
         encoder_spec = cfg["encoder"]
         decoder_spec = cfg["decoder"]
@@ -855,9 +692,20 @@ class AutoEncoder(nn.Module):
 
 
 def load_config(path: str) -> Dict[str, Any]:
+    """Load a JSON export produced by ``export_model_config`` or ``build_from_json``.
+
+    Keeping this helper alongside the model makes it straightforward for
+    tooling such as ``fast_inference`` to hydrate an autoencoder from a saved
+    configuration file without duplicating JSON parsing code elsewhere.
+    """
     with open(path, "r") as f:
         return json.load(f)
 
 
 def build_from_json(path: str) -> AutoEncoder:
+    """Convenience wrapper combining :func:`load_config` and ``AutoEncoder.from_config``.
+
+    External scripts can call this in a single line to recover a fully
+    initialised model from a JSON export stored alongside a checkpoint.
+    """
     return AutoEncoder.from_config(load_config(path))

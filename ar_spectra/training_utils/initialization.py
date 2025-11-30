@@ -258,7 +258,7 @@ def build_training_wrapper_from_cfg(cfg: Dict[str, Any]) -> Tuple["AutoencoderTr
         autoencoder=autoenc,
         sample_rate=int(cfg["train_dataset"]["kwargs"].get("sample_rate", 44100)),
         audio_channels=int(data_init.audio_channels),
-        model_channels=int(data_init.model_channels),
+            model_channels=int(data_init.model_channels),
         loss_config=cfg.get("loss_config", None),
         eval_loss_config=cfg.get("eval_loss_config", None),
         optimizer_configs=None,
@@ -411,41 +411,3 @@ def resolve_chunk_sizes(
     overlap_samples = max(0, int(overlap_latent)) * samples_per_latent
     return chunk_size_samples, overlap_samples, chunk_size_latent
 
-
-def _extract_autoencoder_state(state_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """Return only the parameters that belong to the AutoEncoder module."""
-
-    prefixes = ("engine.autoencoder.", "autoencoder.")
-    extracted: Dict[str, Any] = {}
-
-    for key, value in state_dict.items():
-        matched = False
-        for prefix in prefixes:
-            if key.startswith(prefix):
-                extracted[key[len(prefix):]] = value
-                matched = True
-                break
-        if not matched and (
-            key.startswith("encoder.")
-            or key.startswith("decoder.")
-            or key.startswith("bottleneck.")
-        ):
-            extracted[key] = value
-
-    return extracted or state_dict
-
-
-def load_checkpoint(autoencoder: AutoEncoder, ckpt_path: Path) -> AutoEncoder:
-    """Load state dict from a Lightning checkpoint or plain state dict."""
-
-    ckpt = torch.load(ckpt_path, map_location="cpu")
-    if isinstance(ckpt, dict) and "state_dict" in ckpt:
-        state_dict = _extract_autoencoder_state(ckpt["state_dict"])
-        missing, unexpected = autoencoder.load_state_dict(state_dict, strict=False)
-        if missing:
-            warnings.warn(f"Missing keys when loading checkpoint: {missing}")
-        if unexpected:
-            warnings.warn(f"Unexpected keys when loading checkpoint: {unexpected}")
-    else:
-        autoencoder.load_state_dict(ckpt)
-    return autoencoder

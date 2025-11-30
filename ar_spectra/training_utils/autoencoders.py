@@ -22,6 +22,8 @@ from .losses import MelSpectrogramLoss, MultiLoss, AuralossLoss, ValueLoss, Targ
 from .losses import auraloss as auraloss
 from .utils import create_optimizer_from_config, create_scheduler_from_config, log_audio, log_image, log_metric, log_point_cloud, logger_project_name
 import torch.nn.functional as F
+from ..models.eulero_inference import encode_audio as inference_encode_audio
+from ..models.eulero_inference import decode_audio as inference_decode_audio
 from rich.console import Console
 
 console = Console()
@@ -122,6 +124,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         self.audio_channels = audio_channels
         self.model_channels = model_channels
         self.stft_params = stft_params
+        self.sample_rate = sample_rate
 
         # Store raw specs (may be None). We normalize in configure_optimizers.
         self._optimizer_spec = optimizer_spec
@@ -171,7 +174,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
     def use_disc(self):
         return self.engine.discriminator is not None
 
-    def on_save_checkpoint(self, checkpoint):
+    def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
         super().on_save_checkpoint(checkpoint)
 
         inference_cfg: Dict[str, Any] = {
@@ -180,12 +183,12 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             "in_channels": int(self.model_channels) if self.model_channels is not None else None,
             "audio_channels": int(self.audio_channels) if self.audio_channels is not None else None,
             "stft_config": self.autoencoder.stft_config_dict(),
+            "sample_rate": int(self.sample_rate) if self.sample_rate is not None else None,
         }
 
-        if hasattr(self.engine, "sample_rate") and self.engine.sample_rate is not None:
-            inference_cfg["sample_rate"] = int(self.engine.sample_rate)
+        if self.stft_params:
+            inference_cfg["train_stft_params"] = deepcopy(self.stft_params)
 
-        # Drop empty entries to keep the metadata compact
         checkpoint["inference_config"] = {k: v for k, v in inference_cfg.items() if v is not None}
     
     def transfer_batch_to_device(self, batch, device, dataloader_idx):
@@ -425,7 +428,8 @@ class AutoencoderValDemoCallback(pl.Callback):
             stereo_flag = not force_mono
 
             try:
-                latents, encode_info = pl_module.autoencoder.encode_audio(
+                latents, encode_info = inference_encode_audio(
+                    pl_module.autoencoder,
                     waveform_input,
                     stereo=stereo_flag,
                     chunked=False,
@@ -433,13 +437,15 @@ class AutoencoderValDemoCallback(pl.Callback):
                     pack_complex=pack_complex,
                     debug=False,
                 )
-                decoded = pl_module.autoencoder.decode_audio(
+                decoded = inference_decode_audio(
+                    pl_module.autoencoder,
                     latents,
                     encode_info,
                     stereo=stereo_flag,
                     chunked=False,
                     pack_complex=pack_complex,
                     debug=False,
+                    remove_padding=True,
                 )
             except Exception as exc:
                 warn(
