@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 from rich.console import Console
+from tqdm import tqdm
 
 from ar_spectra.models.autoencoder import AutoEncoder
 from ar_spectra.training_utils.initialization import (
@@ -118,7 +119,8 @@ def run_single_file_inference(
     debug: bool,
 ) -> None:
     if not input_path.is_file():
-        err(f"Input audio not found: {input_path}")
+        err(f"Input audio not found: {input_path}, skipping single-file inference. \n"
+            "if you ran dataset inference, this is expected.")
         return
 
     wav, sr = torchaudio.load(str(input_path))
@@ -326,6 +328,9 @@ def run_dataset_inference(
     total_processed = 0
     total_saved = 0
 
+    pbar_total: Optional[int] = dataset_len if isinstance(dataset_len, int) else None
+    pbar = tqdm(total=pbar_total, desc="Dataset inference", unit="sample", leave=True)
+
     for batch_idx, batch in enumerate(dataloader):
         if isinstance(batch, (list, tuple)) and len(batch) == 3:
             spec_batch, wav_batch, metadata_batch = batch
@@ -379,9 +384,12 @@ def run_dataset_inference(
         )
 
         if log_every is not None and batch_idx % log_every == 0:
-            ok(
-                f"Batch {batch_idx}: latents shape={tuple(latents.shape)}, "
-                f"recon shape={tuple(recon_batch.shape)}"
+            pbar.set_postfix(
+                {
+                    "batch": batch_idx,
+                    "latents": f"{tuple(latents.shape)}",
+                    "recon": f"{tuple(recon_batch.shape)}",
+                }
             )
 
         if save_inputs and input_dir is not None:
@@ -406,8 +414,12 @@ def run_dataset_inference(
 
         total_processed += wav_batch.size(0)
 
+        pbar.update(wav_batch.size(0))
+
         if max_samples is not None and total_processed >= max_samples:
             break
+
+    pbar.close()
 
     if total_processed == 0:
         warn("Dataset inference finished without processing any samples.")

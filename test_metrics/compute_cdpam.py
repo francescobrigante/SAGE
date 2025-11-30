@@ -85,8 +85,8 @@ def match_pairs(target_dir, preds_dir, allowed_ext=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Confronto CDPAM tra due directory (preds vs target).")
-    parser.add_argument("--target_dir", default="/home/cerovaz/repos/data/jamendo_full/test_trimmed")
-    parser.add_argument("--preds_dir", default="/home/cerovaz/repos/ICML/Eulero_BackBone/runs/inference/pretransform_cplx_24epoch")
+    parser.add_argument("--target-dir", default="/home/cerovaz/repos/data/jamendo_full/test_trimmed")
+    parser.add_argument("--preds-dir", default="/home/cerovaz/repos/ICML/Eulero_BackBone/runs/inference/all_losses_cplx_24.")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--extensions", type=str, default="")
     parser.add_argument("--chunk_size", type=int, default=0)
