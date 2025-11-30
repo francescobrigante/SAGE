@@ -16,12 +16,6 @@ model:
     decoder: {...}
     bottleneck: {...}
     pre_transform: {...}   # optional
-    post_transform: {...}  # optional
-  stft:
-    n_fft: 2048
-    hop_length: 512
-    win_length: 2048
-    center: true
 ```
 
 ### Encoder / Decoder Blocks
@@ -45,14 +39,15 @@ Use the sentinel `auto` for parameters whose value depends on dataset inspection
 Common choices include:
 - `ar_spectra.models.bottlenecks.IdentityBottleneck`: deterministic autoencoder.
 - `ar_spectra.models.bottlenecks.VAEBottleneck`: variational latent space.
-- `ar_spectra.models.bottlenecks.SkipBottleneck`: bypass for residual learning.
+- `ar_spectra.models.bottlenecks.SkipBottleneck`: bypass bottleneck. It's the same as using IdentityBottleneck.
 
-Match bottleneck expectations with encoder output channels (e.g., VAE requires doubling for mean/logvar). The constructor validates dimensions to prevent silent mismatches.
+Match bottleneck expectations with encoder output channels (e.g., VAE requires doubling for mean/logvar). The constructor validates dimensions to prevent silent mismatches. 
 
 ### Pre/Post Transforms
 Spectrogram normalization and denormalization belong inside the `autoencoder` block:
 - `pre_transform`: applied before encoding (e.g., power scaling, log-magnitude transforms).
-- `post_transform`: applied after decoding.
+
+Note: at the moment we support `power_norm`, `log_mag`, or `none`. `log_mag` in our experiments doesn't seem to converge.  
 
 Example:
 ```yaml
@@ -62,15 +57,13 @@ pre_transform:
     epsilon: 1e-4
 ```
 
-### STFT Metadata
-The `stft` sub-dictionary mirrors dataset STFT parameters. During inference `autoenc.set_stft_config` is called with this block to ensure waveform reconstruction uses the same analysis window.
-
 ## Extending the Model Zoo
 1. Copy an existing YAML and adjust encoder/decoder classes.
 2. Implement new modules under `ar_spectra.models.*` with explicit `forward` signatures.
-3. Register any complex-aware layers in `ar_spectra.models.modules` so they can be referenced by name.
+3. Register any complex-aware layers in `ar_spectra.modules` so they can be referenced by name.
 
 ## Best Practices
+- **Complex Compatibility** If using an original model in `ar_spectra.model` the parameter `is_complex` must match the dataset output dtype. E.g. if the dataset outputs a complex-valued spectrogram the flag `is_complex` must be activated, if the dataset outputs a real-valued spectogram (`cac` flag inside data) the flag of the model `is_complex` must be de-activated. 
 - **Keep encoder/decoder symmetry.** Matching down/up-sampling factors prevents checkerboard artefacts.
 - **Leverage complex-aware layers.** Modules in `ar_spectra.models.modules` respect real/imag coupling; mixing real-only layers can degrade phase fidelity.
 - **Document latent dimensionality.** Complex-valued latents often require specifying `pack_complex` logic; ensure inference knows whether to pack real/imag pairs.
@@ -78,5 +71,5 @@ The `stft` sub-dictionary mirrors dataset STFT parameters. During inference `aut
 
 ## Troubleshooting
 - `Model configuration must contain a 'model' section`: ensure the YAML root has the `model` key.
-- `Invalid STFT configuration`: verify `n_fft`, `hop_length`, and `win_length` are coherent (e.g., `win_length <= n_fft`).
 - `Failed to resolve auto channels`: check that the dataset spec exposes compatible channel counts or specify concrete numbers instead of `auto`.
+

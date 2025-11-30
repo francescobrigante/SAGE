@@ -23,6 +23,11 @@ Select alternate variants with `python train.py trainer=<name> data=<name> model
 | `trainer.trainer.max_epochs` / `max_steps` | Training horizon. |
 | `trainer.trainer.gradient_clip_val` | Gradient clipping threshold. |
 | `trainer.trainer.accumulate_grad_batches` | Gradient accumulation factor. |
+| `trainer.trainer.save_every_n_epochs` | How often checkpoints are saved. |
+| `trainer.trainer.deterministic` | To activate CUDA deterministic algorithms. Doesn't with standard models in this repo, due to padding.|
+| `trainer.trainer.strict_deterministic` | To activate CUDA deterministic algorithms. Doesn't with standard models in this repo due to padding. |
+
+Note: We didn't specify the parameters that have the same name as the pl Trainer such as `num_sanity_val_steps`.  
 
 ### Optimiser Configuration
 Define the optimiser under `trainer.optimizer`:
@@ -61,6 +66,26 @@ loss_config:
 ```
 Add or remove terms to reflect the experiment at hand (e.g., multi-resolution STFT, time-domain L1, adversarial discriminators). Ensure weights remain positive; zero-valued terms are effectively disabled.
 
+##### Eval Losses
+
+Sets the losses used in eval
+```yaml
+eval_loss_config:
+  sisdr:
+    zero_mean: true
+    reduction: mean
+  stft:
+    sample_rate: 44100
+    fft_size: 2048
+    hop_size: 512
+    win_length: 2048
+  mel:
+    fft_size: 2048
+    hop_size: 512
+    win_length: 2048
+    n_mels: 128
+```
+
 ### Logging & Checkpointing
 | Setting | Purpose |
 | --- | --- |
@@ -70,6 +95,11 @@ Add or remove terms to reflect the experiment at hand (e.g., multi-resolution ST
 | `trainer.trainer.check_val_every_n_epoch` | Validation frequency. |
 | `trainer.trainer.log_every_n_steps` | Training log interval. |
 | `trainer.trainer.save_top_k` / `save_every_n_epochs` | Checkpoint retention policy. |
+| `trainer.trainer.log_model_structure` | The model structure will be printed in the terminal. |
+| `trainer.trainer.ckpt_dir` | Where to save checkpoints. |
+| `trainer.trainer.profile` | If you want to use profiler. Generally turned off. |
+| `trainer.trainer.profiler_dir` | Where to save profiler outputs |
+
 
 ## Command-Line Overrides
 Hydra allows dot-notation overrides for any value. Examples:

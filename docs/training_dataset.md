@@ -46,7 +46,7 @@ Training loaders reside beside the dataset block:
 Validation loaders follow the same schema (`eval_dataset`, `eval_dataloader`).
 
 ## Best Practices
-1. **Align STFT parameters** across `conf/data/*` and `conf/model/*` to avoid reconstruction artefacts.
+1. **Align STFT parameters** across `conf/data/*` and `conf/model/*` to avoid reconstruction artefacts. If you are using a complex-valued model you need to set the dataset for it to return complex-valued spectra.
 2. **Log dataset stats** (number of files, skipped items) especially when using `skip_criteria`.
 3. **Use deterministic seeds** when comparing runs. Combine `kwargs.seed` with `trainer.seed` to control all RNG sources.
 4. **Monitor cropping behaviour**. If many files are rejected as "too short", adjust `target_frames`, `max_pad_ratio`, or curate the dataset offline.
