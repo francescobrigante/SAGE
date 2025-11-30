@@ -4,9 +4,9 @@ model:
     return_latent: false
     # Spectrogram normalization applied at encoder input and inverted at decoder output
     pre_transform:
-      type: power_norm     # none | log_mag | power_norm
-      apply_target: true   # set apply_target: true to apply the normalization also to the target spectrograms
-      apply_inverse: true # set apply_inverse: false to apply the normalization only before the encoder
+      type: none     # none | log_mag | power_norm
+      apply_target: false   # set apply_target: true to apply the normalization also to the target spectrograms
+      apply_inverse: false # set apply_inverse: false to apply the normalization only before the encoder
       config:
         eps: 1.0e-8
         alpha: 0.65

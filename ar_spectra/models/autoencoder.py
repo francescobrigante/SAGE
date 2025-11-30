@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import warnings
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -50,6 +51,30 @@ def instantiate_from_spec(spec: Dict[str, Any]) -> Any:
     args = spec.get("args", []) or []
     kwargs = spec.get("kwargs", {}) or {}
     return cls(*args, **kwargs)
+
+
+def _class_path(obj: Union[str, type, nn.Module]) -> str:
+    if isinstance(obj, str):
+        return obj
+    cls = obj if isinstance(obj, type) else obj.__class__
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
+def _canonicalize_module_spec(module_like: Union[nn.Module, Dict[str, Any], str, type, None]) -> Optional[Dict[str, Any]]:
+    if module_like is None:
+        return None
+    if isinstance(module_like, dict):
+        return deepcopy(module_like)
+
+    class_path = _class_path(module_like)
+    spec: Dict[str, Any] = {"class": class_path}
+    if isinstance(module_like, nn.Module):
+        extra_kwargs: Dict[str, Any] = {}
+        if hasattr(module_like, "target_channels"):
+            extra_kwargs["target_channels"] = getattr(module_like, "target_channels")
+        if extra_kwargs:
+            spec["kwargs"] = extra_kwargs
+    return spec
 
 
 @dataclass
@@ -127,6 +152,12 @@ class AutoEncoder(nn.Module):
         stft_config: Optional[Union[STFTConfig, Dict[str, Any]]] = None,
     ) -> None:
         super().__init__()
+        self._encoder_export_spec = _canonicalize_module_spec(encoder)
+        self._decoder_export_spec = _canonicalize_module_spec(decoder)
+        self._bottleneck_export_spec = _canonicalize_module_spec(bottleneck)
+        self._autoencoder_export_config: Dict[str, Any] = {"return_latent": bool(return_latent)}
+        self._pre_transform_spec: Optional[Union[str, Dict[str, Any]]] = None
+        self._stft_config_source: Optional[Dict[str, Any]] = None
         # Allow passing either direct instances or specs / class names
         self.encoder = (
             instantiate_from_spec(encoder) if isinstance(encoder, dict) else
@@ -158,6 +189,8 @@ class AutoEncoder(nn.Module):
             self._pre_transform_apply_encoder = True
             self._pre_transform_apply_inverse = True
             self._pre_transform_apply_target = False
+            self._pre_transform_spec = None
+            self._autoencoder_export_config.pop("pre_transform", None)
 
         self._stft_config: Optional[STFTConfig] = None
         if stft_config is not None:
@@ -339,9 +372,12 @@ class AutoEncoder(nn.Module):
             raise TypeError("config must be a dict or STFTConfig instance")
 
         self._stft_config = new_cfg
+        self._stft_config_source = new_cfg.to_public_dict()
 
     def stft_config_dict(self) -> Optional[Dict[str, Any]]:
-        return None if self._stft_config is None else self._stft_config.to_public_dict()
+        if self._stft_config_source is None:
+            return None
+        return deepcopy(self._stft_config_source)
 
     def _require_stft_config(self) -> STFTConfig:
         if self._stft_config is None:
@@ -419,11 +455,17 @@ class AutoEncoder(nn.Module):
         return decoded
 
     def configure_pre_transform(self, spec: Optional[Union[str, Dict[str, Any]]]) -> None:
+        self._pre_transform_spec = deepcopy(spec) if isinstance(spec, dict) else spec
         transform, apply_encoder, apply_inverse, apply_target = resolve_pre_transform(spec)
         self.pre_transform = transform
         self._pre_transform_apply_encoder = apply_encoder
         self._pre_transform_apply_inverse = apply_inverse
         self._pre_transform_apply_target = apply_target
+        if self._pre_transform_spec is None:
+            self._autoencoder_export_config.pop("pre_transform", None)
+        else:
+            stored = deepcopy(self._pre_transform_spec) if isinstance(self._pre_transform_spec, dict) else self._pre_transform_spec
+            self._autoencoder_export_config["pre_transform"] = stored
 
     def pre_transform_description(self) -> str:
         if self.pre_transform is None:
@@ -756,6 +798,23 @@ class AutoEncoder(nn.Module):
             print(f"[decode_audio] reconstructed waveform shape={tuple(out.shape)}")
 
         return out
+
+    def export_model_config(self) -> Dict[str, Any]:
+        config: Dict[str, Any] = {}
+
+        if self._autoencoder_export_config:
+            config["autoencoder"] = deepcopy(self._autoencoder_export_config)
+
+        if self._encoder_export_spec is not None:
+            config["encoder"] = deepcopy(self._encoder_export_spec)
+
+        if self._decoder_export_spec is not None:
+            config["decoder"] = deepcopy(self._decoder_export_spec)
+
+        if self._bottleneck_export_spec is not None:
+            config["bottleneck"] = deepcopy(self._bottleneck_export_spec)
+
+        return config
 
     @classmethod
     def from_config(cls, cfg: Dict[str, Any]) -> "AutoEncoder":
