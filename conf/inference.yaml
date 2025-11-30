@@ -8,7 +8,7 @@
 
 
 # Path to a trained checkpoint, relative to project root
-checkpoint: "/home/cerovaz/repos/ICML/Eulero_BackBone/checkpoints/epoch_024.ckpt"
+checkpoint: "/home/cerovaz/repos/ICML/Eulero_BackBone/checkpoints/all_losses_cplx_24.ckpt"
 
 # Input and output audio files (relative to project root)
 input_wav: ""
@@ -62,7 +62,7 @@ max_frames: null         # es: 128 (frame STFT)
 # Dataset inference (set enabled=true to iterate over an entire dataset)
 dataset_inference:
   enabled: true           # run batched inference when true
-  output_dir: "runs/inference/pretransform_cplx_24epoch"
+  output_dir: "runs/inference/all_losses_cplx_24.ckpt"
   file_prefix: ""
   batch_size: 32
   num_workers: 4

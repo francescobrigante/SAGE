@@ -7,7 +7,7 @@ import numpy as np
 import soundfile as sf
 import torch
 from tqdm import tqdm
-from torchmetrics.audio.sdr import ScaleInvariantSignalDistortionRatio as SISDRMetric
+from torchmetrics.audio.sdr import SignalDistortionRatio as SISDRMetric
 from ar_spectra.training_utils.losses.auraloss import STFTLoss
 import numpy as np
 from scipy.signal import correlate
@@ -202,8 +202,8 @@ def match_pairs(target_dir, preds_dir, allowed_ext=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Compare SI-SDR and STFTLoss between two directories (predictions vs. targets).")
-    parser.add_argument("--target_dir", default="/home/cerovaz/repos/data/jamendo_full/test_trimmed")
-    parser.add_argument("--preds_dir", default="/home/cerovaz/repos/ICML/Eulero_BackBone/runs/inference/pretransform_cplx_24epoch")
+    parser.add_argument("--target-dir", default="/home/cerovaz/repos/data/jamendo_full/test_trimmed")
+    parser.add_argument("--preds-dir", default="/home/cerovaz/repos/ICML/Eulero_BackBone/runs/inference/all_losses_cplx_24.")
     parser.add_argument("--extensions", type=str, default="")
     parser.add_argument("--csv_out", type=str, default="")
     args = parser.parse_args()
