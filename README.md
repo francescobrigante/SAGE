@@ -20,10 +20,16 @@ EulerAudioBackbone (a.k.a. ComplexVAE backbone) targets **complex-valued** gener
    ```
 3. **Inspect outputs:** reconstructed waveforms will be written to the configured `output_dir` and optional metric CSVs/logs.
 
-Essential configuration keys and advanced usage details are documented in `docs/dataset.md`, `docs/model.md`, and `docs/metrics.md`.
+Essential configuration keys and advanced usage details are documented in `docs/inference_and_metrics.md`, `docs/training_dataset.md`, and `docs/model.md`.
 
 ## Training Quickstart
-1. **Install dependencies** and activate the project virtual environment.
+1. **Install dependencies** using [Astral's `uv`](https://github.com/astral-sh/uv) (recommended) and activate the project virtual environment:
+   ```bash
+   uv venv .venv
+   source .venv/bin/activate
+   uv pip install -r requirements.txt
+   ```
+   The `uv` tool accelerates dependency resolution and keeps environments reproducible.
 2. **Select a configuration** by editing the Hydra files under `conf/` (or override settings on the CLI).
 3. **Launch training:**
    ```bash
@@ -34,13 +40,13 @@ Essential configuration keys and advanced usage details are documented in `docs/
    python train.py trainer.trainer.epochs=50 data.train_dataloader.batch_size=16
    ```
 
-Guidance on dataset wiring, model parametrization, optimization policies, and reproducibility lives in `docs/dataset.md`, `docs/model.md`, and `docs/trainer.md`.
+Guidance on dataset wiring, model parametrization, optimization policies, and reproducibility lives in `docs/training_dataset.md`, `docs/model.md`, and `docs/trainer.md`.
 
 ## Extended Documentation
-- Dataset configuration and preprocessing: `docs/dataset.md`
+- Inference pipeline and metrics: `docs/inference_and_metrics.md`
+- Training dataset configuration: `docs/training_dataset.md`
 - Model specification and autoencoder assembly: `docs/model.md`
 - Training loop, optimization, and logging: `docs/trainer.md`
-- Offline evaluation metrics (STFT, CDPAM, FAD): `docs/metrics.md`
 
 ## Selected Related Work
 - Stable Audio Open — latent diffusion on stereo waveforms.
