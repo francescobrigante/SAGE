@@ -91,7 +91,6 @@ eval_loss_config:
 | --- | --- |
 | `trainer.logger` | Configure WandB, TensorBoard, or disable logging. |
 | `trainer.wandb.use_wandb` | Convenience flag to toggle WandB integration. |
-| `trainer.trainer.default_root_dir` | Root directory for logs and checkpoints. |
 | `trainer.trainer.check_val_every_n_epoch` | Validation frequency. |
 | `trainer.trainer.log_every_n_steps` | Training log interval. |
 | `trainer.trainer.save_top_k` / `save_every_n_epochs` | Checkpoint retention policy. |
@@ -107,9 +106,9 @@ Hydra allows dot-notation overrides for any value. Examples:
   ```bash
   python train.py data.train_dataloader.batch_size=32 trainer.trainer.max_epochs=100
   ```
-- Disable WandB logging and run on CPU:
+- Disable WandB logging:
   ```bash
-  python train.py trainer.wandb.use_wandb=false trainer.num_gpus=0
+  python train.py trainer.wandb.use_wandb=false 
   ```
 - Switch to an alternate model and dataset profile:
   ```bash
