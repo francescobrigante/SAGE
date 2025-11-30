@@ -8,7 +8,7 @@ except Exception:
     wandb = None
     _HAS_WANDB = False
 import pytorch_lightning as pl
-from typing import Optional, Literal
+from typing import Any, Dict, Optional, Literal
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from copy import deepcopy
 from einops import rearrange
@@ -109,6 +109,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         teacher_model: Optional[AutoEncoder] = None,
         clip_grad_norm: float = 0.0,
         audio_channels: Optional[int] = None,
+        model_channels: Optional[int] = None,
         stft_params: Optional[dict] = None,
         optimizer_spec: Optional[dict] = None,
         scheduler_spec: Optional[dict] = None,
@@ -119,6 +120,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         self.clip_grad_norm = clip_grad_norm
         self.lr = lr
         self.audio_channels = audio_channels
+        self.model_channels = model_channels
         self.stft_params = stft_params
 
         # Store raw specs (may be None). We normalize in configure_optimizers.
@@ -168,6 +170,23 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
     @property
     def use_disc(self):
         return self.engine.discriminator is not None
+
+    def on_save_checkpoint(self, checkpoint):
+        super().on_save_checkpoint(checkpoint)
+
+        inference_cfg: Dict[str, Any] = {
+            "version": 1,
+            "model": self.autoencoder.export_model_config(),
+            "in_channels": int(self.model_channels) if self.model_channels is not None else None,
+            "audio_channels": int(self.audio_channels) if self.audio_channels is not None else None,
+            "stft_config": self.autoencoder.stft_config_dict(),
+        }
+
+        if hasattr(self.engine, "sample_rate") and self.engine.sample_rate is not None:
+            inference_cfg["sample_rate"] = int(self.engine.sample_rate)
+
+        # Drop empty entries to keep the metadata compact
+        checkpoint["inference_config"] = {k: v for k, v in inference_cfg.items() if v is not None}
     
     def transfer_batch_to_device(self, batch, device, dataloader_idx):
         S, wav = batch

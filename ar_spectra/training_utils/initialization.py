@@ -258,6 +258,7 @@ def build_training_wrapper_from_cfg(cfg: Dict[str, Any]) -> Tuple["AutoencoderTr
         autoencoder=autoenc,
         sample_rate=int(cfg["train_dataset"]["kwargs"].get("sample_rate", 44100)),
         audio_channels=int(data_init.audio_channels),
+        model_channels=int(data_init.model_channels),
         loss_config=cfg.get("loss_config", None),
         eval_loss_config=cfg.get("eval_loss_config", None),
         optimizer_configs=None,
