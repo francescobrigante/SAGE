@@ -39,16 +39,16 @@ class Conv2dSubsampling2(torch.nn.Module):
 
     """
 
-    def __init__(self, idim, hdim, odim, dropout_rate, patch_size=(16, 32), pos_enc=None, norm:str="none"):
+    def __init__(self, idim, hdim, odim, dropout_rate, patch_size=(16, 32), pos_enc=None, norm:str="none", is_complex=True):
         """Construct an Conv2dSubsampling2 object."""
         super(Conv2dSubsampling2, self).__init__()
         self.conv = torch.nn.Sequential(
-            SConv2d(1, hdim, 4, 2, padding=1, padding_mode="reflect", is_complex=True, norm=norm),
+            SConv2d(1, hdim, 4, 2, is_complex=is_complex, norm=norm, pad_mode="reflect"),
             get_activation("relu"),
-            SConv2d(hdim, hdim, 4, 2, padding=1, padding_mode="reflect", is_complex=True, norm=norm),
+            SConv2d(hdim, hdim, 4, 2, is_complex=is_complex, norm=norm, pad_mode="reflect"),
             get_activation("relu"),
         )
-        self.patch_fn = nn.Unfold(kernel_size=patch_size, stride=patch_size, is_complex=True)
+        self.patch_fn = nn.Unfold(kernel_size=patch_size, stride=patch_size)
         from ar_spectra.modules.embedding import PositionalEncoding
         self.out = torch.nn.Sequential(
             NormLinear(hdim * patch_size[0] * patch_size[1], odim, is_complex=True, norm=norm),
@@ -149,3 +149,22 @@ class ViTEncoder(nn.Module):
             )
             
             
+if __name__ == "__main__":
+    torch.manual_seed(0)
+    batch, time_steps, freq_bins = 2, 64, 128
+    print("Testing Conv2dSubsampling2...")
+    print("Input shape: ", (batch, time_steps, freq_bins))
+    # complex64 tensor to exercise the complex convolution path
+    dummy = torch.randn(batch, time_steps, freq_bins, dtype=torch.complex64)
+    conv = Conv2dSubsampling2(
+        idim=freq_bins,
+        hdim=freq_bins * 4,
+        odim=256,
+        dropout_rate=0.1,
+        patch_size=(16, 32),
+        norm="none",
+    )
+    with torch.inference_mode():
+        out = conv(dummy)
+    print(f"Conv2dSubsampling2 output shape: {out.shape}")
+

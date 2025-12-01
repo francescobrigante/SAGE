@@ -41,7 +41,9 @@ from modules.subsampling import check_short_utt
 from modules.subsampling import Conv2dSubsamplingPad
 from modules.subsampling import Conv1dSubsampling2
 from torch.nn import functional as F
-
+from ar_spectra.modules.normed_modules.conv import SConv1d, SConv2d
+from ar_spectra.modules.normed_modules.conv import SConvTranspose1d, SConvTranspose2d, NormLinear
+from ar_spectra.modules.activations import get_activation, _build_activation
 
 class ConvolutionModule(nn.Module):
     """ConvolutionModule in Conformer model.

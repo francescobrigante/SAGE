@@ -40,7 +40,7 @@ class IdentityPositionalEncoding(torch.nn.Module):
 
     """
 
-    def __init__(self, d_model, dropout_rate, max_len=5000):
+    def __init__(self, d_model: int=0, dropout_rate: float = 0.0, max_len=5000):
         """Construct an PositionalEncoding object."""
         super(IdentityPositionalEncoding, self).__init__()
 
