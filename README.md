@@ -2,13 +2,29 @@
 
 EulerAudioBackbone is a complex-valued autoencoder designed for generative modeling directly on STFT spectrograms. It supports research on neural audio coding, diffusion-ready VAEs, and source separation while preserving analyticity throughout the pipeline.
 
+> 🚀 **Pro Tip:** We strongly recommend logging into [Weights & Biases](https://wandb.ai/site) to track your experiments. Run `wandb login` before starting training to enable rich logging and visualization.
+
 ---
 
-## Environment Setup
+## 📂 Project Structure
 
-Choose a single workflow and stick to it—either Astral `uv` or a classic virtual environment managed by `pip`.
+Here is a quick overview of the project's root directory:
 
-### Option A — Astral `uv` (recommended)
+- **`ar_spectra/`**: The core source code, containing dataset definitions, model architectures, and utility modules.
+- **`conf/`**: Configuration files managed by [Hydra](https://hydra.cc/). This is where you define your experiments.
+- **`checkpoints/`**: Directory where model checkpoints are saved during or after training.
+- **`docs/`**: Detailed documentation for models, trainers, and datasets.
+- **`outputs/`** & **`runs/`**: Directories for training logs, outputs, and experiment tracking.
+- **`test_metrics/`**: Scripts and tools for evaluating model performance (FAD, spectral distance, etc.).
+- **`tools/`**: Utility scripts, such as checkpoint regeneration tools.
+
+---
+
+## 🛠️ Environment Setup
+
+Choose a single workflow and stick to it - either Astral `uv` or a classic virtual environment managed by `pip`.
+
+### Option A - Astral `uv` (recommended)
 - Install the `uv` CLI following the official instructions.
 - From the repository root run:
   ```bash
@@ -20,9 +36,9 @@ Choose a single workflow and stick to it—either Astral `uv` or a classic virtu
   uv run train.py
   uv run inference.py
   ```
-- To add packages, edit `pyproject.toml` and re-run `uv sync` (ignore `requirements.txt`) or follow uv ufficial documentation with `uv.add ...` .
+- To add packages, edit `pyproject.toml` and re-run `uv sync` (ignore `requirements.txt`) or follow uv official documentation with `uv.add ...` .
 
-### Option B — Classic virtualenv + pip
+### Option B - Classic virtualenv + pip
 - Create and activate a virtual environment:
   ```bash
   python -m venv .venv
@@ -41,9 +57,24 @@ Choose a single workflow and stick to it—either Astral `uv` or a classic virtu
 
 ---
 
-## Training Workflow
 
-1. **Pick configurations** under `conf/` for the dataset, trainer, and model—you must reference the correct YAML files before launching training. Best practice is to keep the shipped YAML files as templates and apply overrides through Hydra CLI flags or copies stored under `conf/config.yaml`.
+## ⚙️ Configuration
+
+The project uses **Hydra** for configuration management. The entry point is `conf/config.yaml`.
+
+### How it works
+The `conf/config.yaml` file composes the configuration from three main groups:
+1. **`data`**: Dataset parameters (path, batch size, etc.).
+2. **`model`**: Model architecture settings (encoder/decoder parameters).
+3. **`trainer`**: Training loop settings (epochs, learning rate, logging).
+
+You can switch between different configurations by changing the defaults in `conf/config.yaml` or by overriding them via the command line.
+
+---
+
+## 🏋️ Training Workflow
+
+1. **Pick configurations** under `conf/` for the dataset, trainer, and model - you must reference the correct YAML files before launching training. Best practice is to keep the shipped YAML files as templates and apply overrides through Hydra CLI flags or copies stored under `conf/config.yaml`.
 2. **Start training** with the environment option you selected:
    - `uv run train.py`
    - `python train.py`
@@ -54,10 +85,10 @@ Choose a single workflow and stick to it—either Astral `uv` or a classic virtu
 
 ---
 
-## Inference Snapshot
+## 📸 Inference Snapshot
 
 You no longer need to wire Hydra configs to reconstruct the model at inference
-time.  Checkpoints produced by the updated training loop embed all the metadata
+time. Checkpoints produced by the updated training loop embed all the metadata
 needed by `ar_spectra.models.eulero_inference.EuleroEncodeDecode`.
 
 ```python
@@ -70,7 +101,7 @@ recons = codec.decode_audio(latents, info)
 
 Under the hood the helper rebuilds the `AutoEncoder` from the serialized specs,
 restores the canonical STFT configuration, and exposes encode/decode methods
-that operate directly on waveforms.  This same utility is what `inference.py`
+that operate directly on waveforms. This same utility is what `inference.py`
 invokes, so CLI entry points still work via:
 
 ```bash
@@ -134,7 +165,7 @@ the presence of the `inference_config` block.
 
 ---
 
-## Documentation
+## 📚 Documentation
 
 Detailed guidance on configuring data loaders, models, trainers, and inference pipelines lives in the `docs/` folder:
 - `docs/model.md`
