@@ -5,6 +5,7 @@ from typing import Callable, Optional, Sequence
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Union, List, Tuple
+from mutagen.mp3 import MP3
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from rich.console import Console
@@ -497,9 +498,18 @@ class OnTheFlySTFTDataset(Dataset):
 
 
     def _pick_probe_fn(self):
+        def _probe_mp3(path: Path):
+            meta = MP3(str(path))
+            sr = int(meta.info.sample_rate)
+            nf = int(meta.info.length * sr)
+            nc = int(meta.info.channels)
+            return sr, nf, nc
+
         # torchaudio.info se esiste
         if hasattr(torchaudio, "info"):
             def _probe(path):
+                if path.suffix.lower() == ".mp3":
+                    return _probe_mp3(path)
                 i = torchaudio.info(str(path))
                 # In torchaudio nuove versioni: AudioMetaData con sample_rate, num_frames, num_channels
                 sr = getattr(i, "sample_rate", None)
