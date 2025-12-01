@@ -22,6 +22,9 @@ dependencies = [
     "pytest>=9.0.1",
     "resampy>=0.4.3",
     "frechet-audio-distance>=0.1.2",
+    "complextorch>=1.2.0",
+    "complexpytorch>=0.4",
+    "deepspeed>=0.18.2",
 ]
 
 [tool.uv.sources]
