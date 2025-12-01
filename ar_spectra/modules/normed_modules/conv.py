@@ -175,6 +175,29 @@ def unpad2d(x: torch.Tensor, paddings: tp.Tuple[tp.Tuple[int, int], tp.Tuple[int
     time_end = x.shape[-1] - padding_time_right
     return x[..., padding_freq_left: freq_end, padding_time_left: time_end]
 
+class NormLinear(nn.Module):
+    """Wrapper around Linear and normalization applied to this linear
+    to provide a uniform interface across normalization approaches.
+    """
+    def __init__(self, *args, norm: str = 'none', is_complex: bool = False,
+                 norm_kwargs: tp.Dict[str, tp.Any] = {}, **kwargs):
+        super().__init__()
+        kw = dict(kwargs)
+        if is_complex and ('dtype' not in kw or kw['dtype'] is None):
+            real_pref = torch.get_default_dtype()
+            kw['dtype'] = _resolve_complex_dtype(real_pref)
+        self.linear = apply_parametrization_norm(nn.Linear(*args, **kw), norm, is_complex=is_complex)
+        self.norm = get_norm_module(self.linear, False, norm, is_complex=is_complex, **norm_kwargs)
+        self.norm_type = norm
+
+    def forward(self, x):
+        #print("inputLinearLayer:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
+        x = self.linear(x)
+        x = self.norm(x)
+        #print("outputLinearLayer:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
+        return x
+
+
 
 class NormConv1d(nn.Module):
     """Wrapper around Conv1d and normalization applied to this conv
@@ -498,3 +521,5 @@ class SConvTranspose2d(nn.Module):
             ))
         #print("outputSConvTranspose1d:", y.shape, torch.sum(y), torch.sum(torch.abs(y)))
         return y
+
+

@@ -8,9 +8,14 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from ar_spectra.modules.embedding import PositionalEncoding
+from ar_spectra.modules.embedding import IdentityPositionalEncoding
 import logging
 from ar_spectra.modules.streaming_utils.utils import sequence_mask
+from ar_spectra.modules.normed_modules.conv import SConv1d, SConv2d
+from ar_spectra.modules.normed_modules.conv import SConvTranspose1d, SConvTranspose2d, NormLinear
+from ar_spectra.modules.activations import get_activation, _build_activation
+
+
 class TooShortUttError(Exception):
     """Raised when the utt is too short for subsampling.
 
@@ -52,18 +57,19 @@ class Conv2dSubsampling(torch.nn.Module):
 
     """
 
-    def __init__(self, idim, odim, dropout_rate, pos_enc=None):
+    def __init__(self, idim, odim, dropout_rate, pos_enc=None, is_complex: bool = True, conv_norm: str = "none",
+                 act: str = "relu"):
         """Construct an Conv2dSubsampling object."""
         super(Conv2dSubsampling, self).__init__()
         self.conv = torch.nn.Sequential(
-            torch.nn.Conv2d(1, odim, 3, 2),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(odim, odim, 3, 2),
-            torch.nn.ReLU(),
+            SConv2d(1, odim, 3, 2, is_complex=is_complex, norm=conv_norm),
+            get_activation(act),
+            SConv2d(odim, odim, 3, 2, is_complex=is_complex, norm=conv_norm),
+            get_activation(act),
         )
         self.out = torch.nn.Sequential(
-            torch.nn.Linear(odim * (((idim - 1) // 2 - 1) // 2), odim),
-            pos_enc if pos_enc is not None else PositionalEncoding(odim, dropout_rate),
+            NormLinear(odim * (((idim - 1) // 2 - 1) // 2), odim, is_complex=is_complex, norm=conv_norm),
+            pos_enc if pos_enc is not None else IdentityPositionalEncoding(odim, dropout_rate),
         )
 
     def forward(self, x, x_mask):
@@ -110,18 +116,19 @@ class Conv2dSubsamplingPad(torch.nn.Module):
 
     """
 
-    def __init__(self, idim, odim, dropout_rate, pos_enc=None):
+    def __init__(self, idim, odim, dropout_rate, pos_enc=None, is_complex: bool = True,
+                 conv_norm: str = "none", act: str = "relu"):
         """Construct an Conv2dSubsampling object."""
         super(Conv2dSubsamplingPad, self).__init__()
         self.conv = torch.nn.Sequential(
-            torch.nn.Conv2d(1, odim, 3, 2, padding=(0, 0)),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(odim, odim, 3, 2, padding=(0, 0)),
-            torch.nn.ReLU(),
+            SConv2d(1, odim, 3, 2, is_complex=is_complex, norm=conv_norm, pad_mode='constant'),
+            get_activation(act),
+            SConv2d(odim, odim, 3, 2, is_complex=is_complex, norm=conv_norm, pad_mode='constant'),
+            get_activation(act),
         )
         self.out = torch.nn.Sequential(
-            torch.nn.Linear(odim * (((idim - 1) // 2 - 1) // 2), odim),
-            pos_enc if pos_enc is not None else PositionalEncoding(odim, dropout_rate),
+            NormLinear(odim * (((idim - 1) // 2 - 1) // 2), odim, is_complex=is_complex, norm=conv_norm),
+            pos_enc if pos_enc is not None else IdentityPositionalEncoding(odim, dropout_rate),
         )
         self.pad_fn = torch.nn.ConstantPad1d((0, 4), 0.0)
 
@@ -177,18 +184,19 @@ class Conv2dSubsampling2(torch.nn.Module):
 
     """
 
-    def __init__(self, idim, odim, dropout_rate, pos_enc=None):
+    def __init__(self, idim, odim, dropout_rate, pos_enc=None, is_complex: bool = True,
+                 conv_norm: str = "none", act: str = "relu"):
         """Construct an Conv2dSubsampling2 object."""
         super(Conv2dSubsampling2, self).__init__()
         self.conv = torch.nn.Sequential(
-            torch.nn.Conv2d(1, odim, 3, 2),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(odim, odim, 3, 1),
-            torch.nn.ReLU(),
+            SConv2d(1, odim, 3, 2, is_complex=is_complex, norm=conv_norm),
+            get_activation(act),
+            SConv2d(odim, odim, 3, 1, is_complex=is_complex, norm=conv_norm),
+            get_activation(act),
         )
         self.out = torch.nn.Sequential(
-            torch.nn.Linear(odim * (((idim - 1) // 2 - 2)), odim),
-            pos_enc if pos_enc is not None else PositionalEncoding(odim, dropout_rate),
+            NormLinear(odim * (((idim - 1) // 2 - 2)), odim, is_complex=is_complex, norm=conv_norm),
+            pos_enc if pos_enc is not None else IdentityPositionalEncoding(odim, dropout_rate),
         )
 
     def forward(self, x, x_mask):
@@ -236,18 +244,19 @@ class Conv1dSubsampling2(torch.nn.Module):
 
     """
 
-    def __init__(self, idim, odim, dropout_rate, pos_enc=None):
+    def __init__(self, idim, odim, dropout_rate, pos_enc=None, is_complex: bool = True,
+                 conv_norm: str = "none", act: str = "relu"):
         """Construct an Conv2dSubsampling2 object."""
         super(Conv1dSubsampling2, self).__init__()
         self.conv = torch.nn.Sequential(
-            torch.nn.Conv1d(idim, odim, 3, 2),
-            torch.nn.ReLU(),
-            torch.nn.Conv1d(odim, odim, 3, 1),
-            torch.nn.ReLU(),
+            SConv1d(idim, odim, 3, 2, is_complex=is_complex, norm=conv_norm),
+            get_activation(act),
+            SConv1d(odim, odim, 3, 1, is_complex=is_complex, norm=conv_norm),
+            get_activation(act),
         )
         self.out = torch.nn.Sequential(
-            torch.nn.Linear(odim, odim),
-            pos_enc if pos_enc is not None else PositionalEncoding(odim, dropout_rate),
+            NormLinear(odim, odim, is_complex=is_complex, norm=conv_norm),
+            pos_enc if pos_enc is not None else IdentityPositionalEncoding(odim, dropout_rate),
         )
 
     def forward(self, x, x_mask):
@@ -294,18 +303,19 @@ class Conv2dSubsampling6(torch.nn.Module):
 
     """
 
-    def __init__(self, idim, odim, dropout_rate, pos_enc=None):
+    def __init__(self, idim, odim, dropout_rate, pos_enc=None, is_complex: bool = True,
+                 conv_norm: str = "none", act: str = "relu"):
         """Construct an Conv2dSubsampling6 object."""
         super(Conv2dSubsampling6, self).__init__()
         self.conv = torch.nn.Sequential(
-            torch.nn.Conv2d(1, odim, 3, 2),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(odim, odim, 5, 3),
-            torch.nn.ReLU(),
+            SConv2d(1, odim, 3, 2, is_complex=is_complex, norm=conv_norm),
+            get_activation(act),
+            SConv2d(odim, odim, 5, 3, is_complex=is_complex, norm=conv_norm),
+            get_activation(act),
         )
         self.out = torch.nn.Sequential(
-            torch.nn.Linear(odim * (((idim - 1) // 2 - 2) // 3), odim),
-            pos_enc if pos_enc is not None else PositionalEncoding(odim, dropout_rate),
+            NormLinear(odim * (((idim - 1) // 2 - 2) // 3), odim, is_complex=is_complex, norm=conv_norm),
+            pos_enc if pos_enc is not None else IdentityPositionalEncoding(odim, dropout_rate),
         )
 
     def forward(self, x, x_mask):
@@ -342,20 +352,21 @@ class Conv2dSubsampling8(torch.nn.Module):
 
     """
 
-    def __init__(self, idim, odim, dropout_rate, pos_enc=None):
+    def __init__(self, idim, odim, dropout_rate, pos_enc=None, is_complex: bool = True,
+                 conv_norm: str = "none", act: str = "relu"):
         """Construct an Conv2dSubsampling8 object."""
         super(Conv2dSubsampling8, self).__init__()
         self.conv = torch.nn.Sequential(
-            torch.nn.Conv2d(1, odim, 3, 2),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(odim, odim, 3, 2),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(odim, odim, 3, 2),
-            torch.nn.ReLU(),
+            SConv2d(1, odim, 3, 2, is_complex=is_complex, norm=conv_norm),
+            get_activation(act),
+            SConv2d(odim, odim, 3, 2, is_complex=is_complex, norm=conv_norm),
+            get_activation(act),
+            SConv2d(odim, odim, 3, 2, is_complex=is_complex, norm=conv_norm),
+            get_activation(act),
         )
         self.out = torch.nn.Sequential(
-            torch.nn.Linear(odim * ((((idim - 1) // 2 - 1) // 2 - 1) // 2), odim),
-            pos_enc if pos_enc is not None else PositionalEncoding(odim, dropout_rate),
+            NormLinear(odim * ((((idim - 1) // 2 - 1) // 2 - 1) // 2), odim, is_complex=is_complex, norm=conv_norm),
+            pos_enc if pos_enc is not None else IdentityPositionalEncoding(odim, dropout_rate),
         )
 
     def forward(self, x, x_mask):

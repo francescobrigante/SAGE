@@ -30,6 +30,31 @@ def _pre_hook(
     if k in state_dict:
         state_dict.pop(k)
 
+class IdentityPositionalEncoding(torch.nn.Module):
+    """Identity Positional encoding module.
+
+    Args:
+        d_model (int): Embedding dimension.
+        dropout_rate (float): Dropout rate.
+        max_len (int): Maximum input length.
+
+    """
+
+    def __init__(self, d_model, dropout_rate, max_len=5000):
+        """Construct an PositionalEncoding object."""
+        super(IdentityPositionalEncoding, self).__init__()
+
+    def forward(self, x: torch.Tensor):
+        """Add positional encoding.
+
+        Args:
+            x (torch.Tensor): Input tensor (batch, time, `*`).
+
+        Returns:
+            torch.Tensor: Encoded tensor (batch, time, `*`).
+
+        """
+        return x
 
 class PositionalEncoding(torch.nn.Module):
     """Positional encoding.
