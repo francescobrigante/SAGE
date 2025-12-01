@@ -3,8 +3,6 @@ name = "eulero-backbone"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "complextorch>=1.2.0",
-    "deepspeed>=0.18.2",
     "descript-audio-codec>=1.0.0",
     "einops>=0.8.1",
     "encodec>=0.1.1",
@@ -13,19 +11,25 @@ dependencies = [
     "plotly>=6.4.0",
     "rich>=14.2.0",
     "safetensors>=0.6.2",
-    "torch>=2.9.1",
-    "torchaudio>=2.9.1",
-    "torchcodec>=0.8.1",
-    "torchvision>=0.24.1",
-    "tqdm>=4.67.1",
+    "torch==2.7.0",
+    "torchaudio==2.7.0",
+    "torchvision==0.22.0",
+    "tqdm>=4.66.5",
     "typeguard>=4.4.4",
     "wandb>=0.23.0",
-    "complexpytorch>=0.4",
     "pandas>=2.3.3",
     "lion-pytorch>=0.2.3",
-    "triton>=3.5.1",
     "pytest>=9.0.1",
-    "cdpam>=0.0.6",
     "resampy>=0.4.3",
     "frechet-audio-distance>=0.1.2",
 ]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+torchaudio = { index = "pytorch-cu126" }
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
