@@ -77,7 +77,7 @@ loss_config:
         reduction: mean
         energy_weighted: false
 
-    weights: { stft_mse: 1.0, mrstft: 0.2, cosine_phase_loss: 0.05}
+    weights: { stft_mse: 1.0, mrstft: 0.2, cosine_phase_loss: 0.15}
 
 # Legacy fallback controls
 use_json: false
