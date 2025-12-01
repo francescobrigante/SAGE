@@ -100,7 +100,10 @@ class OnTheFlySTFTDataset(Dataset):
         if isinstance(skip_broken_files, bool):
             if skip_broken_files:
                 # Comportamento legacy: skippa per sr E canali
-                self.skip_criteria = skip_criteria
+                if skip_criteria is not None:
+                    self.skip_criteria = {crit.lower() for crit in skip_criteria}
+                else:
+                    self.skip_criteria = {"sample_rate", "channels"}  # default legacy
             else:
                 self.skip_criteria = set()
         else: # È una sequenza di stringhe
@@ -297,22 +300,21 @@ class OnTheFlySTFTDataset(Dataset):
     
     def _load_segment_or_full(self, path: Path, generator: Optional[torch.Generator] = None) -> tuple[torch.Tensor, int]:
         """
-        MP3: prova a decodificare solo il segmento via frame_offset/num_frames.
-        Altrimenti, fallback a load completo + crop.
-        Altri formati: usa load completo + crop.
+        Prova a decodificare solo il segmento richiesto via frame_offset/num_frames
+        per tutti i formati supportati (WAV, FLAC, MP3, ecc.).
+        Fallback a load completo + crop se il partial load fallisce.
 
         Accepts optional generator to make the chosen start reproducible/controllable.
         """
         gen = generator or self._rng
-        suffix = path.suffix.lower()
 
-        # se non abbiamo un probe affidabile, fallback semplice
-        if self._probe_fn is None or suffix != ".mp3":
+        # se non abbiamo un probe affidabile, fallback semplice (load completo)
+        if self._probe_fn is None:
             wav, sr = self._load_waveform(path)
             seg = self._random_crop_or_pad(wav, generator=gen)
             return seg.to(torch.float32), sr
 
-        # MP3 con probe
+        # Prova partial load per TUTTI i formati
         try:
             src_sr, total_frames, _ch = self._probe_fn(path)
         except Exception:
@@ -320,11 +322,22 @@ class OnTheFlySTFTDataset(Dataset):
             seg = self._random_crop_or_pad(wav, generator=gen)
             return seg.to(torch.float32), sr
 
-        if total_frames < self.segment_samples:
-            raise RuntimeError("MP3 too short; should have been filtered earlier.")
+        # Calcola quanti sample leggere nel sample rate SORGENTE
+        # per ottenere segment_samples dopo eventuale resampling
+        if src_sr != self.sample_rate and "sample_rate" not in self.skip_criteria:
+            # Dobbiamo leggere più sample dal file sorgente
+            src_segment_samples = int(np.ceil(self.segment_samples * (src_sr / self.sample_rate)))
+        else:
+            src_segment_samples = self.segment_samples
+
+        if total_frames < src_segment_samples:
+            # File troppo corto, fallback a load completo con padding
+            wav, sr = self._load_waveform(path)
+            seg = self._random_crop_or_pad(wav, generator=gen)
+            return seg.to(torch.float32), sr
 
         start = int(torch.randint(
-            0, total_frames - self.segment_samples + 1,
+            0, total_frames - src_segment_samples + 1,
             (1,), generator=gen
         ).item())
 
@@ -332,43 +345,34 @@ class OnTheFlySTFTDataset(Dataset):
             wav, sr = torchaudio.load(
                 str(path),
                 frame_offset=start,
-                num_frames=self.segment_samples,
+                num_frames=src_segment_samples,
                 normalize=True
             )
         except Exception as e:
-            # Silent fallback: try librosa without printing warnings; only raise if it also fails
+            # Fallback: load completo + crop
             try:
-                import librosa
-                offset_sec = start / max(src_sr, 1)
-                duration_sec = self.segment_samples / max(src_sr, 1)
-                y, lr_sr = librosa.load(
-                    str(path),
-                    sr=None,
-                    mono=False,
-                    offset=offset_sec,
-                    duration=duration_sec
-                )
-                y = torch.from_numpy(y)
-                if y.ndim == 1:
-                    y = y.unsqueeze(0)  # mono -> (1,N)
-                wav = y.to(torch.float32)
-                sr = int(lr_sr)
-                cur_len = wav.shape[-1]
-                if cur_len < self.segment_samples:
-                    if cur_len >= self.min_acceptable_len:
-                        pad_needed = self.segment_samples - cur_len
-                        left = pad_needed // 2
-                        right = pad_needed - left
-                        wav = F.pad(wav, (left, right), mode="constant", value=0.0)
-                    else:
-                        raise RuntimeError("Librosa fallback segment too short.")
+                wav, sr = self._load_waveform(path)
+                seg = self._random_crop_or_pad(wav, generator=gen)
+                return seg.to(torch.float32), sr
             except Exception as e2:
-                raise RuntimeError(f"MP3 partial load failed and librosa fallback failed: {e2}") from e
+                raise RuntimeError(f"Partial load failed and full load fallback failed: {e2}") from e
 
         wav = self._match_channels(wav).to(torch.float32)
+        
+        # Resample se necessario
         if sr != self.sample_rate and "sample_rate" not in self.skip_criteria:
             wav = torchaudio.functional.resample(wav, sr, self.sample_rate)
             sr = self.sample_rate
+        
+        # Dopo resampling, potremmo avere qualche sample in più o in meno
+        # Crop/pad per ottenere esattamente segment_samples
+        cur_len = wav.shape[-1]
+        if cur_len > self.segment_samples:
+            wav = wav[..., :self.segment_samples]
+        elif cur_len < self.segment_samples:
+            pad_needed = self.segment_samples - cur_len
+            wav = F.pad(wav, (0, pad_needed), mode="constant", value=0.0)
+        
         return wav, sr
 
     def __getitem__(self, index: int) -> torch.Tensor:
@@ -379,8 +383,6 @@ class OnTheFlySTFTDataset(Dataset):
         replacements = 0
         while replacements <= MAX_REPLACEMENTS:
             path = self.files[index]
-            suffix = path.suffix.lower()
-            wav = None
 
             if self.full_waveform:
                 try:
@@ -395,13 +397,9 @@ class OnTheFlySTFTDataset(Dataset):
                     return None, wav, str(path)
                 return None, wav
 
-            # Segment extraction: MP3 may be loaded by offset; other formats load full then crop
+            # Segment extraction: use partial loading for all formats
             try:
-                if suffix == ".mp3":
-                    seg, _ = self._load_segment_or_full(path)
-                else:
-                    wav, _ = self._load_waveform(path)      # (C, N)
-                    seg = self._random_crop_or_pad(wav)     # (C, segment_samples)
+                seg, _ = self._load_segment_or_full(path)
             except Exception:
                 # Problematic file: pick a different index
                 index = int(torch.randint(0, len(self), (1,), generator=self._rng).item())
@@ -420,12 +418,7 @@ class OnTheFlySTFTDataset(Dataset):
                         seed_val = int(torch.randint(0, 2**31 - 1, (1,), generator=self._rng).item())
                         gen = torch.Generator(); gen.manual_seed(seed_val)
                         try:
-                            if suffix == ".mp3":
-                                candidate, _sr = self._load_segment_or_full(path, generator=gen)
-                            else:
-                                if wav is None:
-                                    wav, _ = self._load_waveform(path)
-                                candidate = self._random_crop_or_pad(wav, generator=gen)
+                            candidate, _sr = self._load_segment_or_full(path, generator=gen)
                         except RuntimeError:
                             continue
                         if not is_silence(candidate):
@@ -461,12 +454,7 @@ class OnTheFlySTFTDataset(Dataset):
                     seed_val = int(torch.randint(0, 2**31 - 1, (1,), generator=self._rng).item())
                     gen = torch.Generator(); gen.manual_seed(seed_val)
                     try:
-                        if suffix == ".mp3":
-                            seg2, _ = self._load_segment_or_full(path, generator=gen)
-                        else:
-                            if wav is None:
-                                wav, _ = self._load_waveform(path)
-                            seg2 = self._random_crop_or_pad(wav, generator=gen)
+                        seg2, _ = self._load_segment_or_full(path, generator=gen)
                     except Exception:
                         t_retries += 1
                         continue
