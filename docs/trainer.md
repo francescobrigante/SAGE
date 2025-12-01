@@ -66,6 +66,16 @@ loss_config:
 ```
 Add or remove terms to reflect the experiment at hand (e.g., multi-resolution STFT, time-domain L1, adversarial discriminators). Ensure weights remain positive; zero-valued terms are effectively disabled.
 
+#### Bottleneck KL regulariser
+When the model uses `VAEBottleneck`, the encoder returns a batch-level KL statistic (`loss_info["kl"]`). To make it part of the generator objective you must add the dedicated weight under `loss_config.bottleneck.weights.kl`:
+```yaml
+loss_config:
+  bottleneck:
+    weights:
+      kl: 1.0
+```
+The engine automatically wires this weight into a `ValueLoss(key="kl")`, so no further code changes are required. Other bottleneck types simply ignore the section.
+
 ##### Eval Losses
 
 Sets the losses used in eval

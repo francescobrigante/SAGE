@@ -43,6 +43,8 @@ Common choices include:
 
 Match bottleneck expectations with encoder output channels (e.g., VAE requires doubling for mean/logvar). The constructor validates dimensions to prevent silent mismatches. 
 
+> **Important:** picking `VAEBottleneck` inside the model config only enables latent sampling and returns the per-batch KL statistic (`loss_info["kl"]`). The actual KL regulariser is injected on the trainer side through `loss_config.bottleneck.weights.kl`. Without that entry the engine falls back to a tiny default (1e-6), so remember to set an explicit weight in `conf/trainer/*.yaml` whenever you expect a meaningful KL term during training.
+
 ### Pre/Post Transforms
 Spectrogram normalization and denormalization belong inside the `autoencoder` block:
 - `pre_transform`: applied before encoding (e.g., power scaling, log-magnitude transforms).
