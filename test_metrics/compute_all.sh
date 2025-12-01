@@ -33,6 +33,7 @@ Optional arguments:
 	--main-env VENV       Virtualenv for inference and spectral metrics (default: $main_env_default).
 	--metrics-env VENV    Virtualenv for CDPAM/FAD metrics (default: $metrics_env_default).
 	--extensions LIST     Comma-separated extensions (e.g. wav,mp3) to filter files.
+	--infer-device DEV    Device string for waveform reconstruction (default: cuda:0).
 	--cdpam-device DEV    Device string for CDPAM (default: cuda:0).
 	--cdpam-chunk INT     Chunk size in samples for CDPAM (default: 0 -> full clip).
 	--csv-dir PATH        Directory where metric CSV/log files will be stored (default: <output-dir>/metrics).
@@ -101,6 +102,7 @@ METRICS_ENV="$DEFAULT_METRICS_ENV"
 OUTPUT_DIR=""
 EXTENSIONS_RAW=""
 CDPAM_DEVICE="cuda:0"
+INFER_DEVICE="cuda:0"
 CDPAM_CHUNK=0
 CSV_DIR=""
 SKIP_CDPAM=false
@@ -142,6 +144,10 @@ while [[ $# -gt 0 ]]; do
 			;;
 		--csv-dir)
 			CSV_DIR="$2"
+			shift 2
+			;;
+		--infer-device)
+			INFER_DEVICE="$2"
 			shift 2
 			;;
 		--skip-cdpam)
@@ -223,12 +229,9 @@ for ext in "${EXT_ARRAY[@]}"; do
 	EXT_LIST+=("$ext")
 done
 
-HYDRA_EXT=""
 CLI_EXT=""
 if [[ ${#EXT_LIST[@]} -gt 0 ]]; then
-	HYDRA_EXT="["
 	for ext in "${EXT_LIST[@]}"; do
-		HYDRA_EXT+="\"$ext\","
 		ext_no_dot="${ext#.}"
 		if [[ -n "$CLI_EXT" ]]; then
 			CLI_EXT+=",$ext_no_dot"
@@ -236,29 +239,30 @@ if [[ ${#EXT_LIST[@]} -gt 0 ]]; then
 			CLI_EXT="$ext_no_dot"
 		fi
 	done
-	HYDRA_EXT="${HYDRA_EXT%,}"
-	HYDRA_EXT+="]"
 fi
 
 log "Target dir: $TARGET_DIR"
 log "Checkpoint: $CHECKPOINT"
 log "Output dir: $OUTPUT_DIR"
 log "Metrics dir: $CSV_DIR"
+log "Inference device: $INFER_DEVICE"
 
-declare -a HYDRA_OVERRIDES
-HYDRA_OVERRIDES+=("checkpoint=\"$CHECKPOINT\"")
-HYDRA_OVERRIDES+=("dataset.kwargs.audio_dir=\"$TARGET_DIR\"")
-HYDRA_OVERRIDES+=("dataset_inference.enabled=true")
-HYDRA_OVERRIDES+=("dataset_inference.output_dir=\"$OUTPUT_DIR\"")
-HYDRA_OVERRIDES+=("dataset_inference.save_waveforms=true")
-HYDRA_OVERRIDES+=("dataset_inference.save_input_audio=false")
-HYDRA_OVERRIDES+=("dataset_inference.file_prefix=\"\"")
-if [[ -n "$HYDRA_EXT" ]]; then
-	HYDRA_OVERRIDES+=("dataset.kwargs.extensions=$HYDRA_EXT")
+GEN_EXT=""
+if [[ ${#EXT_LIST[@]} -gt 0 ]]; then
+	GEN_EXT="$(printf "%s," "${EXT_LIST[@]}")"
+	GEN_EXT="${GEN_EXT%,}"
 fi
 
-log "Running inference via inference.py"
-run_in_env "$MAIN_ENV" python "$PROJECT_ROOT/inference.py" "${HYDRA_OVERRIDES[@]}"
+log "Running inference via generate_test_preds.py"
+declare -a GEN_CMD=(python "$PROJECT_ROOT/test_metrics/generate_test_preds.py" \
+	--model-checkpoint "$CHECKPOINT" \
+	--target-dir "$TARGET_DIR" \
+	--output-dir "$OUTPUT_DIR" \
+	--device "$INFER_DEVICE")
+if [[ -n "$GEN_EXT" ]]; then
+	GEN_CMD+=(--extensions "$GEN_EXT")
+fi
+run_in_env "$MAIN_ENV" "${GEN_CMD[@]}"
 
 if [[ ! -d "$OUTPUT_DIR" ]]; then
 	echo "Error: expected predictions in $OUTPUT_DIR but directory not found." >&2

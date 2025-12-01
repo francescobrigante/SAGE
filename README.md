@@ -111,16 +111,52 @@ autoencoder = AutoEncoder.from_config(model_cfg)
 Skipping this step will leave placeholders in place and most encoder/decoder
 classes will raise shape mismatches during instantiation.
 
+Therefore, the model configuration must specify `channels` (decoder) and
+`input_size` (encoder) explicitly, or rely on the `auto` placeholder.
+
+- **Using `auto` (Recommended for Training)**: The trainer inspects the dataset
+  batch (checking for complex dtype or CAC layout) and automatically injects
+  the correct channel counts into the model configuration before instantiation.
+  This ensures the model matches the data representation (e.g., complex vs.
+  real-as-channels) and channel count (mono vs. stereo). 
+- **Using Explicit Values**: If you manually set these integers in the YAML,
+  you must ensure they strictly match the dataset output. Mismatches (e.g.,
+  configuring 2 channels for a mono dataset) will cause runtime errors.
+- **Example of `auto` working**: if the dataset has CAC activated and stereo there is going to be an `input_size` of 4. 
+
+**Note on Checkpoints**: Once trained, the resolved values are baked into the
+checkpoint's `inference_config`. The inference loader reads these saved values
+automatically, so you do not need to worry about `auto` resolution when loading
+a trained model.
+
+If there are problems with checkpoint use in inference we suggest the following
+procedure as a fallback.
+
+### Regenerating legacy checkpoints
+
+Older checkpoints that predate the embedded metadata can be upgraded with the
+interactive helper in `tools/regenerate_checkpoint.py`. The script rebuilds
+the autoencoder from a model YAML, prompts for any missing parameters, and
+writes a new checkpoint suffixed with `_rigenerated`:
+
+```bash
+uv run python tools/regenerate_checkpoint.py \
+  checkpoints/legacy.ckpt \
+  conf/model/SEANet_cplx_model.yaml
+```
+
+Always use the regenerated artefact for inference and metric runs to guarantee
+the presence of the `inference_config` block.
+
 ---
 
 ## Documentation
 
 Detailed guidance on configuring data loaders, models, trainers, and inference pipelines lives in the `docs/` folder:
 - `docs/model.md`
-- `docs/dataset.md`
-- `docs/inference_and_metrics.md`
 - `docs/trainer.md`
 - `docs/training_dataset.md`
+- `docs/metrics.md`
 
 Refer to these documents to understand configuration fields, recommended overrides, and evaluation best practices.
 
