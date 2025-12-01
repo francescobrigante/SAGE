@@ -84,32 +84,16 @@ python inference.py
 
 ### Building Models from Configs
 
-When constructing autoencoders manually—from YAML or bespoke scripts—you must
-resolve the expected channel counts before calling `AutoEncoder.from_config`.
-The constructors assume that:
+When adding new model architectures, you must ensure that your YAML configuration
+exposes the parameters required by the trainer to inject channel information.
+The training pipeline expects to find:
 
-- `model_channels` (spectrogram channels) and `audio_channels` (wave channels)
-  are known integers, not the `auto` sentinel found in templates like
-  `conf/model/SEANet_cplx_model.yaml`.
-- Pre-transform and STFT parameters are supplied consistently with the dataset
-  used during training.
+- `input_size` in the encoder arguments.
+- `channels` in the decoder arguments.
 
-The training initialisation helpers already handle this via
-`resolve_auto_channels`.  If you roll your own loader, mimic the following
-pattern:
-
-```python
-from copy import deepcopy
-from ar_spectra.training_utils.initialization import resolve_auto_channels
-from ar_spectra.models.autoencoder import AutoEncoder
-
-model_cfg = deepcopy(cfg["model"])
-resolve_auto_channels(model_cfg, model_channels=<detected_value>)
-autoencoder = AutoEncoder.from_config(model_cfg)
-```
-
-Skipping this step will leave placeholders in place and most encoder/decoder
-classes will raise shape mismatches during instantiation.
+These parameters are mandatory because the trainer uses them to adapt the model
+to the dataset's specific channel layout (e.g. complex vs. real-as-channels,
+mono vs. stereo).
 
 Therefore, the model configuration must specify `channels` (decoder) and
 `input_size` (encoder) explicitly, or rely on the `auto` placeholder.
