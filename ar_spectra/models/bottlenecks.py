@@ -17,15 +17,33 @@ class Bottleneck(nn.Module):
     def decode(self, x):
         raise NotImplementedError
     
+def _complex_to_channel_view(t: torch.Tensor) -> torch.Tensor:
+    return torch.cat((t.real, t.imag), dim=1)
+
+
+def _channel_view_to_complex(t: torch.Tensor) -> torch.Tensor:
+    real, imag = t.chunk(2, dim=1)
+    return torch.complex(real, imag)
+
+
 def vae_sample(mean, scale):
-        stdev = nn.functional.softplus(scale) + 1e-4
-        var = stdev * stdev
-        logvar = torch.log(var)
-        latents = torch.randn_like(mean) * stdev + mean
+    was_complex = torch.is_complex(mean)
 
-        kl = (mean * mean + var - logvar - 1).sum(1).mean()
+    if was_complex:
+        mean = _complex_to_channel_view(mean)
+        scale = _complex_to_channel_view(scale)
 
-        return latents, kl
+    stdev = nn.functional.softplus(scale) + 1e-4
+    var = stdev * stdev
+    logvar = torch.log(var)
+    latents = torch.randn_like(mean) * stdev + mean
+
+    kl = (mean * mean + var - logvar - 1).sum(1).mean()
+
+    if was_complex:
+        latents = _channel_view_to_complex(latents)
+
+    return latents, kl
     
     
 class VAEBottleneck(Bottleneck):
