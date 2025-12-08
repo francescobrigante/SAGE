@@ -118,12 +118,12 @@ class ViTEncoder(nn.Module):
         elif pos_enc_layer_type == "legacy_rel_pos":
             assert selfattention_layer_type == "legacy_rel_selfattn"
             pos_enc_class = LegacyRelPositionalEncoding
-            logging.warning(
+            warn(
                 "Using legacy_rel_pos and it will be deprecated in the future."
             )
         else:
             pos_enc_class = IdentityPositionalEncoding
-            logging.warning(
+            warn(
                 f"Unknown pos_enc_layer_type {pos_enc_layer_type}. Using IdentityPositionalEncoding."
             )
 
@@ -142,7 +142,7 @@ class ViTEncoder(nn.Module):
 
         self.sequence_model = None
         if sequence_model_type == "conformer":
-            from models.autoencoders.ConformerAE import ConformerEncoder
+            from ar_spectra.models.autoencoders.ConformerAE import ConformerEncoder
             self.sequence_model = ConformerEncoder(
                 input_size=output_size,
                 **kwargs,
@@ -151,11 +151,12 @@ class ViTEncoder(nn.Module):
             
 if __name__ == "__main__":
     torch.manual_seed(0)
-    batch, time_steps, freq_bins = 2, 64, 128
-    print("Testing Conv2dSubsampling2...")
-    print("Input shape: ", (batch, time_steps, freq_bins))
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    batch, time_steps, freq_bins = 2, 1024, 128
+    ok("Testing Conv2dSubsampling2...")
+    ok("Input shape: " + str((batch, time_steps, freq_bins)))
     # complex64 tensor to exercise the complex convolution path
-    dummy = torch.randn(batch, time_steps, freq_bins, dtype=torch.complex64)
+    dummy = torch.randn(batch, time_steps, freq_bins, dtype=torch.complex64).to(device)
     conv = Conv2dSubsampling2(
         idim=freq_bins,
         hdim=freq_bins * 4,
@@ -163,8 +164,46 @@ if __name__ == "__main__":
         dropout_rate=0.1,
         patch_size=(16, 32),
         norm="none",
-    )
+    ).to(device)
     with torch.inference_mode():
         out = conv(dummy)
-    print(f"Conv2dSubsampling2 output shape: {out.shape}")
+    ok(f"Conv2dSubsampling2 output shape: {out.shape}")
+    
+    encoder = ViTEncoder(
+        input_size=freq_bins,
+        vit_input_layer="conv2d2",
+        sequence_model_type="conformer",
+        path_size=(16, 32),
+        conv_norm="none",
+        attention_heads=4,
+        linear_units=freq_bins,
+        num_blocks=2,
+        dropout_rate=0.1,
+        positional_dropout_rate=0.1,
+        attention_dropout_rate=0.1,
+        input_layer="linear",
+        normalize_before=True,
+        concat_after=False,
+        positionwise_layer_type="linear",
+        positionwise_conv_kernel_size=3,
+        macaron_style=False,
+        rel_pos_type="none",
+        pos_enc_layer_type="none",
+        selfattention_layer_type="selfattn",
+        activation_type="CReLU",
+        use_cnn_module=True,
+        zero_triu=False,
+        cnn_module_kernel=5,
+    ).to(device)
+    ok("Testing ViTEncoder with ConformerEncoder...")
+    with torch.inference_mode():
+        out_enc = encoder.vit_input_layer(dummy)
+        new_ilens = torch.full((batch,), out_enc.size(1), dtype=torch.long)
+        y3, olens, _ = encoder.sequence_model(
+            out_enc,
+            ilens=new_ilens,
+            prev_states=None,
+            ctc=None,
+        )
+    ok(f"ViTEncoder output shape: {y3.shape}")
 

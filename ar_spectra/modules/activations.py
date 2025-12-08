@@ -34,8 +34,7 @@ def get_activation(activation: str = None, is_complex: bool = False, channels=No
     """
     if activation is None:
         return nn.Identity()
-
-    name = activation.strip()
+    name = activation
     if not is_complex:
         if name.lower() == "snake":
             assert channels is not None, "Snake activation requires `channels`."

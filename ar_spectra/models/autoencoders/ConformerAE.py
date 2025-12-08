@@ -17,6 +17,7 @@ from ar_spectra.modules.attention import (
     RelPositionMultiHeadedAttention,  # noqa: H301
     LegacyRelPositionMultiHeadedAttention,  # noqa: H301
 )
+from ar_spectra.modules.cplx_attention import CMultiHeadedAttention
 from ar_spectra.modules.embedding import (
     PositionalEncoding,  # noqa: H301
     ScaledPositionalEncoding,  # noqa: H301
@@ -69,12 +70,12 @@ class ConvolutionModule(nn.Module):
 
     """
 
-    def __init__(self, channels, kernel_size, activation=None, bias=True):
+    def __init__(self, channels, kernel_size, activation=None, bias=True, is_complex=True):
         """Construct an ConvolutionModule object."""
         super(ConvolutionModule, self).__init__()
         # kernerl_size should be a odd number for 'SAME' padding
         assert (kernel_size - 1) % 2 == 0
-
+        activation = get_activation(activation, is_complex=is_complex, channels=channels) 
         self.pointwise_conv1 = NormConv1d(
             channels,
             2 * channels,
@@ -108,9 +109,9 @@ class ConvolutionModule(nn.Module):
             is_complex=True,
         )
         self.activation = activation if activation is not None else nn.Identity()
-        self.glu = get_activation("glu", is_complex=True, channels=channels)
+        self.glu = get_activation("CGLU", is_complex=True, channels=channels)
 
-    def forward(self, x):
+    def forward(self, x, debug: bool = False):
         """Compute convolution module.
 
         Args:
@@ -120,17 +121,28 @@ class ConvolutionModule(nn.Module):
             torch.Tensor: Output tensor (#batch, time, channels).
 
         """
+        if debug:
+            ok("_______ _________")
         # exchange the temporal dimension and the feature dimension
         x = x.transpose(1, 2)
+        if debug:
+            ok("ConvolutionModule input shape: " + str(x.shape))
 
         # GLU mechanism
         x = self.glu(self.pointwise_conv1(x))
-
+        if debug:
+            ok("After GLU shape: " + str(x.shape))
         # 1D Depthwise Conv
         x = self.depthwise_conv(x)
+        if debug:
+            ok("After depthwise conv shape: " + str(x.shape))
         x = self.activation(self.norm(x))
+        if debug:
+            ok("After activation & norm shape: " + str(x.shape))
 
         x = self.pointwise_conv2(x)
+        if debug:
+            ok("ConvolutionModule output shape: " + str(x.shape))
 
         return x.transpose(1, 2)
 
@@ -164,12 +176,12 @@ class EncoderLayer(nn.Module):
 
     def __init__(
             self,
-            size,
-            self_attn,
-            feed_forward,
-            feed_forward_macaron,
-            conv_module,
-            dropout_rate,
+            size: int,
+            self_attn : torch.nn.Module,
+            feed_forward: torch.nn.Module,
+            feed_forward_macaron : Optional[torch.nn.Module] | None,
+            conv_module: torch.nn.Module,
+            dropout_rate: float,
             normalize_before=True,
             concat_after=False,
             stochastic_depth_rate=0.0,
@@ -375,10 +387,14 @@ class ConformerEncoder(AbsEncoder):
         elif rel_pos_type == "latest":
             assert selfattention_layer_type != "legacy_rel_selfattn"
             assert pos_enc_layer_type != "legacy_rel_pos"
+            
         else:
-            raise ValueError("unknown rel_pos_type: " + rel_pos_type)
+             pos_enc_class = IdentityPositionalEncoding
+             warn("Using IdentityPositionalEncoding as rel_pos_type is either unknown or none.") 
 
-        activation = get_activation(activation_type, is_complex=True, channels=output_size)
+        if not isinstance(activation_type, str):
+            raise ValueError(warn("`activation_type` must be str. Maybe you passed a class?"))
+        activation = activation_type
         if pos_enc_layer_type == "abs_pos":
             pos_enc_class = PositionalEncoding
         elif pos_enc_layer_type == "scaled_abs_pos":
@@ -394,7 +410,7 @@ class ConformerEncoder(AbsEncoder):
             )
         else:
             pos_enc_class = IdentityPositionalEncoding
-            warn("Using IdentityPositionalEncoding as pos_enc_layer_type is unknown.")
+            warn("Using IdentityPositionalEncoding as pos_enc_layer_type is either unknown or none.")
             
         if input_layer == "linear":
             self.embed = torch.nn.Sequential(
@@ -490,7 +506,7 @@ class ConformerEncoder(AbsEncoder):
             raise NotImplementedError("Support only linear or conv1d.")
 
         if selfattention_layer_type == "selfattn":
-            encoder_selfattn_layer = MultiHeadedAttention
+            encoder_selfattn_layer = CMultiHeadedAttention
             encoder_selfattn_layer_args = (
                 attention_heads,
                 output_size,
@@ -636,3 +652,66 @@ class ConformerEncoder(AbsEncoder):
         if len(intermediate_outs) > 0:
             return (xs_pad, intermediate_outs), olens, None
         return xs_pad, olens, None
+
+if __name__ == "__main__":
+    
+    batch, channels, frequency, time = 16, 64, 16, 64
+    
+    x = torch.randn(batch, time, channels * frequency, dtype=torch.cfloat)
+    ok(f"Input shape: {x.shape}")
+    conv = ConvolutionModule(channels*frequency, kernel_size=5, activation=None, bias=True)
+    y = conv(x, debug=True)
+    ok(f"Convolution Module Output shape: {y.shape}")
+    
+    enc_layer = EncoderLayer(
+        size=channels*frequency,
+        self_attn=CMultiHeadedAttention(
+            n_head=4,
+            n_feat=channels*frequency,
+            dropout_rate=0.1,
+        ),
+        feed_forward=PositionwiseFeedForward(
+            idim=channels*frequency,
+            hidden_units=channels*frequency*4,
+            dropout_rate=0.1,
+            activation="CReLU",
+        ),
+        conv_module=ConvolutionModule(
+            channels=channels*frequency,
+            kernel_size=5,
+            activation=None,
+            bias=True,
+        ),
+        feed_forward_macaron=None,
+        dropout_rate=0.1,
+        normalize_before=True,
+        concat_after=False,
+        
+    )
+    y2, _ = enc_layer(y, mask=None, cache=None)
+    ok(f"Encoder Layer Output shape: {y2.shape}")
+    encoder = ConformerEncoder(
+        input_size=channels*frequency,
+        output_size=channels*frequency,
+        attention_heads=4,
+        linear_units=channels*frequency*4,
+        num_blocks=2,
+        dropout_rate=0.1,
+        positional_dropout_rate=0.1,
+        attention_dropout_rate=0.1,
+        input_layer="linear",
+        normalize_before=True,
+        concat_after=False,
+        positionwise_layer_type="linear",
+        positionwise_conv_kernel_size=3,
+        macaron_style=False,
+        rel_pos_type="none",
+        pos_enc_layer_type="none",
+        selfattention_layer_type="selfattn",
+        activation_type="CReLU",
+        use_cnn_module=True,
+        zero_triu=False,
+        cnn_module_kernel=5,
+    )
+    y3, olens, _ = encoder(x, ilens=torch.full((batch,), time, dtype=torch.long), prev_states=None, ctc=None)
+    ok(f"Conformer Encoder Output shape: {y3.shape}")
