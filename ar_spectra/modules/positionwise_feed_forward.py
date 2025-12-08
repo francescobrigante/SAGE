@@ -9,6 +9,9 @@
 import torch
 
 from ar_spectra.modules.layer_norm import LayerNorm
+from ar_spectra.modules.normed_modules.conv import NormLinear
+from ar_spectra.modules.cplx_dropout import ComplexDropout
+from ar_spectra.modules.activations import get_activation
 
 
 class PositionwiseFeedForward(torch.nn.Module):
@@ -21,13 +24,13 @@ class PositionwiseFeedForward(torch.nn.Module):
 
     """
 
-    def __init__(self, idim, hidden_units, dropout_rate, activation=torch.nn.ReLU()):
+    def __init__(self, idim, hidden_units, dropout_rate, activation: str = "relu", is_complex=True):
         """Construct an PositionwiseFeedForward object."""
         super(PositionwiseFeedForward, self).__init__()
-        self.w_1 = torch.nn.Linear(idim, hidden_units)
-        self.w_2 = torch.nn.Linear(hidden_units, idim)
-        self.dropout = torch.nn.Dropout(dropout_rate)
-        self.activation = activation
+        self.w_1 = NormLinear(idim, hidden_units, is_complex=is_complex)
+        self.w_2 = NormLinear(hidden_units, idim, is_complex=is_complex)
+        self.dropout = ComplexDropout(dropout_rate) if is_complex else torch.nn.Dropout(dropout_rate)
+        self.activation = get_activation(activation, is_complex=is_complex)
 
     def forward(self, x):
         """Forward function."""
