@@ -152,7 +152,7 @@ class ViTEncoder(nn.Module):
 if __name__ == "__main__":
     torch.manual_seed(0)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    batch, time_steps, freq_bins = 2, 1024, 128
+    batch, time_steps, freq_bins = 16, 1024, 128
     ok("Testing Conv2dSubsampling2...")
     ok("Input shape: " + str((batch, time_steps, freq_bins)))
     # complex64 tensor to exercise the complex convolution path
@@ -168,16 +168,16 @@ if __name__ == "__main__":
     with torch.inference_mode():
         out = conv(dummy)
     ok(f"Conv2dSubsampling2 output shape: {out.shape}")
-    
+
     encoder = ViTEncoder(
         input_size=freq_bins,
         vit_input_layer="conv2d2",
         sequence_model_type="conformer",
         path_size=(16, 32),
         conv_norm="none",
-        attention_heads=4,
+        attention_heads=8,
         linear_units=freq_bins,
-        num_blocks=2,
+        num_blocks=3,
         dropout_rate=0.1,
         positional_dropout_rate=0.1,
         attention_dropout_rate=0.1,
@@ -185,7 +185,7 @@ if __name__ == "__main__":
         normalize_before=True,
         concat_after=False,
         positionwise_layer_type="linear",
-        positionwise_conv_kernel_size=3,
+        positionwise_conv_kernel_size=5,
         macaron_style=False,
         rel_pos_type="none",
         pos_enc_layer_type="none",
@@ -197,6 +197,8 @@ if __name__ == "__main__":
     ).to(device)
     ok("Testing ViTEncoder with ConformerEncoder...")
     with torch.inference_mode():
+        ok(f"allocated before ViT = {torch.cuda.memory_allocated(device) / 1024**2:.1f} MB")
+
         out_enc = encoder.vit_input_layer(dummy)
         new_ilens = torch.full((batch,), out_enc.size(1), dtype=torch.long)
         y3, olens, _ = encoder.sequence_model(
@@ -205,5 +207,7 @@ if __name__ == "__main__":
             prev_states=None,
             ctc=None,
         )
+        ok(f"allocated after ViT = {torch.cuda.memory_allocated(device) / 1024**2:.1f} MB")
+        ok(f"Max memory allocated {torch.cuda.max_memory_allocated(device) / 1024**2:.1f} MB")
     ok(f"ViTEncoder output shape: {y3.shape}")
 

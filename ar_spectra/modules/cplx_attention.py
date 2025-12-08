@@ -8,7 +8,21 @@ from ar_spectra.modules.normed_modules.conv import SConv1d, SConv2d
 from ar_spectra.modules.normed_modules.conv import SConvTranspose1d, SConvTranspose2d, NormLinear
 from ar_spectra.modules.cplx_dropout import ComplexDropout
 import numpy as np
+from rich.console import Console
+console = Console()
 
+def ok(msg: str) -> None:
+    console.print(msg, style="bold green")
+
+
+def warn(msg: str) -> None:
+    console.print(msg, style="bold yellow")
+
+
+def err(msg: str) -> None:
+    console.print(msg, style="bold red")
+    
+    
 def _merge_heads(x: torch.Tensor, H: int):
     # x: (B*, H, L, D) -> (B*, L, H*D)
     return x.transpose(1, 2).contiguous().view(x.shape[0], x.shape[2], H * x.shape[3])
@@ -77,13 +91,18 @@ class CMultiHeadedAttention(nn.Module):
     reassembling the complex tensor before the output projection.
     """
 
-    def __init__(self, n_head, n_feat, dropout_rate, is_complex: bool = True):
+    def __init__(self, n_head, n_feat, dropout_rate, is_complex: bool = True, 
+                 attention_dtype: Optional[torch.dtype] = torch.float32,
+                 use_attn_dtype: Optional[bool] = False):
         super().__init__()
         self.h = n_head
         self.dropout_rate = dropout_rate
         self.is_complex = is_complex
         assert n_feat % n_head == 0, "n_feat must be divisible by n_head"
         self.d_k = n_feat // n_head
+        self.use_attn_dtype = use_attn_dtype
+        self.atten_dtype = attention_dtype
+
         
         self.linear_q = NormLinear(n_feat, n_feat, is_complex=is_complex)
         self.linear_k = NormLinear(n_feat, n_feat, is_complex=is_complex)
@@ -123,12 +142,16 @@ class CMultiHeadedAttention(nn.Module):
         q, k, v = self.forward_qkv(query, key, value)  # (B, H, L_q/L_k, D)
         B_, H, L_q, D = q.shape
         _, _, L_k, _ = k.shape
+        
+        base_float_dtype = query.real.dtype
+        if not self.use_attn_dtype:
+            self.atten_dtype = base_float_dtype
 
         # convert complex embeddings into real tensors for scoring
-        Qr = torch.cat([q.real, q.imag], dim=-1)  # (B, H, L_q, 2D)
-        Kr = torch.cat([k.real, k.imag], dim=-1)  # (B, H, L_k, 2D)
-        Vr = v.real                                # (B, H, L_k, D)
-        Vi = v.imag                                # (B, H, L_k, D)
+        Qr = torch.cat([q.real, q.imag], dim=-1).to(self.atten_dtype)  # (B, H, L_q, 2D)
+        Kr = torch.cat([k.real, k.imag], dim=-1).to(self.atten_dtype)  # (B, H, L_k, 2D)
+        Vr = v.real.to(self.atten_dtype)                                # (B, H, L_k, D)
+        Vi = v.imag.to(self.atten_dtype)                                # (B, H, L_k, D)
 
         # build score modifier shared across heads for padding mask
         score_mod = make_score_mod_from_mask(
@@ -156,8 +179,10 @@ class CMultiHeadedAttention(nn.Module):
             scale=scale,
         )
 
+        Yr = Yr.to(base_float_dtype)
+        Yi = Yi.to(base_float_dtype)
         # reconstruct complex tensor, merge heads, apply final projection
-        Y = torch.complex(Yr, Yi)          # (B, H, L_q, D)
+        Y = torch.complex(Yr, Yi)         # (B, H, L_q, D)
         Y = self.dropout(Y)                # ComplexDropout on the reconstructed tensor
         Y = _merge_heads(Y, self.h)        # (B, L_q, H*D = d_model)
         Y = self.linear_out(Y)             # (B, L_q, d_model) complex output
@@ -165,31 +190,63 @@ class CMultiHeadedAttention(nn.Module):
         return Y
 
 
+def print_cuda_mem(tag: str = ""):
+    if not torch.cuda.is_available():
+        print(f"[{tag}] CUDA non aavailable")
+        return
+    device = torch.device("cuda:0")
+    alloc = torch.cuda.memory_allocated(device) / 1024**2
+    reserved = torch.cuda.memory_reserved(device) / 1024**2
+    free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+    free = free_bytes / 1024**2
+    total = total_bytes / 1024**2
+    print(
+        f"[{tag}] allocated={alloc:.1f} MB, "
+        f"reserved={reserved:.1f} MB, "
+        f"free={free:.1f} MB / total={total:.1f} MB"
+    )
+
+
 if __name__ == "__main__":
-    # Minimal smoke test for the complex-valued attention module
     torch.manual_seed(0)
-    B, L_q, L_k, d_model, n_head = 2, 12, 12, 32, 4
+    B, L_q, L_k, d_model, n_head = 64, 36, 36, 128, 4
     dropout = 0.1
+
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     attn = CMultiHeadedAttention(
         n_head=n_head,
         n_feat=d_model,
         dropout_rate=dropout,
         is_complex=True,
-    )
+        attention_dtype=torch.bfloat16,  # se vuoi testare bf16
+    ).to(device)
 
     flex_backend = "flex_attention (optimized kernels)" if flex_attention.__module__.startswith(
-            "torch.nn.attention.flex_attention"
+        "torch.nn.attention.flex_attention"
     ) else f"custom callable from {flex_attention.__module__}"
-    print("Attention backend detected:", flex_backend)
+    ok(f"Attention backend detected: {flex_backend}")
 
-    query = torch.randn(B, L_q, d_model, dtype=torch.complex64)
-    key = torch.randn(B, L_k, d_model, dtype=torch.complex64)
-    value = torch.randn(B, L_k, d_model, dtype=torch.complex64)
+    query = torch.randn(B, L_q, d_model, dtype=torch.complex64, device=device)
+    key = torch.randn(B, L_k, d_model, dtype=torch.complex64, device=device)
+    value = torch.randn(B, L_k, d_model, dtype=torch.complex64, device=device)
 
-    mask = torch.ones(B, 1, L_k, dtype=torch.int32)
+    mask = torch.ones(B, 1, L_k, dtype=torch.int32, device=device)
     mask[:, :, -2:] = 0  # mask last two key positions to test padding logic
 
+    # opzionale: pulisci picco precedente
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats(device)
+
+    print_cuda_mem("before attn")
+
     output = attn(query, key, value, mask=mask)
-    print("Output dtype:", output.dtype)
-    print("Output shape:", output.shape)
+
+    print_cuda_mem("after attn")
+    if torch.cuda.is_available():
+        peak_alloc = torch.cuda.max_memory_allocated(device) / 1024**2
+        peak_reserved = torch.cuda.max_memory_reserved(device) / 1024**2
+        print(f"[peak] allocated={peak_alloc:.1f} MB, reserved={peak_reserved:.1f} MB")
+
+    ok(f"Output dtype: {output.dtype}")
+    ok(f"Output shape: {output.shape}")
