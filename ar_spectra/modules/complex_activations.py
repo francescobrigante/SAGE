@@ -245,7 +245,8 @@ class CReLU(nn.Module):
         real = self.relu(z.real)
         imag = self.relu(z.imag)
         return torch.complex(real, imag)
-    
+
+
     
 class CELU(nn.Module):
     """Elementwise ELU on real and imaginary parts.
@@ -264,6 +265,21 @@ class CELU(nn.Module):
             raise TypeError("Cplx_ELU expects complex input.")
         real = self.elu(z.real)
         imag = self.elu(z.imag)
+        return torch.complex(real, imag)
+
+
+class CGLU(nn.Module):
+    """GLU applied separately to the real and imaginary parts."""
+
+    def __init__(self, dim: int = 1):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        if not torch.is_complex(z):
+            raise TypeError("CGLU expects complex input.")
+        real = F.glu(z.real, dim=self.dim)
+        imag = F.glu(z.imag, dim=self.dim)
         return torch.complex(real, imag)
 
 
@@ -335,4 +351,5 @@ __all__ = [
     "CELU",
     "Abs_SiLU",
     "CReLU",
+    "CGLU",
 ]
