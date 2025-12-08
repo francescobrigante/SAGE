@@ -79,6 +79,10 @@ loss_config:
 
     weights: { stft_mse: 1.0, mrstft: 0.2, cosine_phase_loss: 0.15}
 
+  bottleneck:
+    weights:
+      kl: 3e-5
+
 # Legacy fallback controls
 use_json: false
 json_path: null
