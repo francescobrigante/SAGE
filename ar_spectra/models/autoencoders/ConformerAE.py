@@ -11,39 +11,38 @@ from typing import Union
 
 import torch
 from torch import nn
-from models.autoencoders.AbsEncoder import AbsEncoder
-from modules.attention import (
+from ar_spectra.models.autoencoders.AbsEncoder import AbsEncoder
+from ar_spectra.modules.attention import (
     MultiHeadedAttention,  # noqa: H301
     RelPositionMultiHeadedAttention,  # noqa: H301
     LegacyRelPositionMultiHeadedAttention,  # noqa: H301
 )
-from modules.embedding import (
+from ar_spectra.modules.embedding import (
     PositionalEncoding,  # noqa: H301
     ScaledPositionalEncoding,  # noqa: H301
     RelPositionalEncoding,  # noqa: H301
     LegacyRelPositionalEncoding,  # noqa: H301
     IdentityPositionalEncoding,  # noqa: H301
 )
-from modules.layer_norm import LayerNorm
-from modules.multi_layer_conv import Conv1dLinear
-from modules.multi_layer_conv import MultiLayeredConv1d
-from modules.nets_utils import get_activation
-from modules.nets_utils import make_pad_mask
-from modules.positionwise_feed_forward import (
+from ar_spectra.modules.multi_layer_conv import Conv1dLinear
+from ar_spectra.modules.multi_layer_conv import MultiLayeredConv1d
+from ar_spectra.modules.nets_utils import make_pad_mask
+from ar_spectra.modules.positionwise_feed_forward import (
     PositionwiseFeedForward,  # noqa: H301
 )
-from modules.repeat import repeat
-from modules.subsampling import Conv2dSubsampling
-from modules.subsampling import Conv2dSubsampling2
-from modules.subsampling import Conv2dSubsampling6
-from modules.subsampling import Conv2dSubsampling8
-from modules.subsampling import TooShortUttError
-from modules.subsampling import check_short_utt
-from modules.subsampling import Conv2dSubsamplingPad
-from modules.subsampling import Conv1dSubsampling2
+from ar_spectra.modules.repeat import repeat
+from ar_spectra.modules.subsampling import Conv2dSubsampling
+from ar_spectra.modules.subsampling import Conv2dSubsampling2
+from ar_spectra.modules.subsampling import Conv2dSubsampling6
+from ar_spectra.modules.subsampling import Conv2dSubsampling8
+from ar_spectra.modules.subsampling import TooShortUttError
+from ar_spectra.modules.subsampling import check_short_utt
+from ar_spectra.modules.subsampling import Conv2dSubsamplingPad
+from ar_spectra.modules.subsampling import Conv1dSubsampling2
 from torch.nn import functional as F
-from ar_spectra.modules.normed_modules.conv import SConv1d, SConv2d
-from ar_spectra.modules.normed_modules.conv import SConvTranspose1d, SConvTranspose2d, NormLinear
+from ar_spectra.modules.cplx_dropout import ComplexDropout
+from ar_spectra.modules.normed_modules.norm import ComplexLayerNorm, ComplexBatchNorm1d
+from ar_spectra.modules.normed_modules.conv import NormConv1d, NormLinear
 from ar_spectra.modules.activations import get_activation, _build_activation
 from rich.console import Console
 console = Console()
@@ -60,6 +59,7 @@ def err(msg: str) -> None:
     console.print(msg, style="bold red")
     
 
+
 class ConvolutionModule(nn.Module):
     """ConvolutionModule in Conformer model.
 
@@ -69,21 +69,23 @@ class ConvolutionModule(nn.Module):
 
     """
 
-    def __init__(self, channels, kernel_size, activation=nn.ReLU(), bias=True):
+    def __init__(self, channels, kernel_size, activation=None, bias=True):
         """Construct an ConvolutionModule object."""
         super(ConvolutionModule, self).__init__()
         # kernerl_size should be a odd number for 'SAME' padding
         assert (kernel_size - 1) % 2 == 0
 
-        self.pointwise_conv1 = nn.Conv1d(
+        self.pointwise_conv1 = NormConv1d(
             channels,
             2 * channels,
             kernel_size=1,
             stride=1,
             padding=0,
             bias=bias,
+            norm='none',
+            is_complex=True,
         )
-        self.depthwise_conv = nn.Conv1d(
+        self.depthwise_conv = NormConv1d(
             channels,
             channels,
             kernel_size,
@@ -91,17 +93,22 @@ class ConvolutionModule(nn.Module):
             padding=(kernel_size - 1) // 2,
             groups=channels,
             bias=bias,
+            norm='none',
+            is_complex=True,
         )
-        self.norm = nn.BatchNorm1d(channels)
-        self.pointwise_conv2 = nn.Conv1d(
+        self.norm = ComplexBatchNorm1d(channels)
+        self.pointwise_conv2 = NormConv1d(
             channels,
             channels,
             kernel_size=1,
             stride=1,
             padding=0,
             bias=bias,
+            norm='none',
+            is_complex=True,
         )
-        self.activation = activation
+        self.activation = activation if activation is not None else nn.Identity()
+        self.glu = get_activation("glu", is_complex=True, channels=channels)
 
     def forward(self, x):
         """Compute convolution module.
@@ -117,8 +124,7 @@ class ConvolutionModule(nn.Module):
         x = x.transpose(1, 2)
 
         # GLU mechanism
-        x = self.pointwise_conv1(x)  # (batch, 2*channel, dim)
-        x = nn.functional.glu(x, dim=1)  # (batch, channel, dim)
+        x = self.glu(self.pointwise_conv1(x))
 
         # 1D Depthwise Conv
         x = self.depthwise_conv(x)
@@ -174,22 +180,22 @@ class EncoderLayer(nn.Module):
         self.feed_forward = feed_forward
         self.feed_forward_macaron = feed_forward_macaron
         self.conv_module = conv_module
-        self.norm_ff = LayerNorm(size)  # for the FNN module
-        self.norm_mha = LayerNorm(size)  # for the MHA module
+        self.norm_ff = ComplexLayerNorm(size)  # for the FNN module
+        self.norm_mha = ComplexLayerNorm(size)  # for the MHA module
         if feed_forward_macaron is not None:
-            self.norm_ff_macaron = LayerNorm(size)
+            self.norm_ff_macaron = ComplexLayerNorm(size)
             self.ff_scale = 0.5
         else:
             self.ff_scale = 1.0
         if self.conv_module is not None:
-            self.norm_conv = LayerNorm(size)  # for the CNN module
-            self.norm_final = LayerNorm(size)  # for the final output of the block
-        self.dropout = nn.Dropout(dropout_rate)
+            self.norm_conv = ComplexLayerNorm(size)  # for the CNN module
+            self.norm_final = ComplexLayerNorm(size)  # for the final output of the block
+        self.dropout = ComplexDropout(dropout_rate)
         self.size = size
         self.normalize_before = normalize_before
         self.concat_after = concat_after
         if self.concat_after:
-            self.concat_linear = nn.Linear(size + size, size)
+            self.concat_linear = NormLinear(size + size, size, norm='none', is_complex=True)
         self.stochastic_depth_rate = stochastic_depth_rate
 
     def forward(self, x_input, mask, cache=None):
@@ -372,7 +378,7 @@ class ConformerEncoder(AbsEncoder):
         else:
             raise ValueError("unknown rel_pos_type: " + rel_pos_type)
 
-        activation = get_activation(activation_type)
+        activation = get_activation(activation_type, is_complex=True, channels=output_size)
         if pos_enc_layer_type == "abs_pos":
             pos_enc_class = PositionalEncoding
         elif pos_enc_layer_type == "scaled_abs_pos":
@@ -392,9 +398,9 @@ class ConformerEncoder(AbsEncoder):
             
         if input_layer == "linear":
             self.embed = torch.nn.Sequential(
-                torch.nn.Linear(input_size, output_size),
-                torch.nn.LayerNorm(output_size),
-                torch.nn.Dropout(dropout_rate),
+                NormLinear(input_size, output_size, norm='none', is_complex=True),
+                ComplexLayerNorm(output_size),
+                ComplexDropout(dropout_rate),
                 pos_enc_class(output_size, positional_dropout_rate),
             )
         elif input_layer == "conv1d2":
@@ -540,7 +546,7 @@ class ConformerEncoder(AbsEncoder):
             ),
         )
         if self.normalize_before:
-            self.after_norm = LayerNorm(output_size)
+            self.after_norm = ComplexLayerNorm(output_size)
 
         self.interctc_layer_idx = interctc_layer_idx
         if len(interctc_layer_idx) > 0:
@@ -630,4 +636,3 @@ class ConformerEncoder(AbsEncoder):
         if len(intermediate_outs) > 0:
             return (xs_pad, intermediate_outs), olens, None
         return xs_pad, olens, None
-
