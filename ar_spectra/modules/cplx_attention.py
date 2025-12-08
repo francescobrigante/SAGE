@@ -102,7 +102,7 @@ class CMultiHeadedAttention(nn.Module):
         k = k.transpose(1, 2)  # (B, H, L_k, D_k)
         v = v.transpose(1, 2)  # (B, H, L_k, D_k)
         return q, k, v
-        
+
 
     def forward(
         self,
@@ -161,5 +161,35 @@ class CMultiHeadedAttention(nn.Module):
         Y = self.dropout(Y)                # ComplexDropout on the reconstructed tensor
         Y = _merge_heads(Y, self.h)        # (B, L_q, H*D = d_model)
         Y = self.linear_out(Y)             # (B, L_q, d_model) complex output
-
+        
         return Y
+
+
+if __name__ == "__main__":
+    # Minimal smoke test for the complex-valued attention module
+    torch.manual_seed(0)
+    B, L_q, L_k, d_model, n_head = 2, 12, 12, 32, 4
+    dropout = 0.1
+
+    attn = CMultiHeadedAttention(
+        n_head=n_head,
+        n_feat=d_model,
+        dropout_rate=dropout,
+        is_complex=True,
+    )
+
+    flex_backend = "flex_attention (optimized kernels)" if flex_attention.__module__.startswith(
+            "torch.nn.attention.flex_attention"
+    ) else f"custom callable from {flex_attention.__module__}"
+    print("Attention backend detected:", flex_backend)
+
+    query = torch.randn(B, L_q, d_model, dtype=torch.complex64)
+    key = torch.randn(B, L_k, d_model, dtype=torch.complex64)
+    value = torch.randn(B, L_k, d_model, dtype=torch.complex64)
+
+    mask = torch.ones(B, 1, L_k, dtype=torch.int32)
+    mask[:, :, -2:] = 0  # mask last two key positions to test padding logic
+
+    output = attn(query, key, value, mask=mask)
+    print("Output dtype:", output.dtype)
+    print("Output shape:", output.shape)

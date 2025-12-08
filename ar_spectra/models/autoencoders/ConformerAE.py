@@ -22,6 +22,7 @@ from modules.embedding import (
     ScaledPositionalEncoding,  # noqa: H301
     RelPositionalEncoding,  # noqa: H301
     LegacyRelPositionalEncoding,  # noqa: H301
+    IdentityPositionalEncoding,  # noqa: H301
 )
 from modules.layer_norm import LayerNorm
 from modules.multi_layer_conv import Conv1dLinear
@@ -44,6 +45,20 @@ from torch.nn import functional as F
 from ar_spectra.modules.normed_modules.conv import SConv1d, SConv2d
 from ar_spectra.modules.normed_modules.conv import SConvTranspose1d, SConvTranspose2d, NormLinear
 from ar_spectra.modules.activations import get_activation, _build_activation
+from rich.console import Console
+console = Console()
+
+def ok(msg: str) -> None:
+    console.print(msg, style="bold green")
+
+
+def warn(msg: str) -> None:
+    console.print(msg, style="bold yellow")
+
+
+def err(msg: str) -> None:
+    console.print(msg, style="bold red")
+    
 
 class ConvolutionModule(nn.Module):
     """ConvolutionModule in Conformer model.
@@ -372,8 +387,9 @@ class ConformerEncoder(AbsEncoder):
                 "Using legacy_rel_pos and it will be deprecated in the future."
             )
         else:
-            raise ValueError("unknown pos_enc_layer: " + pos_enc_layer_type)
-
+            pos_enc_class = IdentityPositionalEncoding
+            warn("Using IdentityPositionalEncoding as pos_enc_layer_type is unknown.")
+            
         if input_layer == "linear":
             self.embed = torch.nn.Sequential(
                 torch.nn.Linear(input_size, output_size),
