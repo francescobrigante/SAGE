@@ -8,6 +8,7 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 from typing import Union
+from collections.abc import Sequence
 
 import torch
 from torch import nn
@@ -60,9 +61,12 @@ def err(msg: str) -> None:
 # helpers
 
 def pair(t):
-    return t if isinstance(t, tuple) else (t, t)
+    if isinstance(t, Sequence) and not isinstance(t, (str, bytes)):
+        if len(t) != 2:
+            raise ValueError("pair expects a scalar or a length-2 sequence")
+        return tuple(t)
+    return (t, t)
 
-# classes
 
 class FeedForward(Module):
     def __init__(self, dim, hidden_dim, dropout = 0., is_complex=True):
@@ -81,7 +85,7 @@ class FeedForward(Module):
         return self.net(x)
 
 class Transformer(Module):
-    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.):
+    def __init__(self, dim, depth, heads, mlp_dim, dropout = 0.):
         super().__init__()
         self.norm = ComplexLayerNorm(dim)
         self.layers = ModuleList([])
@@ -99,10 +103,49 @@ class Transformer(Module):
 
         return self.norm(x)
 
-class ViT(Module):
-    def __init__(self, *, image_size, patch_size,  
-                 dim, depth, heads, mlp_dim, pool = 'none', channels = 3, 
-                 dim_head = 64, dropout = 0., emb_dropout = 0., positional_encoding: str = "none"):
+class ViTEncoder(Module):
+    """Complex-valued Vision Transformer encoder for spectrogram patches.
+
+    The encoder slices an input spectrogram into possibly rectangular patches, projects
+    them into a latent embedding space, optionally adds a learnable CLS token, applies
+    a configurable positional encoding, and processes the resulting sequence with a
+    stack of `Transformer` layers backed by complex-valued attention. It can return
+    the entire token sequence (for reconstruction tasks) or a pooled representation
+    (CLS or mean) for downstream classifiers.
+
+    Args:
+        image_size (Union[int, Tuple[int, int]]): Spectrogram size expressed either
+            as a single integer (square) or a tuple `(time, frequency)`.
+        patch_size (Union[int, Tuple[int, int]]): Patch size, same semantics as
+            `image_size`; rectangular patches are supported when a tuple is used.
+        dim (int): Embedding dimensionality of each patch token.
+        depth (int): Number of stacked Transformer layers.
+        heads (int): Number of attention heads per Transformer block.
+        mlp_dim (int): Hidden dimensionality of the feed-forward sublayers.
+        pool (str): One of `{'cls','mean','none'}` selecting the pooling strategy.
+        channels (int): Number of complex-valued channels in the input spectrogram.
+        dropout (float): Dropout probability applied within attention/MLP blocks.
+        emb_dropout (float): Dropout probability applied after positional encoding.
+        positional_encoding (str): `"none"`, `"identity"`, or `"learned"` selecting
+            which positional encoding strategy to apply to the token sequence.
+    """
+
+    def __init__(
+        self,
+        *,
+        image_size: Union[int, Tuple[int, int]],
+        patch_size: Union[int, Tuple[int, int]],
+        dim: int,
+        depth: int,
+        heads: int,
+        mlp_dim: int,
+        pool: str = 'none',
+        channels: int = 3,
+        dropout: float = 0.0,
+        emb_dropout: float = 0.0,
+        positional_encoding: str = "none",
+        input_size: Optional[Tuple[int, int]] = None,
+    ):
         super().__init__()
         image_height, image_width = pair(image_size)
         self.patch_size = pair(patch_size)
@@ -134,7 +177,7 @@ class ViT(Module):
 
         self.dropout = ComplexDropout(emb_dropout)
 
-        self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+        self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
         self.positional_encoding = positional_encoding.lower()
         allowed_positional_encodings = {"none", "identity", "learned"}
         if self.positional_encoding not in allowed_positional_encodings:
@@ -147,7 +190,7 @@ class ViT(Module):
 
         self.pool = pool
 
-    def forward(self, img):
+    def forward(self, img: torch.Tensor) -> torch.Tensor:
         batch = img.shape[0]
         patches = self.unfold(img)
         x = patches.transpose(1, 2)
@@ -180,24 +223,46 @@ class ViT(Module):
 
 
 class ViTDecoder(Module):
+    """Transformer-based inverse of the complex ViT encoder.
+
+    The decoder expects the same number of tokens produced by the encoder, enriches
+    them with positional information, refines them with a `Transformer` stack, and
+    projects each token back to its corresponding spectrogram patch before folding
+    the sequence into the original time–frequency layout.
+
+    Args:
+        image_size (Union[int, Tuple[int, int]]): Output spectrogram size, mirroring
+            the encoder's `image_size`.
+        patch_size (Union[int, Tuple[int, int]]): Patch geometry used during encoding
+            and decoding.
+        dim (int): Dimensionality of incoming token embeddings.
+        channels (int): Number of channels to reconstruct (e.g., magnitude/phase).
+        depth (int): Number of Transformer blocks applied in the decoder.
+        heads (int): Number of attention heads inside each decoder block.
+        mlp_dim (int): Hidden size of decoder feed-forward sublayers.
+        dropout (float): Dropout probability inside decoder attention/MLP blocks.
+        positional_encoding (str): `"none"`, `"identity"`, or `"learned"` positional
+            encoding applied to decoder tokens prior to the Transformer stack.
+    """
+
     def __init__(
         self,
         *,
-        image_size,
-        patch_size,
-        dim,
-        channels,
-        depth,
-        heads,
-        mlp_dim,
-        dim_head=64,
-        dropout=0.0,
+        image_size: Union[int, Tuple[int, int]],
+        patch_size: Union[int, Tuple[int, int]],
+        channels: int,
+        depth: int,
+        heads: int,
+        mlp_dim: int,
+        dropout: float = 0.0,
         positional_encoding: str = "none",
+        input_size: Optional[Tuple[int, int]] = None,
     ):
         super().__init__()
         self.image_size = pair(image_size)
         self.patch_size = pair(patch_size)
         self.channels = channels
+        self.input_size = input_size
 
         img_h, img_w = self.image_size
         patch_h, patch_w = self.patch_size
@@ -207,8 +272,8 @@ class ViTDecoder(Module):
         patch_dim = channels * patch_h * patch_w
 
         self.to_patch = nn.Sequential(
-            ComplexLayerNorm(dim),
-            NormLinear(dim, patch_dim, is_complex=True, norm="none"),
+            ComplexLayerNorm(input_size),
+            NormLinear(input_size, patch_dim, is_complex=True, norm="none"),
             ComplexLayerNorm(patch_dim),
         )
         self.fold = nn.Fold(
@@ -216,7 +281,7 @@ class ViTDecoder(Module):
             kernel_size=self.patch_size,
             stride=self.patch_size,
         )
-        self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+        self.transformer = Transformer(input_size, depth, heads, mlp_dim, dropout)
 
         self.positional_encoding = positional_encoding.lower()
         allowed_positional_encodings = {"none", "identity", "learned"}
@@ -226,11 +291,11 @@ class ViTDecoder(Module):
                 f"Unsupported decoder positional encoding '{positional_encoding}'. Valid options: {valid_options}, defaulting to 'none'."
             )
             self.positional_encoding = "none"
-        self.identity_pos_enc = IdentityPositionalEncoding(d_model=dim)
+        self.identity_pos_enc = IdentityPositionalEncoding(d_model=input_size)
         self.pos_embedding = None
         if self.positional_encoding == "learned":
             self.pos_embedding = nn.Parameter(
-                torch.randn(self.num_patches, dim, dtype=torch.complex64)
+                torch.randn(self.num_patches, input_size, dtype=torch.complex64)
             )
 
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
@@ -263,38 +328,37 @@ class ViTDecoder(Module):
 
 if __name__ == "__main__":
     torch.manual_seed(0)
-    vit = ViT(
-        image_size=(32, 64),
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    ok(f"Using device: {device}")
+    vit = ViTEncoder(
+        image_size=(1024, 64),
         patch_size=(4, 8),
         dim=64,
-        depth=2,
-        heads=4,
-        mlp_dim=64,
+        depth=6,
+        heads=8,
+        mlp_dim=512,
         pool='none',
         channels=2,
         dropout=0.1,
         emb_dropout=0.1,
         positional_encoding="learned",
-    )
-    dummy = torch.randn(2, 2, 32, 64, dtype=torch.complex64)
+    ).to(device)
+    dummy = torch.randn(2, 2, 1024, 64, dtype=torch.complex64).to(device)
+    ok(f"Input shape: {dummy.shape}")
     output = vit(dummy)
     ok(f"Encoder output shape (tokens): {output.shape}")
 
     decoder = ViTDecoder(
-        image_size=(32, 64),
+        image_size=(1024, 64),
         patch_size=(4, 8),
-        dim=64,
+        input_size=64,
         channels=2,
-        depth=2,
-        heads=4,
+        depth=6,
+        heads=8,
         mlp_dim=64,
         dropout=0.1,
         positional_encoding="learned",
-    )
+    ).to(device)
 
-    random_tokens = torch.randn(16, 1025, 64, dtype=torch.complex64)
-    random_recon = decoder(random_tokens)
-    ok(f"Decoder-alone reconstruction shape: {random_recon.shape}")
-
-    recon = decoder(output)
+    recon = decoder(output).to(device)
     ok(f"End-to-end reconstruction shape: {recon.shape}")
