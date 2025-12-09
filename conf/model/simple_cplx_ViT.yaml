@@ -1,0 +1,42 @@
+# Model configuration (encoder/decoder/bottleneck) 
+model:
+  autoencoder:
+    return_latent: false
+    # Spectrogram normalization applied at encoder input and inverted at decoder output
+    pre_transform:
+      type: power_norm     # none | log_mag | power_norm
+      apply_target: true   # set apply_target: true to apply the normalization also to the target spectrograms
+      apply_inverse: true # set apply_inverse: false to apply the normalization only before the encoder
+      config:
+        eps: 1.0e-8
+        alpha: 0.65
+        beta: 0.35
+
+  encoder:
+    class: ar_spectra.models.autoencoders.simple_cplx_ViT.ViTEncoder
+    kwargs:
+      input_size: "auto"           # will be patched at runtime
+      dim: 64
+      image_size: [1024, 64]
+      patch_size: [4, 8]
+      mlp_dim: 512
+      depth: 6
+      heads: 8
+      dropout: 0.1
+
+
+  decoder:
+    class: ar_spectra.models.autoencoders.simple_cplx_ViT.ViTDecoder
+    kwargs:
+      channels: "auto"             # will be patched at runtime
+      input_size: 64
+      image_size: [1024, 64]
+      patch_size: [4, 8]
+      mlp_dim: 512
+      depth: 6
+      heads: 8
+      dropout: 0.1
+
+  bottleneck:
+    class: ar_spectra.models.bottlenecks.VAEBottleneck
+    skip_bottleneck: false
