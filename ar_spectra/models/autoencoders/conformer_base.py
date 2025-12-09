@@ -70,7 +70,8 @@ class ConvolutionModule(nn.Module):
 
     """
 
-    def __init__(self, channels, kernel_size, activation=None, bias=True, is_complex=True):
+    def __init__(self, channels, kernel_size, activation: str | None =None, 
+                 bias=True, is_complex=True):
         """Construct an ConvolutionModule object."""
         super(ConvolutionModule, self).__init__()
         # kernerl_size should be a odd number for 'SAME' padding
