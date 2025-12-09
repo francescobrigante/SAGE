@@ -140,15 +140,76 @@ class ViTEncoder(nn.Module):
         else:
             raise TypeError(f"Unknown input layer type {vit_input_layer}.")
 
+        self._patch_kernel = tuple(self.vit_input_layer.patch_fn.kernel_size)
+        self._patch_stride = tuple(self.vit_input_layer.patch_fn.stride)
+        self._conv_downsample_factor = 4  # two stride-2 convolutions along time
+        self._freq_patch_count = self._compute_freq_patch_count(self.input_size)
+
         self.sequence_model = None
         if sequence_model_type == "conformer":
-            from ar_spectra.models.autoencoders.ConformerAE import ConformerEncoder
+            from ar_spectra.models.autoencoders.conformer_base import ConformerEncoder
             self.sequence_model = ConformerEncoder(
                 input_size=output_size,
                 **kwargs,
             )
             
-            
+    def forward(self, x, ilens=None, ctc=None):
+        if x.dim() != 3:
+            raise ValueError(f"Expected 3D tensor (batch, time, freq), got {x.shape} instead.")
+
+        batch, time_steps, _ = x.shape
+        device = x.device
+        if ilens is None:
+            ilens = torch.full((batch,), time_steps, dtype=torch.long, device=device)
+        else:
+            if ilens.dim() != 1 or ilens.size(0) != batch:
+                raise ValueError(
+                    f"ilens must be 1D with length {batch}, got {tuple(ilens.shape)} instead."
+                )
+            ilens = ilens.to(device=device, dtype=torch.long)
+
+        vit_tokens = self.vit_input_layer(x)
+        projected_ilens = self._project_lengths(ilens)
+
+        if self.sequence_model is None:
+            return vit_tokens, projected_ilens, None
+
+        return self.sequence_model(
+            vit_tokens,
+            ilens=projected_ilens,
+            prev_states=None,
+            ctc=ctc,
+        )
+
+    def _project_lengths(self, lengths: torch.Tensor) -> torch.Tensor:
+        """Map original time lengths to patch sequence lengths."""
+        if lengths.numel() == 0:
+            return lengths
+
+        reduced = (lengths + (self._conv_downsample_factor - 1)) // self._conv_downsample_factor
+
+        patch_time, patch_freq = self._patch_kernel
+        stride_time, _ = self._patch_stride
+
+        time_tokens = torch.zeros_like(reduced)
+        valid = reduced >= patch_time
+        if valid.any():
+            time_tokens_valid = ((reduced[valid] - patch_time) // stride_time) + 1
+            time_tokens[valid] = time_tokens_valid
+
+        return time_tokens * self._freq_patch_count
+
+    def _compute_freq_patch_count(self, freq_bins: int) -> int:
+        freq_reduced = (freq_bins + (self._conv_downsample_factor - 1)) // self._conv_downsample_factor
+
+        patch_freq = self._patch_kernel[1]
+        stride_freq = self._patch_stride[1]
+        if freq_reduced < patch_freq:
+            raise ValueError(
+                err(f"Patch frequency size {patch_freq} is larger than reduced freq dimension {freq_reduced}.")
+            )
+        return ((freq_reduced - patch_freq) // stride_freq) + 1
+    
 if __name__ == "__main__":
     torch.manual_seed(0)
     device = "cuda" if torch.cuda.is_available() else "cpu"
