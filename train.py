@@ -54,15 +54,6 @@ def _max_pinnable_mb() -> int:
             break
     return last_ok
 
-def _sample_size_bytes(dataset) -> int:
-    # Estimate item size by reading a single sample (S, W)
-    try:
-        s0, w0 = dataset[0]
-        return s0.numel() * s0.element_size() + w0.numel() * w0.element_size()
-    except Exception as e:
-        warn(f"Could not estimate item size from dataset[0] ({type(e).__name__}: {e}); falling back to 0.")
-        return 0
-
 def _parse_pin_flag(value):
     # Accept bools or strings: "auto"|"true"|"false"
     if isinstance(value, bool):
@@ -78,42 +69,6 @@ def _parse_pin_flag(value):
     # default to auto if unspecified
     return "auto"
 
-def _decide_pin_memory(requested, dataset, batch_size, num_workers: int = 0, prefetch_factor: int = None) -> bool:
-    req = _parse_pin_flag(requested)
-    if req is True or req is False:
-        info(f"pin_memory set from config: {req}")
-        return bool(req)
-    # auto mode
-    if not torch.cuda.is_available():
-        info("CUDA not available; pin_memory disabled.")
-        return False
-
-    pinnable_mb = _max_pinnable_mb()
-    item_bytes = _sample_size_bytes(dataset)
-    if item_bytes <= 0:
-        warn("Could not estimate item size; enabling pin_memory conservatively.")
-        return True
-
-    batch_mb = (item_bytes * batch_size) / (1024 * 1024)
-    if num_workers > 0:
-        pf = prefetch_factor if (prefetch_factor is not None) else 2  # default PyTorch
-        pinned_batches = (num_workers * pf) + 2
-    else:
-        pf = None
-        pinned_batches = 1
-
-    effective_mb = batch_mb * pinned_batches
-    use_pin = effective_mb <= pinnable_mb
-    msg = ("enabled" if use_pin else "disabled")
-    if pf is None:
-        info(f"Auto pin_memory {msg}: batch≈{batch_mb:.2f} MB, pipelined_batches≈{pinned_batches}, "
-             f"effective≈{effective_mb:.2f} MB, pinnable≈{pinnable_mb} MB")
-    else:
-        info(f"Auto pin_memory {msg}: batch≈{batch_mb:.2f} MB, pipelined_batches≈{pinned_batches} "
-             f"(workers={num_workers}, prefetch={pf}), effective≈{effective_mb:.2f} MB, "
-             f"pinnable≈{pinnable_mb} MB")
-    return use_pin
-# --- End auto pin-memory helpers ---
 
 def load_json(path: str):
     with open(path, "r") as f:
@@ -257,6 +212,68 @@ class ModelInfoLogger(pl.Callback):
                     run.save(str(out_path), base_path=str(base_dir))
             except Exception as e:
                 warn(f"ModelInfoLogger: W&B log skipped ({type(e).__name__}: {e})")
+
+
+class NaNDetector(pl.Callback):
+    """Abort training as soon as non-finite tensors are detected."""
+
+    def __init__(
+        self,
+        *,
+        check_inputs: bool = False,
+        check_outputs: bool = True,
+        check_gradients: bool = True,
+        check_parameters: bool = False,
+        every_n_steps: int = 1,
+    ) -> None:
+        super().__init__()
+        self.check_inputs = bool(check_inputs)
+        self.check_outputs = bool(check_outputs)
+        self.check_gradients = bool(check_gradients)
+        self.check_parameters = bool(check_parameters)
+        self.every_n_steps = max(int(every_n_steps), 1)
+
+    def _should_check(self, trainer: Trainer) -> bool:
+        step = int(getattr(trainer, "global_step", 0))
+        return (step % self.every_n_steps) == 0
+
+    def _scan_tensors(self, payload, label: str) -> None:
+        if payload is None:
+            return
+        if isinstance(payload, torch.Tensor):
+            if not torch.isfinite(payload).all():
+                raise RuntimeError(f"Detected non-finite values in {label} (shape={tuple(payload.shape)}, dtype={payload.dtype})")
+            return
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                self._scan_tensors(value, f"{label}.{key}")
+            return
+        if isinstance(payload, (list, tuple)):
+            for idx, value in enumerate(payload):
+                self._scan_tensors(value, f"{label}[{idx}]")
+
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+        if self.check_inputs and self._should_check(trainer):
+            self._scan_tensors(batch, "train_batch")
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        if self.check_outputs and self._should_check(trainer):
+            self._scan_tensors(outputs, "train_outputs")
+
+    def on_after_backward(self, trainer, pl_module):
+        if not self._should_check(trainer):
+            return
+        if self.check_gradients:
+            for name, param in pl_module.named_parameters():
+                grad = getattr(param, "grad", None)
+                if grad is None:
+                    continue
+                if not torch.isfinite(grad).all():
+                    raise RuntimeError(f"Detected non-finite gradient in {name} (shape={tuple(grad.shape)})")
+        if self.check_parameters:
+            for name, param in pl_module.named_parameters():
+                if not torch.isfinite(param).all():
+                    raise RuntimeError(f"Detected non-finite parameter tensor in {name} (shape={tuple(param.shape)})")
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig):
@@ -409,6 +426,18 @@ def main(cfg: DictConfig):
         TQDMProgressBar(refresh_rate=1),
         DatasetEpochSetter(train_ds),
     ]
+
+    nan_cfg = (cfg.get("trainer", {}) or {}).get("NaNDetector", {}) or {}
+    if bool(nan_cfg.get("enable", False)):
+        callbacks.append(
+            NaNDetector(
+                check_inputs=nan_cfg.get("check_inputs", False),
+                check_outputs=nan_cfg.get("check_outputs", True),
+                check_gradients=nan_cfg.get("check_gradients", True),
+                check_parameters=nan_cfg.get("check_parameters", False),
+                every_n_steps=int(nan_cfg.get("every_n_steps", 1) or 1),
+            )
+        )
 
     # Optional validation demo callback
     demo_cfg = cfg.get("demo", {}) or {}
