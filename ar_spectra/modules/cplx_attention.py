@@ -93,7 +93,7 @@ class CMultiHeadedAttention(nn.Module):
 
     def __init__(self, n_head, n_feat, dropout_rate, is_complex: bool = True, 
                  attention_dtype: Optional[torch.dtype] = torch.float32,
-                 use_attn_dtype: Optional[bool] = False):
+                 use_attn_dtype: Optional[bool] = False, bias: bool = True):
         super().__init__()
         self.h = n_head
         self.dropout_rate = dropout_rate
@@ -104,10 +104,10 @@ class CMultiHeadedAttention(nn.Module):
         self.atten_dtype = attention_dtype
 
         
-        self.linear_q = NormLinear(n_feat, n_feat, is_complex=is_complex)
-        self.linear_k = NormLinear(n_feat, n_feat, is_complex=is_complex)
-        self.linear_v = NormLinear(n_feat, n_feat, is_complex=is_complex)
-        self.linear_out = NormLinear(n_feat, n_feat, is_complex=is_complex)
+        self.linear_q = NormLinear(n_feat, n_feat, is_complex=is_complex, bias=bias, norm="none")
+        self.linear_k = NormLinear(n_feat, n_feat, is_complex=is_complex, bias=bias, norm="none")
+        self.linear_v = NormLinear(n_feat, n_feat, is_complex=is_complex, bias=bias, norm="none")
+        self.linear_out = NormLinear(n_feat, n_feat, is_complex=is_complex, bias=bias, norm="none")
         self.dropout = ComplexDropout(p=dropout_rate)
         
     def forward_qkv(self, query, key, value):
