@@ -9,7 +9,6 @@ from typing import Optional
 from typing import Tuple
 from typing import Union
 from collections.abc import Sequence
-
 import torch
 from torch import nn
 from ar_spectra.models.autoencoders.AbsEncoder import AbsEncoder
@@ -43,7 +42,10 @@ from ar_spectra.modules.subsampling import Conv1dSubsampling2
 from torch.nn import functional as F
 from ar_spectra.modules.cplx_dropout import ComplexDropout
 from ar_spectra.modules.normed_modules.norm import ComplexLayerNorm, ComplexBatchNorm1d
-from ar_spectra.modules.normed_modules.conv import NormConv1d, NormLinear
+from ar_spectra.modules.normed_modules.conv import (
+    NormConv1d, NormLinear, NormConv2d, NormConvTranspose1d, NormConvTranspose2d,
+    SConv2d, SConvTranspose2d,
+)
 from ar_spectra.modules.activations import get_activation, _build_activation
 from rich.console import Console
 console = Console()
@@ -58,7 +60,7 @@ def warn(msg: str) -> None:
 
 def err(msg: str) -> None:
     console.print(msg, style="bold red")
-# helpers
+
 
 def pair(t):
     if isinstance(t, Sequence) and not isinstance(t, (str, bytes)):
@@ -96,10 +98,14 @@ class Transformer(Module):
                 FeedForward(dim, mlp_dim, dropout = dropout)
             ]))
 
-    def forward(self, x, mask: Optional[torch.Tensor] = None):
+    def forward(self, x, mask: Optional[torch.Tensor] = None, debug: bool = False):
         for attn, ff in self.layers:
             x = attn(query=x, key=x, value=x, mask=mask) + x
+
             x = ff(x) + x
+
+        if debug:
+            print(f"Transformer output shape (B, L, dim): {x.shape}")
 
         return self.norm(x)
 
@@ -130,7 +136,7 @@ class ViTEncoder(Module):
             which positional encoding strategy to apply to the token sequence.
     """
 
-    def __init__(
+    def __init__(  # type: ignore[override]
         self,
         *,
         image_size: Union[int, Tuple[int, int]],
@@ -139,22 +145,27 @@ class ViTEncoder(Module):
         depth: int,
         heads: int,
         mlp_dim: int,
-        pool: str = 'none',
-        channels: int = 3,
+        pool: str = "none",
         dropout: float = 0.0,
         emb_dropout: float = 0.0,
         positional_encoding: str = "none",
-        input_size: Optional[Tuple[int, int]] = None,
+        input_size: Optional[Union[int, Tuple[int, int]]] = None,
+        is_complex: bool = True,
+        use_pre_conv: bool = True,
+        pre_conv_kernel: Union[int, Tuple[int, int]] = (3, 3),
+        pre_conv_stride: Union[int, Tuple[int, int]] = 1,
     ):
         super().__init__()
         image_height, image_width = pair(image_size)
+        self.image_size = (image_height, image_width)
         self.patch_size = pair(patch_size)
         patch_height, patch_width = self.patch_size
 
         assert image_height % patch_height == 0 and image_width % patch_width == 0, 'Image dimensions must be divisible by the patch size.'
 
         num_patches = (image_height // patch_height) * (image_width // patch_width)
-        patch_dim = channels * patch_height * patch_width
+        self.channels = input_size
+        patch_dim = self.channels * patch_height * patch_width
 
         assert pool in {'cls', 'mean', 'none'}, "pool must be one of {'cls', 'mean', 'none'}"
         num_cls_tokens = 1 if pool == 'cls' else 0
@@ -189,9 +200,32 @@ class ViTEncoder(Module):
         self.identity_pos_enc = IdentityPositionalEncoding(d_model=dim)
 
         self.pool = pool
+        self._trim_warned = False
 
-    def forward(self, img: torch.Tensor) -> torch.Tensor:
+        self.pre_patch_conv = (
+            SConv2d(
+                in_channels=self.channels,
+                out_channels=self.channels,
+                kernel_size=pre_conv_kernel,
+                stride=pre_conv_stride,
+                norm="weight_norm",
+                is_complex=True,
+            )
+            if use_pre_conv
+            else nn.Identity()
+        )
+
+    def forward(self, img: torch.Tensor, debug: bool = False) -> torch.Tensor:
         batch = img.shape[0]
+        img = self.pre_patch_conv(img)
+        if debug:
+            print(f"Post-pre-conv input shape (B, C, F, T): {img.shape}")
+
+        if img.shape[1] != self.channels:
+            raise ValueError(
+                f"Expected {self.channels} input channels but received {img.shape[1]}. "
+                "Set encoder.channels explicitly if your dataset differs."
+            )
         patches = self.unfold(img)
         x = patches.transpose(1, 2)
         x = self.to_patch_embedding(x)
@@ -204,11 +238,15 @@ class ViTEncoder(Module):
         x = self.dropout(x)
 
         x = self.transformer(x)
-
+        x = x.reshape(batch, -1, x.shape[-2]) # (B, L, dim) -> (B, dim, L)
+        if debug:
+            print(f"Reshaped output shape (B, dim, L): {x.shape}")
         if self.pool == 'cls' and self.cls_token is not None:
             return x[:, 0]
         if self.pool == 'mean':
             return x.mean(dim=1)
+        
+        
         return x
 
     def _apply_positional_encoding(self, x: torch.Tensor) -> torch.Tensor:
@@ -245,7 +283,7 @@ class ViTDecoder(Module):
             encoding applied to decoder tokens prior to the Transformer stack.
     """
 
-    def __init__(
+    def __init__(  # type: ignore[override]
         self,
         *,
         image_size: Union[int, Tuple[int, int]],
@@ -257,6 +295,11 @@ class ViTDecoder(Module):
         dropout: float = 0.0,
         positional_encoding: str = "none",
         input_size: Optional[Tuple[int, int]] = None,
+        is_complex: bool = True,
+        use_post_conv: bool = True,
+        post_conv_kernel: Union[int, Tuple[int, int]] = (3, 3),
+        post_conv_stride: Union[int, Tuple[int, int]] = 1,
+        post_conv_out_padding: Union[int, Tuple[Tuple[int, int], Tuple[int, int]]] = ((1, 0), (0, 0)),
     ):
         super().__init__()
         self.image_size = pair(image_size)
@@ -297,10 +340,26 @@ class ViTDecoder(Module):
             self.pos_embedding = nn.Parameter(
                 torch.randn(self.num_patches, input_size, dtype=torch.complex64)
             )
+        self.final_conv = NormConvTranspose2d(is_complex=True, in_channels=channels, out_channels=channels, kernel_size=1, output_padding=(1,0), padding=0, bias=True, norm="none")
 
-    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        self.post_fold_conv = (
+            SConvTranspose2d(
+                in_channels=channels,
+                out_channels=channels,
+                kernel_size=post_conv_kernel,
+                stride=post_conv_stride,
+                norm="weight_norm",
+                is_complex=True,
+                out_padding=post_conv_out_padding,
+            )
+            if use_post_conv
+            else nn.Identity()
+        )
+
+    def forward(self, tokens: torch.Tensor, debug: bool = False) -> torch.Tensor:
         if tokens.dim() != 3:
             raise ValueError(err(f"tokens must have shape (batch, seq_len, dim)"))
+        tokens = tokens.transpose(1, 2).contiguous()  # (B, dim, L) (B, L, dim)
         if tokens.size(1) != self.num_patches:
             raise ValueError(
                 err(f"Expected {self.num_patches} tokens but received {tokens.size(1)}")
@@ -310,8 +369,13 @@ class ViTDecoder(Module):
         x = self.transformer(x)
 
         patches = self.to_patch(x)  # (B, L, patch_dim)
+
         patches = patches.transpose(1, 2).contiguous()  # (B, patch_dim, L)
+
         recon = self.fold(patches)
+        recon = self.post_fold_conv(recon)
+        if debug:
+            print(f"Reconstructed spectrogram shape (B, C, F, T): {recon.shape}")
         return recon
 
     def _apply_positional_encoding(self, x: torch.Tensor) -> torch.Tensor:
