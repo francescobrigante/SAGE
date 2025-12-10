@@ -221,21 +221,41 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         n_feat (int): The number of features.
         dropout_rate (float): Dropout rate.
         zero_triu (bool): Whether to zero the upper triangular part of attention matrix.
+        init_linear (bool): Whether to re-initialize all Linear layers explicitly.
 
     """
 
-    def __init__(self, n_head, n_feat, dropout_rate, zero_triu=False):
-        """Construct an RelPositionMultiHeadedAttention object."""
+    def __init__(self, n_head, n_feat, dropout_rate, zero_triu=False, init_linear=False):
+        """Construct a RelPositionMultiHeadedAttention object."""
         super().__init__(n_head, n_feat, dropout_rate)
         self.zero_triu = zero_triu
+        self.init_linear = init_linear
+
         # linear transformation for positional encoding
         self.linear_pos = nn.Linear(n_feat, n_feat, bias=False)
+
         # these two learnable bias are used in matrix c and matrix d
         # as described in https://arxiv.org/abs/1901.02860 Section 3.3
         self.pos_bias_u = nn.Parameter(torch.Tensor(self.h, self.d_k))
         self.pos_bias_v = nn.Parameter(torch.Tensor(self.h, self.d_k))
         torch.nn.init.xavier_uniform_(self.pos_bias_u)
         torch.nn.init.xavier_uniform_(self.pos_bias_v)
+
+        # Optional explicit initialization for all Linear layers
+        if self.init_linear:
+            self._init_linear_parameters()
+
+    def _init_linear_parameters(self):
+        """Explicitly initialize all Linear layers to improve gradient flow.
+
+        This will re-initialize the weights of every nn.Linear in this module
+        (including those defined in the parent MultiHeadedAttention).
+        """
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                torch.nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    torch.nn.init.zeros_(m.bias)
 
     def rel_shift(self, x):
         """Compute relative positional encoding.
@@ -254,7 +274,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         x_padded = x_padded.view(*x.size()[:2], x.size(3) + 1, x.size(2))
         x = x_padded[:, :, 1:].view_as(x)[
             :, :, :, : x.size(-1) // 2 + 1
-            ]  # only keep the positions from 0 to time2
+        ]  # only keep the positions from 0 to time2
 
         if self.zero_triu:
             ones = torch.ones((x.size(2), x.size(3)), device=x.device)

@@ -104,11 +104,33 @@ class CMultiHeadedAttention(nn.Module):
         self.atten_dtype = attention_dtype
 
         
-        self.linear_q = NormLinear(n_feat, n_feat, is_complex=is_complex, bias=bias, norm="none")
-        self.linear_k = NormLinear(n_feat, n_feat, is_complex=is_complex, bias=bias, norm="none")
-        self.linear_v = NormLinear(n_feat, n_feat, is_complex=is_complex, bias=bias, norm="none")
-        self.linear_out = NormLinear(n_feat, n_feat, is_complex=is_complex, bias=bias, norm="none")
+        self.linear_q = nn.Linear(n_feat, n_feat, bias=bias, dtype=torch.complex64)
+        self.linear_k = nn.Linear(n_feat, n_feat, bias=bias, dtype=torch.complex64)
+        self.linear_v = nn.Linear(n_feat, n_feat, bias=bias, dtype=torch.complex64)
+        self.linear_out = nn.Linear(n_feat, n_feat, bias=bias, dtype=torch.complex64)
         self.dropout = ComplexDropout(p=dropout_rate)
+        self._init_weights()
+        
+    
+    def _init_one_complex_linear(self, lin: nn.Linear, gain: float = 1.0):
+        fan_in = lin.in_features
+        fan_out = lin.out_features
+        # complex Xavier: bound_real = sqrt(6/(fan_in+fan_out))
+        # qui usiamo bound = bound_real / sqrt(2) = sqrt(3/(fan_in+fan_out))
+        base_bound = math.sqrt(3.0 / (fan_in + fan_out))
+        bound = gain * base_bound
+
+        with torch.no_grad():
+            lin.weight.real.uniform_(-bound, bound)
+            lin.weight.imag.uniform_(-bound, bound)
+            if lin.bias is not None:
+                lin.bias.real.zero_()
+                lin.bias.imag.zero_()
+
+    def _init_weights(self):
+        for lin in [self.linear_q, self.linear_k, self.linear_v, self.linear_out]:
+            self._init_one_complex_linear(lin)
+
         
     def forward_qkv(self, query, key, value):
         # query/key/value: (B, L, d_model) complex tensors
@@ -250,3 +272,8 @@ if __name__ == "__main__":
 
     ok(f"Output dtype: {output.dtype}")
     ok(f"Output shape: {output.shape}")
+    
+    wq = attn.linear_q.weight
+    print("linear_q weight real std:", wq.real.std().item())
+    print("linear_q weight imag std:", wq.imag.std().item())
+    print("|w| mean:", (wq.abs()).mean().item())
