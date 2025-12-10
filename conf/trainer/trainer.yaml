@@ -36,10 +36,21 @@ trainer:
   val_check_interval: null
   strategy: auto
   num_gpus: 1
+  terminate_on_nan: true
+  detect_anomaly: true
+
+
+  NaNDetector:
+    enable: true
+    check_inputs: false
+    check_outputs: true
+    check_gradients: true
+    check_parameters: true
+    every_n_steps: 1
 
 wandb:
   project: ICML_2026
-  name: SEANet_STFT_losses
+  name: ViT_trial_error
   use_wandb: true
 
 eval_loss_config:

@@ -64,4 +64,5 @@ demo:
     target_frames: 128
     center: true
     normalized: false
+    cac: false
   save_basename: recon_val
