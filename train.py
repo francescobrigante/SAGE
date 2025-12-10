@@ -275,6 +275,37 @@ class NaNDetector(pl.Callback):
                 if not torch.isfinite(param).all():
                     raise RuntimeError(f"Detected non-finite parameter tensor in {name} (shape={tuple(param.shape)})")
 
+class GradNormMonitor(pl.Callback):
+    """Log per-step grad norms to spot vanishing/exploding gradients."""
+    def __init__(self, every_n_steps: int = 100, warn_low: float = 1e-8, warn_high: float = 1e2):
+        super().__init__()
+        self.every_n_steps = max(1, int(every_n_steps))
+        self.warn_low = float(warn_low)
+        self.warn_high = float(warn_high)
+
+    def on_after_backward(self, trainer, pl_module):
+        step = int(getattr(trainer, "global_step", 0))
+        if step % self.every_n_steps:
+            return
+        stats = []
+        for name, p in pl_module.named_parameters():
+            g = getattr(p, "grad", None)
+            if g is None:
+                continue
+            gn = g.norm(2).item()
+            gmax = g.abs().max().item()
+            is_finite = torch.isfinite(g).all()
+            if gn < self.warn_low:
+                warn(f"[grad vanishing] {name} | L2={gn:.2e} max={gmax:.2e}")
+            if gn > self.warn_high or not is_finite:
+                err(f"[grad exploding] {name} | L2={gn:.2e} max={gmax:.2e}")
+            stats.append((name, gn, gmax))
+
+        if stats and trainer.logger is not None:
+            log_payload = {f"grad/L2/{n}": v for n, v, _ in stats}
+            log_payload.update({f"grad/max/{n}": m for n, _, m in stats})
+            trainer.logger.log_metrics(log_payload, step=step)
+
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig):
     """Hydra entrypoint. Falls back to a monolithic JSON when trainer.use_json=true."""
@@ -425,6 +456,7 @@ def main(cfg: DictConfig):
         ModelSummary(max_depth=2),
         TQDMProgressBar(refresh_rate=1),
         DatasetEpochSetter(train_ds),
+        GradNormMonitor(every_n_steps=200, warn_low=1e-9, warn_high=1e2),
     ]
 
     nan_cfg = (cfg.get("trainer", {}) or {}).get("NaNDetector", {}) or {}
