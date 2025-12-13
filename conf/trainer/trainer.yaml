@@ -9,6 +9,7 @@ optimizer:
     weight_decay: 1e-5
     decoupled_weight_decay: true
 
+
 scheduler:
   type: InverseLR
   config:
@@ -38,11 +39,12 @@ trainer:
   num_gpus: 1
   terminate_on_nan: true
   detect_anomaly: true
-
+  gradient_clip_val: 5.0
+  gradient_clip_algorithm: norm
 
   NaNDetector:
-    enable: true
-    check_inputs: false
+    enable: false
+    check_inputs: true
     check_outputs: true
     check_gradients: true
     check_parameters: true
@@ -75,24 +77,8 @@ loss_config:
       config:
         reduction: mean
 
-    mrstft:
-      config:
-        reduction: mean
-        factor_sc: 0.0
-        factor_mag: 0.5
-        linear_mag: true
-        factor_linear_mag: 1.0
+    weights: {stft_mse: 1.0}
 
-    cosine_phase_loss:
-      config:
-        reduction: mean
-        energy_weighted: false
-
-    weights: { stft_mse: 1.0, mrstft: 0.2, cosine_phase_loss: 0.15}
-
-  bottleneck:
-    weights:
-      kl: 3e-5
 
 # Legacy fallback controls
 use_json: false
