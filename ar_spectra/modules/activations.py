@@ -49,10 +49,16 @@ def get_activation(activation: str = None, is_complex: bool = False, channels=No
             complex_lib = importlib.import_module("eulero.nn")
         except Exception:
             from . import complex_activations as complex_lib  # fallback
+
         try:
             act_cls = getattr(complex_lib, name)
         except AttributeError:
-            return nn.Identity()
+            # Gracefully handle case/casing mismatches (e.g., "CRelu" vs "CReLU").
+            matches = [attr for attr in dir(complex_lib) if attr.lower() == name.lower()]
+            if not matches:
+                return nn.Identity()
+            act_cls = getattr(complex_lib, matches[0])
+
         # Some complex activations require `channels`. Pass if available.
         if (channels is not None) and ("channels" in act_cls.__init__.__code__.co_varnames):
             return act_cls(channels=channels, **kwargs)

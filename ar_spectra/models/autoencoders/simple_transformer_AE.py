@@ -1,7 +1,7 @@
 import torch
 from torch.nn import Module, ModuleList
 import torch.nn as nn
-from typing import Union
+from typing import Sequence, Tuple, Union
 from ar_spectra.modules.cplx_attention import CMultiHeadedAttention
 from ar_spectra.modules.attention import RelPositionMultiHeadedAttention
 from ar_spectra.modules.normed_modules.conv import (
@@ -10,6 +10,7 @@ from ar_spectra.modules.normed_modules.conv import (
 )
 from ar_spectra.modules.normed_modules.norm import ComplexLayerNorm, ComplexBatchNorm1d
 from ar_spectra.modules.activations import get_activation
+from ar_spectra.models.autoencoders.abstract_ae import AbstractEncoder, AbastractDecoder
 from rich.console import Console
 console = Console()
 
@@ -23,6 +24,14 @@ def warn(msg: str) -> None:
 
 def err(msg: str) -> None:
     console.print(msg, style="bold red")
+    
+
+def pair(t):
+    if isinstance(t, Sequence) and not isinstance(t, (str, bytes)):
+        if len(t) != 2:
+            raise ValueError("pair expects a scalar or a length-2 sequence")
+        return tuple(t)
+    return (t, t)
 
 
 class RelPositionalEncoding(nn.Module):
@@ -62,29 +71,26 @@ class RelPositionalEncoding(nn.Module):
 
 
 class Transformer(Module):
-    def __init__(self, n_heads: int, feat_dim: int, dropout_rate: float, use_complex: bool = False) -> None:
+    def __init__(self, n_heads: int, in_dim: int, feat_dim: int, dropout_rate: float, use_complex: bool = True) -> None:
         super().__init__()
+        self.in_dim = in_dim
         self.feat_dim = feat_dim
         self.use_complex = use_complex
+        
+        if not use_complex:
+            raise NotImplementedError("This transformer class only supports complex operations.")
 
         if use_complex:
-            self.norm = ComplexLayerNorm(feat_dim)
+            self.norm = ComplexLayerNorm(self.in_dim)
             self.attn = CMultiHeadedAttention(
-                n_heads, feat_dim, dropout_rate=dropout_rate
+                n_heads, self.in_dim, dropout_rate=dropout_rate
             )
-            self.pos_enc = None  # o un'altra versione complessa se ti serve
-        else:
-            self.norm = nn.LayerNorm(2 * feat_dim)
-            self.attn = RelPositionMultiHeadedAttention(
-                n_heads, 2 * feat_dim, dropout_rate=dropout_rate
-            )
-            # Positional encoding relativo per il ramo reale
-            self.pos_enc = RelPositionalEncoding(d_model=2 * feat_dim)
+            self.pos_enc = None  
 
-        self.norm2 = ComplexLayerNorm(feat_dim)
-        self.linear1 = nn.Linear(feat_dim, feat_dim, dtype=torch.complex64)
-        self.activation = get_activation("CRelu", is_complex=True)
-        self.linear2 = nn.Linear(feat_dim, feat_dim, dtype=torch.complex64)
+        self.norm2 = ComplexLayerNorm(self.in_dim)
+        self.linear1 = nn.Linear(self.in_dim, self.feat_dim, dtype=torch.complex64)
+        self.activation = get_activation("CReLU", is_complex=True)
+        self.linear2 = nn.Linear(self.feat_dim, self.feat_dim, dtype=torch.complex64)
 
     def forward(self, x: torch.Tensor, mask=None) -> torch.Tensor:
         """
@@ -92,36 +98,15 @@ class Transformer(Module):
         """
         D = self.feat_dim
 
-        # --- Self-attention (pre-LN) ---
+        # self-attention (pre-LN)
         if self.use_complex:
-            # ramo complesso puro (se la tua C-attn non usa pos_emb)
+            
             q = self.norm(x)
             k = q
             v = q
             x = x + self.attn(query=q, key=k, value=v, mask=mask)
-        else:
-            # CAC: C^D -> R^{2D}
-            x_r = torch.cat([x.real, x.imag], dim=-1)  # (B, T, 2D)
 
-            # pos_emb reale in R^{B x (2T-1) x 2D}
-            pos_emb_r = self.pos_enc(x_r)  # usa solo B,T,device
-
-            q = self.norm(x_r)
-            k = q
-            v = q
-
-            x_r = x_r + self.attn(
-                query=q,
-                key=k,
-                value=v,
-                pos_emb=pos_emb_r,
-                mask=mask,
-            )
-
-            # ritorno in C^D
-            x = torch.complex(x_r[..., :D], x_r[..., D:])
-
-        # --- Feed-forward complesso (pre-LN) ---
+        # Feed-forward complex-valued (pre-LN)
         residual = x
         x = self.linear1(self.norm2(x))
         x = self.activation(x)
@@ -131,36 +116,55 @@ class Transformer(Module):
         return x
 
 
-
-class SimpleTransformerEncoder(Module):
+class SimpleTransformerEncoder(AbstractEncoder):
     """A simple Transformer encoder for spectrograms."""
 
     def __init__(
         self,
         input_size: int,
-        dim: int = 256,
+        dim: int = 4,
+        inter_dim: int = 256,
         n_heads: int = 4,
         depth: int = 6,
         dropout_rate: float = 0.1,
-        activation: str = "CRelu",) -> None:
-        super().__init__()
+        activation: str = "CReLU",
+        image_size: Tuple[int, int] = (256, 32),
+        patch_size: Union[int, Tuple[int, int]] = (8, 8),
+        is_complex: bool = True,
+        ) -> None:
+        super().__init__(input_size=input_size, is_complex=is_complex)
         self.input_size = input_size
         self.dim = dim
         self.n_heads = n_heads
         self.depth = depth
         self.dropout_rate = dropout_rate
         self.activation = activation
+        self.inter_dim = inter_dim
+        
+        image_height, image_width = pair(image_size)
+        self.image_size = (image_height, image_width)
+        self.patch_size = pair(patch_size)
+        patch_height, patch_width = self.patch_size
+
+        assert image_height % patch_height == 0 and image_width % patch_width == 0, 'Image dimensions must be divisible by the patch size.'
+
+        num_patches = (image_height // patch_height) * (image_width // patch_width)
+        patch_dim = self.dim * patch_height * patch_width   # 32*8*8 = 2048
+
         
         self.conv0 = SConv2d(self.input_size, self.input_size, kernel_size=3, stride=1,is_complex=True)
         self.act0 = get_activation(self.activation, is_complex= True)
         self.conv1 = SConv2d(self.input_size, self.dim, kernel_size=8, stride=4, is_complex=True)
+        
+        self.unfold = nn.Unfold(kernel_size=self.patch_size, stride=self.patch_size)
+        self.linear_proj = nn.Linear(patch_dim, self.inter_dim, dtype=torch.complex64)
         # Lightning will move this anchor buffer together with the module; we re-use
         # it to place lazily-built attention stacks without manual device handling.
         self.register_buffer("_attn_anchor", torch.empty(0), persistent=False)
         self.attn = None
         self._attn_feat = None
-        self.norm = ComplexLayerNorm(1024)
-        self.linear = nn.Linear(1024, 1024, dtype=torch.complex64)
+        self.norm = ComplexLayerNorm(self.inter_dim)
+        self.linear = nn.Linear(self.inter_dim, self.inter_dim, dtype=torch.complex64)
 
     def _ensure_attn(self, feat_dim: int):
         """Instantiate attention stack when feature size changes (Lightning handles device)."""
@@ -172,126 +176,162 @@ class SimpleTransformerEncoder(Module):
                 dropout_rate=self.dropout_rate,)
             self.attn = transformer.to(self._attn_anchor.device)
 
-    def forward(self, x: torch.Tensor, skip_attn: bool = False) -> torch.Tensor:
-        x = self.conv0(x)                              # (B, dim, F, T)
-        #print(f"Encoder after conv0 shape: {x.shape}")
+    def forward(self, x: torch.Tensor, skip_attn: bool = False, debug: bool = False) -> torch.Tensor:
+        x = self.conv0(x)
+        if debug:
+            console.log(f"Encoder after conv0 shape: {x.shape}")
         x = self.act0(x)
-        x = self.conv1(x)                              # (B, dim, F, T)
-        #print(f"Encoder after conv1 shape: {x.shape}")
-        b, c, f, t = x.shape
-        feat_dim = c * f                               # dim * freq
-        self._ensure_attn(feat_dim)
+        x = self.conv1(x)                              # (B, D, F', T')
+        if debug:
+            console.log(f"Encoder after conv1 shape: {x.shape}")
 
-        x = x.view(b, feat_dim, t).transpose(1, 2)     # (B, T, dim*freq)
+        x = self.unfold(x)                         # (B, P, L)
+        if debug:
+            console.log(f"Encoder after unfold shape: {x.shape}")
+        x = x.transpose(1, 2).contiguous()         # (B, L, P)
+        x = self.linear_proj(x)                    # (B, L, D)
+        if debug:
+            console.log(f"Encoder after linear_proj shape: {x.shape}")
+
+        self._ensure_attn(self.inter_dim)
         if not skip_attn:
-            x = self.attn(x)
-            #print(f"After attention block: {x.shape}")
-        x = self.linear(self.norm(x))
-        x = x.transpose(1, 2).contiguous()             # (B, dim*freq, T)
-        #print(f"Encoder after attention stack shape: {x.shape}")
+            x = self.attn(x)                       # (B, L, D)
+            if debug:
+                console.log(f"Encoder after attention stack shape: {x.shape}")
+
+        x = self.linear(self.norm(x))              # (B, L, D)
+        if debug:
+            console.log(f"Encoder after final norm+linear shape: {x.shape}")
+
+        # se vuoi uscire come (B, D, L) per compatibilità col decoder:
+        x = x.transpose(1, 2).contiguous()         # (B, D, L)
         return x
 
-class SimpleTransformerDecoder(Module):
-    """Simple Transformer decoder symmetric to ``SimpleTransformerEncoder`` for complex spectrograms.
-
-    Args:
-        output_size: Number of complex channels to reconstruct (matches encoder input_size).
-        dim: Hidden dimension used by the encoder/decoder attention stack.
-        n_heads: Number of attention heads.
-        depth: Number of Transformer blocks.
-        dropout_rate: Dropout rate applied in attention.
-        activation: Name of the activation function after the transpose convolution.
+class SimpleTransformerDecoder(AbastractDecoder):
     """
+
+    """
+
     def __init__(
         self,
-        input_size: int,
-        channels: int = "auto",
+        channels: int,                 
+        dim: int = 4, 
+        inter_dim: int = 128,                     
         n_heads: int = 4,
         depth: int = 6,
         dropout_rate: float = 0.1,
-        activation: str = "CRelu",
-        post_conv_kernel: int = (1, 1),
-        post_conv_stride: int = (1, 1),
-        post_conv_out_padding: Union[int, tuple] = ((0, 0), (0, 1)),
+        activation: str = "CReLU",
+        image_size: Tuple[int, int] = (256, 32),          # = (F1,T1) dopo conv1
+        patch_size: Union[int, Tuple[int, int]] = (8, 8), # = encoder.patch_size
+        deconv_out_padding: Union[int, tuple] = ((0, 1), (0, 0)),
+        final_out_padding: Union[int, tuple] = ((0, 0), (0, 0)),
+        is_complex: bool = True,
     ) -> None:
-        super().__init__()
-        self.input_size = input_size
-        self.dim = input_size
+        super().__init__(channels=channels, is_complex=is_complex)
+        self.channels = channels
+        self.dim = dim
         self.n_heads = n_heads
         self.depth = depth
         self.dropout_rate = dropout_rate
-        self.channels = channels
         self.activation = activation
-        self.post_conv_kernel = post_conv_kernel
-        self.post_conv_stride = post_conv_stride
-        self.post_conv_out_padding = post_conv_out_padding
+        self.inter_dim = inter_dim
 
-        self.register_buffer("_attn_anchor", torch.empty(0), persistent=False)
-        self.attn = None
-        self._attn_feat = None
-        self.output_channels = self.dim if self.channels == "auto" else self.channels
-        self.norm = ComplexLayerNorm(1024)
-        self.linear = nn.Linear(1024, 1024, dtype=torch.complex64)
-        
-        # out_padding is set dynamically in forward to hit the requested target shape
-        # Add frequency out_padding to recover the 1025 bins dropped in the encoder
-        self.deconv = SConvTranspose2d(
-            self.input_size,
-            self.dim,
-            kernel_size=8,
-            stride=4,
-            out_padding=((0, 1), (0, 0)),
+        F1, T1 = pair(image_size)
+        self.image_size = (F1, T1)
+
+        ph, pw = pair(patch_size)
+        self.patch_size = (ph, pw)
+
+        assert F1 % ph == 0 and T1 % pw == 0, "image_size (F1,T1) deve essere divisibile per patch_size"
+
+        self.L_expected = (F1 // ph) * (T1 // pw)
+        self.P = dim * ph * pw  # = dim*patch_area
+
+        # Token stack (uguale all’encoder): (B,L,dim) -> (B,L,dim)
+        self.norm_tok = ComplexLayerNorm(inter_dim)
+        self.linear_tok = nn.Linear(inter_dim, inter_dim, dtype=torch.complex64)
+
+        self.blocks = nn.ModuleList([
+            Transformer(n_heads=n_heads, feat_dim=inter_dim, dropout_rate=dropout_rate)
+            for _ in range(depth)
+        ])
+
+        # unprojection: dim -> P per ogni token
+        self.linear_unproj = nn.Linear(inter_dim, self.P, dtype=torch.complex64)
+
+        # Fold: (B, P, L) -> (B, dim, F1, T1)
+        self.fold = nn.Fold(output_size=self.image_size, kernel_size=self.patch_size, stride=self.patch_size)
+
+        # Deconv per invertire conv1: (B, dim, F1, T1) -> (B, C, F, T) circa
+        self.deconv1 = SConvTranspose2d(
+            dim,
+            channels,
+            kernel_size=8, stride=4,
+            out_padding=deconv_out_padding,
             is_complex=True,
         )
-        self.act = get_activation(self.activation, is_complex= True)
-        # out_padding on the time axis recovers the single step dropped by the encoder
+        self.act = get_activation(self.activation, is_complex=True)
+
+        # Refinement finale (simmetrico a conv0, opzionale ma utile)
         self.final_conv = SConvTranspose2d(
-            self.dim,
-            self.output_channels,
-            kernel_size=self.post_conv_kernel,
-            stride=self.post_conv_stride,
-            out_padding=self.post_conv_out_padding,
+            channels,
+            channels,
+            kernel_size=(3,3),
+            stride=(1,1),
+            out_padding=final_out_padding,
             is_complex=True,
         )
 
-    def _ensure_attn(self, feat_dim: int):
-        """Instantiate attention stack when feature size changes (Lightning handles device)."""
-        if self.attn is None or self._attn_feat != feat_dim:
-            self._attn_feat = feat_dim
-            transformer = Transformer(
-                n_heads=self.n_heads,
-                feat_dim=feat_dim,
-                dropout_rate=self.dropout_rate,)
-            self.attn = transformer.to(self._attn_anchor.device)
+    def forward(self, z: torch.Tensor, skip_attn: bool = False, debug: bool = False) -> torch.Tensor:
+        # z: (B, inter_dim, L) where inter_dim matches the token size used in the encoder
+        if debug:
+            console.log(f"Decoder input (latent) shape: {z.shape}")
 
-    def forward(self, x, skip_attn=False) -> torch.Tensor:
-        b, feat_dim, t = x.shape                       # feat_dim = dim * freq
-        #print(f"Decoder input shape: {x.shape}")
-        freq = feat_dim // self.dim
-        self._ensure_attn(feat_dim)
+        B, D, L = z.shape
+        assert D == self.inter_dim, f"Decoder attende inter_dim={self.inter_dim}, ma ha ricevuto D={D}"
+        assert L == self.L_expected, f"Decoder attende L={self.L_expected} (da image_size/patch), ma ha ricevuto L={L}"
 
-        x = x.transpose(1, 2).contiguous()             # (B, T, dim*freq)
-        x = self.linear(self.norm(x))
-        #print(f"Decoder before attn shape: {x.shape}")
+        x = z.transpose(1, 2).contiguous()  # (B, L, dim)
+
+        # norm+linear token-wise (feature-last)
+        x = self.linear_tok(self.norm_tok(x))  # (B, L, dim)
+        if debug:
+            console.log(f"Decoder after token norm+linear shape: {x.shape}")
+
+        # Transformer blocks
         if not skip_attn:
-            x = self.attn(x)
-        
-        x = x.transpose(1, 2).contiguous()             # (B, dim*freq, T)
-        #print(f"Decoder after attention stack shape: {x.shape}")
-        x = x.view(b, self.dim, freq, t)               # (B, dim, F, T)
-        #print(f"Decoder reshaped to: {x.shape}")
+            for blk in self.blocks:
+                x = blk(x)  # (B, L, dim)
+            if debug:
+                console.log(f"Decoder after attention stack shape: {x.shape}")
 
-        x = self.deconv(x)
-        #print(f"After deconv shape: {x.shape}")
-        x = self.act(x)
-        x = self.final_conv(x)
-        #print(f"After final conv shape: {x.shape}")
-        return x
+        # unproject tokens -> patch vectors
+        x = self.linear_unproj(x)                # (B, L, P)
+        x = x.transpose(1, 2).contiguous()       # (B, P, L)
+        if debug:
+            console.log(f"Decoder after unprojection shape: {x.shape}")
+
+        # Fold back to feature map (B, dim, F1, T1)
+        fm = self.fold(x)  # (B, dim, F1, T1)
+        
+        if debug:
+            console.log(f"Decoder after fold shape: {fm.shape}")
+
+        # Invert conv1
+        y = self.deconv1(fm)
+        y = self.act(y)
+        y = self.final_conv(y)
+
+        if debug:
+            console.log(f"Decoder output shape: {y.shape}")
+
+        return y
+
 
 if __name__ == "__main__":
     torch.manual_seed(0)
     device = "cuda"
-    dummy = torch.zeros((32, 2, 1025, 32), dtype=torch.complex64).to(device)
+    dummy = torch.zeros((32, 2, 1025, 128), dtype=torch.complex64).to(device)
 
     # Encoder: input_size matches dummy channels (2).
     encoder = SimpleTransformerEncoder(
@@ -300,23 +340,28 @@ if __name__ == "__main__":
         n_heads=4,
         depth=2,
         dropout_rate=0.1,
+        patch_size=(16, 16),
         activation="CRelu",
+        inter_dim=128,
     ).to(device)
 
     # Decoder: channels=2 to match original input channels.
     decoder = SimpleTransformerDecoder(
-        input_size=4,
         channels=2,
+        dim=4,
         n_heads=4,
         depth=2,
         dropout_rate=0.1,
         activation="CRelu",
-        post_conv_out_padding=((0, 0), (0, 1)),
+        image_size=(256, 32),     # = shape dopo conv1
+        patch_size=(16, 16),
+        inter_dim=128,
+        deconv_out_padding=((0, 1), (0, 0)),  # lascia come avevi se ti serve recuperare 1025
     ).to(device)
 
     with torch.no_grad():
-        latent = encoder(dummy)
-        recon = decoder(latent)
+        latent = encoder(dummy, debug=True)
+        recon = decoder(latent, debug=True)
 
     print(f"Input shape:   {tuple(dummy.shape)}")
     print(f"Latent shape:  {tuple(latent.shape)}")
