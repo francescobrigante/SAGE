@@ -121,13 +121,25 @@ The training pipeline expects to find:
 
 - `input_size` in the encoder arguments.
 - `channels` in the decoder arguments.
+- `is_complex` in both encoder and decoder arguments.
 
 These parameters are mandatory because the trainer uses them to adapt the model
 to the dataset's specific channel layout (e.g. complex vs. real-as-channels,
 mono vs. stereo).
 
+The `is_complex` flag is additionally used during training to decide whether
+audio examples logged to Weights & Biases should be packed/unpacked as
+real/imaginary channel pairs. Set it explicitly to reflect the dataset output
+representation.
+
 Therefore, the model configuration must specify `channels` (decoder) and
 `input_size` (encoder) explicitly, or rely on the `auto` placeholder.
+
+When you implement a new autoencoder, prefer subclassing the base classes in
+[ar_spectra/models/autoencoders/abstract_ae.py](ar_spectra/models/autoencoders/abstract_ae.py)
+so the constructor signatures remain aligned with the expected `input_size`,
+`channels`, and `is_complex` parameters, avoiding accidental mismatches at
+training time.
 
 - **Using `auto` (Recommended for Training)**: The trainer inspects the dataset
   batch (checking for complex dtype or CAC layout) and automatically injects
