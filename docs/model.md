@@ -35,6 +35,17 @@ encoder:
 
 Use the sentinel `auto` for parameters whose value depends on dataset inspection (e.g., spectrogram channel count). `resolve_auto_channels` patches these fields automatically once data is available.
 
+### Trainer-required parameters
+The training loop injects dataset-aware values into the model config and expects the following arguments to be present in the encoder/decoder kwargs:
+
+- `input_size` on the encoder.
+- `channels` on the decoder.
+- `is_complex` on both encoder and decoder.
+
+`input_size` and `channels` can be set to `auto` so the trainer can pick the right counts from the dataset (complex dtype vs. CAC layout, mono/stereo). `is_complex` is used during training to decide whether audio logged to Weights & Biases should be packed/unpacked as real/imaginary channel pairs; set it to mirror the dataset output representation.
+
+When implementing new autoencoders, prefer subclassing the base classes in [ar_spectra/models/autoencoders/abstract_ae.py](ar_spectra/models/autoencoders/abstract_ae.py). This keeps constructor signatures aligned with the required `input_size`, `channels`, and `is_complex` fields and avoids mismatches at training time.
+
 ### Bottleneck Options
 Common choices include:
 - `ar_spectra.models.bottlenecks.IdentityBottleneck`: deterministic autoencoder.
