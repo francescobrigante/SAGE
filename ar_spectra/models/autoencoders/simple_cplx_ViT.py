@@ -240,15 +240,13 @@ class ViTEncoder(Module):
         self._trim_warned = False
         self._ln_debug_handles: List[torch.utils.hooks.RemovableHandle] = []
 
-
-
         # Attach LN debug hooks if requested (prints at every forward/backward)
         if ln_debug:
             self._ln_debug_handles = attach_complex_ln_debug_hooks(
                 self, name_prefix="encoder"
             )
 
-    def forward(self, img: torch.Tensor, debug: bool = True) -> torch.Tensor:
+    def forward(self, img: torch.Tensor, debug: bool = False) -> torch.Tensor:
         if debug:
             print(f"Input spectrogram shape (B, C, F, T): {img.shape}")
         batch = img.shape[0]
@@ -430,7 +428,7 @@ class ViTDecoder(Module):
                 self, name_prefix="decoder"
             )
 
-    def forward(self, tokens: torch.Tensor, debug: bool = True) -> torch.Tensor:
+    def forward(self, tokens: torch.Tensor, debug: bool = False) -> torch.Tensor:
         if tokens.dim() != 3:
             raise ValueError(err(f"tokens must have shape (batch, seq_len, dim)"))
         if debug:

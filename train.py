@@ -456,7 +456,7 @@ def main(cfg: DictConfig):
         ModelSummary(max_depth=2),
         TQDMProgressBar(refresh_rate=1),
         DatasetEpochSetter(train_ds),
-        GradNormMonitor(every_n_steps=200, warn_low=1e-9, warn_high=1e2),
+        GradNormMonitor(every_n_steps=1500, warn_low=1e-11, warn_high=1e2),
     ]
 
     nan_cfg = (cfg.get("trainer", {}) or {}).get("NaNDetector", {}) or {}
