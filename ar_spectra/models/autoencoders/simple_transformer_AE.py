@@ -90,31 +90,40 @@ class Transformer(Module):
         self.norm2 = ComplexLayerNorm(self.in_dim)
         self.linear1 = nn.Linear(self.in_dim, self.feat_dim, dtype=torch.complex64)
         self.activation = get_activation("CReLU", is_complex=True)
-        self.linear2 = nn.Linear(self.feat_dim, self.feat_dim, dtype=torch.complex64)
+        self.linear2 = nn.Linear(self.feat_dim, self.in_dim, dtype=torch.complex64)
 
-    def forward(self, x: torch.Tensor, mask=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask=None, debug=False) -> torch.Tensor:
         """
         x: (B, T, D) complesso, dove D = feat_dim = channels * frequency
         """
+        if debug:
+            console.log(f"Transformer input shape: {x.shape}")
         D = self.feat_dim
 
         # self-attention (pre-LN)
         if self.use_complex:
-            
             q = self.norm(x)
             k = q
             v = q
             x = x + self.attn(query=q, key=k, value=v, mask=mask)
+            
+            if debug:
+                console.log(f"Transformer after attention shape: {x.shape}")
 
         # Feed-forward complex-valued (pre-LN)
         residual = x
         x = self.linear1(self.norm2(x))
+        if debug:
+            console.log(f"Transformer after feed-forward linear1 shape: {x.shape}")
         x = self.activation(x)
         x = self.linear2(x)
+        if debug:
+            console.log(f"Transformer after feed-forward linear2 shape: {x.shape}")
         x = residual + x
+        if debug:
+            console.log(f"Transformer output shape: {x.shape}")
 
         return x
-
 
 class SimpleTransformerEncoder(AbstractEncoder):
     """A simple Transformer encoder for spectrograms."""
@@ -124,6 +133,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
         input_size: int,
         dim: int = 4,
         inter_dim: int = 256,
+        mlp_mult: int = 4,
         n_heads: int = 4,
         depth: int = 6,
         dropout_rate: float = 0.1,
@@ -134,12 +144,13 @@ class SimpleTransformerEncoder(AbstractEncoder):
         ) -> None:
         super().__init__(input_size=input_size, is_complex=is_complex)
         self.input_size = input_size
-        self.dim = dim
+        self.dim = dim # number of channels after initial conv
         self.n_heads = n_heads
         self.depth = depth
         self.dropout_rate = dropout_rate
         self.activation = activation
         self.inter_dim = inter_dim
+        self.mlp_mult = mlp_mult
         
         image_height, image_width = pair(image_size)
         self.image_size = (image_height, image_width)
@@ -151,7 +162,6 @@ class SimpleTransformerEncoder(AbstractEncoder):
         num_patches = (image_height // patch_height) * (image_width // patch_width)
         patch_dim = self.dim * patch_height * patch_width   # 32*8*8 = 2048
 
-        
         self.conv0 = SConv2d(self.input_size, self.input_size, kernel_size=3, stride=1,is_complex=True)
         self.act0 = get_activation(self.activation, is_complex= True)
         self.conv1 = SConv2d(self.input_size, self.dim, kernel_size=8, stride=4, is_complex=True)
@@ -161,20 +171,18 @@ class SimpleTransformerEncoder(AbstractEncoder):
         # Lightning will move this anchor buffer together with the module; we re-use
         # it to place lazily-built attention stacks without manual device handling.
         self.register_buffer("_attn_anchor", torch.empty(0), persistent=False)
-        self.attn = None
+        self.attn_blocks = ModuleList([
+            Transformer(
+                n_heads=self.n_heads,
+                in_dim=self.inter_dim,
+                feat_dim=self.inter_dim * self.mlp_mult,
+                dropout_rate=self.dropout_rate,
+            )
+            for _ in range(self.depth)
+        ])
         self._attn_feat = None
         self.norm = ComplexLayerNorm(self.inter_dim)
         self.linear = nn.Linear(self.inter_dim, self.inter_dim, dtype=torch.complex64)
-
-    def _ensure_attn(self, feat_dim: int):
-        """Instantiate attention stack when feature size changes (Lightning handles device)."""
-        if self.attn is None or self._attn_feat != feat_dim:
-            self._attn_feat = feat_dim
-            transformer = Transformer(
-                n_heads=self.n_heads,
-                feat_dim=feat_dim,
-                dropout_rate=self.dropout_rate,)
-            self.attn = transformer.to(self._attn_anchor.device)
 
     def forward(self, x: torch.Tensor, skip_attn: bool = False, debug: bool = False) -> torch.Tensor:
         x = self.conv0(x)
@@ -193,11 +201,11 @@ class SimpleTransformerEncoder(AbstractEncoder):
         if debug:
             console.log(f"Encoder after linear_proj shape: {x.shape}")
 
-        self._ensure_attn(self.inter_dim)
         if not skip_attn:
-            x = self.attn(x)                       # (B, L, D)
-            if debug:
-                console.log(f"Encoder after attention stack shape: {x.shape}")
+            for blk in self.attn_blocks:
+                x = blk(x, debug=debug)                       # (B, L, D)
+                if debug:
+                    console.log(f"Encoder after attention block shape: {x.shape}")
 
         x = self.linear(self.norm(x))              # (B, L, D)
         if debug:
@@ -221,6 +229,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
         depth: int = 6,
         dropout_rate: float = 0.1,
         activation: str = "CReLU",
+        mlp_mult: int = 4,
         image_size: Tuple[int, int] = (256, 32),          # = (F1,T1) dopo conv1
         patch_size: Union[int, Tuple[int, int]] = (8, 8), # = encoder.patch_size
         deconv_out_padding: Union[int, tuple] = ((0, 1), (0, 0)),
@@ -235,6 +244,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
         self.dropout_rate = dropout_rate
         self.activation = activation
         self.inter_dim = inter_dim
+        self.mlp_mult = mlp_mult
 
         F1, T1 = pair(image_size)
         self.image_size = (F1, T1)
@@ -252,7 +262,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
         self.linear_tok = nn.Linear(inter_dim, inter_dim, dtype=torch.complex64)
 
         self.blocks = nn.ModuleList([
-            Transformer(n_heads=n_heads, feat_dim=inter_dim, dropout_rate=dropout_rate)
+            Transformer(n_heads=n_heads, in_dim=inter_dim, feat_dim=inter_dim*self.mlp_mult, dropout_rate=dropout_rate)
             for _ in range(depth)
         ])
 
@@ -301,7 +311,8 @@ class SimpleTransformerDecoder(AbastractDecoder):
         # Transformer blocks
         if not skip_attn:
             for blk in self.blocks:
-                x = blk(x)  # (B, L, dim)
+                x = blk(x, debug=debug)  # (B, L, dim)
+
             if debug:
                 console.log(f"Decoder after attention stack shape: {x.shape}")
 
