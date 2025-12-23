@@ -3,7 +3,7 @@
 EulerAudioBackbone is a complex-valued autoencoder designed for generative modeling directly on STFT spectrograms. It supports research on neural audio coding, diffusion-ready VAEs, and source separation while preserving analyticity throughout the pipeline.
 
 > [!WARNING]
-> This library is just born, I din't even started writing the full documentation, and has plenty of bug, just wait until its stable.
+> This library is just born, I haven't even started writing the full documentation, and it has plenty of bugs; please wait until it's stable.
 
 ---
 
@@ -38,9 +38,8 @@ Choose a single workflow and stick to it - either Astral `uv` or a classic virtu
   ```
   - To add packages, edit `pyproject.toml` and re-run `uv sync` (ignore `requirements.txt`) or follow uv official documentation with `uv.add ...` .
 
-<div style="border-left: 4px solid #2da44e; padding: 0.75rem 1rem; background: #f1f8f4; border-radius: 8px; margin: 1rem 0;">
-<strong style="color:#2da44e;">Important</strong> — We strongly recommend logging into <a href="https://wandb.ai/site">Weights & Biases</a> to track your experiments. Run <code>wandb login</code> before starting training to enable rich logging and visualization.
-</div>
+> [!IMPORTANT]
+> We strongly recommend logging into [Weights & Biases](https://wandb.ai/site) to track your experiments. Run `wandb login` before starting training to enable rich logging and visualization.
 
 
 ---
@@ -125,15 +124,14 @@ training time.
   configuring 2 channels for a mono dataset) will cause runtime errors.
 - **Example of `auto` working**: if the dataset has CAC activated and stereo there is going to be an `input_size` of 4. 
 
-<div style="border-left: 4px solid #2da44e; padding: 0.75rem 1rem; background: #f1f8f4; border-radius: 8px; margin: 1rem 0;">
-<strong style="color:#2da44e;">Note on Checkpoints</strong>: Once trained, the resolved values are baked into the
-checkpoint's `inference_config`. The inference loader reads these saved values
-automatically, so you do not need to worry about `auto` resolution when loading
-a trained model.
-
-If there are problems with checkpoint use in inference we suggest the following
-procedure as a fallback.
-</div>
+> [!IMPORTANT]
+> **Note on Checkpoints**: Once trained, the resolved values are baked into the
+> checkpoint's `inference_config`. The inference loader reads these saved values
+> automatically, so you do not need to worry about `auto` resolution when loading
+> a trained model.
+>
+> If there are problems with checkpoint use in inference we suggest the following
+> procedure as a fallback.
 
 ### Regenerating legacy checkpoints
 
