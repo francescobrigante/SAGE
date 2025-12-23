@@ -4,7 +4,7 @@ model:
     return_latent: false
     # Spectrogram normalization applied at encoder input and inverted at decoder output
     pre_transform:
-      type: power_norm     # none | log_mag | power_norm
+      type: none     # none | log_mag | power_norm
       apply_target: true   # set apply_target: true to apply the normalization also to the target spectrograms
       apply_inverse: true # set apply_inverse: false to apply the normalization only before the encoder
       config:
@@ -17,18 +17,29 @@ model:
     kwargs:
       input_size: "auto"           # will be patched at runtime
       dim: 4
-      depth: 2
+      depth: 4
       n_heads: 8
-      dropout_rate: 0.0
+      dropout_rate: 0.05
+      patch_size: [16, 16]
+      image_size: [1024, 128]
+      inter_dim: 64
+      mlp_mult: 4
+      use_rel_pos: false
 
   decoder:
     class: ar_spectra.models.autoencoders.simple_transformer_AE.SimpleTransformerDecoder
     kwargs:
       channels: "auto"             # will be patched at runtime
-      input_size: 4
-      depth: 2
+      dim: 4
+      depth: 4
       n_heads: 8
-      dropout_rate: 0.0
+      dropout_rate: 0.05
+      patch_size: [16, 16]
+      image_size: [1024, 128]
+      inter_dim: 64
+      mlp_mult: 4
+      use_rel_pos: false
+
 
   bottleneck:
     class: ar_spectra.models.bottlenecks.VAEBottleneck

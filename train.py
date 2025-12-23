@@ -13,6 +13,7 @@ import torch.profiler as torch_profiler
 from pytorch_lightning.profilers import PyTorchProfiler
 from ar_spectra.models.autoencoder import AutoEncoder
 from ar_spectra.training_utils.autoencoders import AutoencoderTrainingWrapper, AutoencoderValDemoCallback
+from ar_spectra.training_utils.layernorm_logging import LayerNormStatsCallback
 from ar_spectra.training_utils.initialization import (build_training_wrapper_from_cfg,)
 from ar_spectra.training_utils.reproducibility import configure_reproducibility
 from tqdm import tqdm
@@ -276,12 +277,29 @@ class NaNDetector(pl.Callback):
                     raise RuntimeError(f"Detected non-finite parameter tensor in {name} (shape={tuple(param.shape)})")
 
 class GradNormMonitor(pl.Callback):
-    """Log per-step grad norms to spot vanishing/exploding gradients."""
-    def __init__(self, every_n_steps: int = 100, warn_low: float = 1e-8, warn_high: float = 1e2):
+    """Log per-step gradient stats to spot vanishing/exploding gradients."""
+
+    def __init__(
+        self,
+        *,
+        every_n_steps: int = 100,
+        warn_low: float = 1e-8,
+        warn_high: float = 1e2,
+        log_norm: bool = True,
+        log_max: bool = True,
+        log_ratio: bool = False,
+        log_rms: bool = False,
+        ratio_eps: float = 1e-12,
+    ):
         super().__init__()
         self.every_n_steps = max(1, int(every_n_steps))
         self.warn_low = float(warn_low)
         self.warn_high = float(warn_high)
+        self.log_norm = bool(log_norm)
+        self.log_max = bool(log_max)
+        self.log_ratio = bool(log_ratio)
+        self.log_rms = bool(log_rms)
+        self.ratio_eps = float(ratio_eps)
 
     def on_after_backward(self, trainer, pl_module):
         step = int(getattr(trainer, "global_step", 0))
@@ -292,19 +310,38 @@ class GradNormMonitor(pl.Callback):
             g = getattr(p, "grad", None)
             if g is None:
                 continue
-            gn = g.norm(2).item()
-            gmax = g.abs().max().item()
+
+            g_abs = g.abs()  # support complex gradients by operating on magnitude
+            gn = g_abs.norm(2).item()
+            gmax = g_abs.max().item()
+            rms = (g_abs.pow(2).mean().sqrt().item()) if self.log_rms else None
+
+            # ratio between grad norm and weight norm, helps spot vanishing gradients
+            ratio = None
+            if self.log_ratio:
+                pn = p.abs().norm(2).item()
+                ratio = gn / (pn + self.ratio_eps)
+
             is_finite = torch.isfinite(g).all()
             if gn < self.warn_low:
                 warn(f"[grad vanishing] {name} | L2={gn:.2e} max={gmax:.2e}")
             if gn > self.warn_high or not is_finite:
                 err(f"[grad exploding] {name} | L2={gn:.2e} max={gmax:.2e}")
-            stats.append((name, gn, gmax))
+
+            stats.append((name, gn, gmax, ratio, rms))
 
         if stats and trainer.logger is not None:
-            log_payload = {f"grad/L2/{n}": v for n, v, _ in stats}
-            log_payload.update({f"grad/max/{n}": m for n, _, m in stats})
-            trainer.logger.log_metrics(log_payload, step=step)
+            log_payload = {}
+            if self.log_norm:
+                log_payload.update({f"grad/L2/{n}": v for n, v, _, _, _ in stats})
+            if self.log_max:
+                log_payload.update({f"grad/max/{n}": m for n, _, m, _, _ in stats})
+            if self.log_ratio:
+                log_payload.update({f"grad/ratio/{n}": r for n, _, _, r, _ in stats if r is not None})
+            if self.log_rms:
+                log_payload.update({f"grad/rms/{n}": rms for n, _, _, _, rms in stats if rms is not None})
+            if log_payload:
+                trainer.logger.log_metrics(log_payload, step=step)
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig):
@@ -456,8 +493,32 @@ def main(cfg: DictConfig):
         ModelSummary(max_depth=2),
         TQDMProgressBar(refresh_rate=1),
         DatasetEpochSetter(train_ds),
-        GradNormMonitor(every_n_steps=1500, warn_low=1e-11, warn_high=1e2),
     ]
+
+    lnlog_cfg = (cfg.get("trainer", {}) or {}).get("LayerNormLogging", {}) or {}
+    if lnlog_cfg.get("enable", False):
+        callbacks.append(
+            LayerNormStatsCallback(
+                every_n_steps=int(lnlog_cfg.get("every_n_steps", 200)),
+                max_modules=int(lnlog_cfg.get("max_modules", 8)),
+                prefix=str(lnlog_cfg.get("prefix", "ln")),
+            )
+        )
+
+    gm_cfg = (cfg.get("trainer", {}) or {}).get("GradNormMonitor", {}) or {}
+    if gm_cfg.get("enable", True):
+        callbacks.append(
+            GradNormMonitor(
+                every_n_steps=gm_cfg.get("every_n_steps", 1),
+                warn_low=gm_cfg.get("warn_low", 1e-11),
+                warn_high=gm_cfg.get("warn_high", 1e2),
+                log_norm=gm_cfg.get("log_norm", True),
+                log_max=gm_cfg.get("log_max", True),
+                log_ratio=gm_cfg.get("log_ratio", False),
+                log_rms=gm_cfg.get("log_rms", False),
+                ratio_eps=gm_cfg.get("ratio_eps", 1e-12),
+            )
+        )
 
     nan_cfg = (cfg.get("trainer", {}) or {}).get("NaNDetector", {}) or {}
     if bool(nan_cfg.get("enable", False)):
