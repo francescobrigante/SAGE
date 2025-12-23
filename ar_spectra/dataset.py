@@ -140,13 +140,13 @@ class OnTheFlySTFTDataset(Dataset):
             [p for p in self.audio_dir.rglob("*") if p.suffix.lower() in self.extensions]
         )
 
-        # Prefer torchaudio.info; fallback a torchaudio.io.info; altrimenti nessun pre-filtraggio.
+        # Prefer torchaudio.info; fallback a torchaudio.io.info; otherwise no pre-filtering.
         self._probe_fn = self._pick_probe_fn()
 
         self.files: list[Path] = []
         mismatched_count = 0
         if self._probe_fn is None:
-            # Nessun modo rapido per stimare la lunghezza: tieni tutti i file, filtra a runtime.
+            # No quick way to estimate length: keep all files, filter at runtime.
             self.files = candidate_files
         else:
             for p in candidate_files:
@@ -162,16 +162,16 @@ class OnTheFlySTFTDataset(Dataset):
                         mismatched_count += 1
                         continue
                     if not self.full_waveform:
-                        # altrimenti includi il file se la sua lunghezza stimata è accettabile
+                        # otherwise include the file if its estimated length is acceptable
                         est_len = int(round(num_frames * (self.sample_rate / src_sr))) if src_sr > 0 else num_frames
                         if est_len >= self.min_acceptable_len:
                             self.files.append(p)
                     else:
                         self.files.append(p)
                 except Exception:
-                    # Non scartare l’intero dataset per errori puntuali, continua
+                    # Do not discard the entire dataset for occasional errors, continue
                     continue
-        # Emit a single warning if abbiamo escluso file per mismatch (solo se ne abbiamo esclusi)
+        # Emit a single warning if we excluded files due to mismatch (only if we excluded any)
         if mismatched_count > 0:
             warn(f"Excluded {mismatched_count} file(s) due to mismatch with skip_criteria: {list(self.skip_criteria)}")
 
@@ -199,7 +199,7 @@ class OnTheFlySTFTDataset(Dataset):
         self._reset_rng()
         # Flag for warning about channel mismatch
         self._warned_channel_mismatch: int = 0
-        # NEW: flag per warning singolo sul fallback mp3
+        # flag for single warning on mp3 fallback
         self._warned_torchaudio_mp3_partial_fail: int = 0
 
     def enable_return_paths(self) -> None:
@@ -221,8 +221,8 @@ class OnTheFlySTFTDataset(Dataset):
     def _load_waveform(self, path: Path) -> tuple[torch.Tensor, int]:
         wav, sr = torchaudio.load(str(path), normalize=True)  # (C, N)
         
-        # Se i canali non corrispondono e non stiamo skippando per 'channels',
-        # avvisa una volta (solo alla prima epoca) e adatta la forma d'onda.
+        # If channels do not match and we are not skipping for 'channels',
+        # warn once (only in the first epoch) and adapt the waveform.
         file_channels = int(wav.size(0))
         expected = 2 if self.stereo else 1
         if file_channels != expected and "channels" not in self.skip_criteria:
@@ -245,9 +245,9 @@ class OnTheFlySTFTDataset(Dataset):
                 wav = wav.repeat(2, 1)  # duplicate mono -> stereo
 
         wav = wav.to(torch.float32)
-        # Resample solo se il sample rate è diverso E non stiamo skippando per 'sample_rate'
+        # Resample only if the sample rate is different AND we are not skipping for 'sample_rate'
         if sr != self.sample_rate and "sample_rate" not in self.skip_criteria:
-            if self._epoch == 0: # Avvisa solo alla prima epoca per evitare spam
+            if self._epoch == 0: # Warn only in the first epoch to avoid spam
                 warn(f"Resampling from {sr} Hz to {self.sample_rate} Hz for file: {path}")
             wav = torchaudio.functional.resample(wav, sr, self.sample_rate)
             sr = self.sample_rate
@@ -301,21 +301,21 @@ class OnTheFlySTFTDataset(Dataset):
     
     def _load_segment_or_full(self, path: Path, generator: Optional[torch.Generator] = None) -> tuple[torch.Tensor, int]:
         """
-        Prova a decodificare solo il segmento richiesto via frame_offset/num_frames
-        per tutti i formati supportati (WAV, FLAC, MP3, ecc.).
-        Fallback a load completo + crop se il partial load fallisce.
+        Try to decode only the requested segment via frame_offset/num_frames
+        for all supported formats (WAV, FLAC, MP3, etc.).
+        Fallback to full load + crop if partial load fails.
 
         Accepts optional generator to make the chosen start reproducible/controllable.
         """
         gen = generator or self._rng
 
-        # se non abbiamo un probe affidabile, fallback semplice (load completo)
+        # if we don't have a reliable probe, simple fallback (full load)
         if self._probe_fn is None:
             wav, sr = self._load_waveform(path)
             seg = self._random_crop_or_pad(wav, generator=gen)
             return seg.to(torch.float32), sr
 
-        # Prova partial load per TUTTI i formati
+        # Try partial load for ALL formats
         try:
             src_sr, total_frames, _ch = self._probe_fn(path)
         except Exception:
@@ -323,16 +323,16 @@ class OnTheFlySTFTDataset(Dataset):
             seg = self._random_crop_or_pad(wav, generator=gen)
             return seg.to(torch.float32), sr
 
-        # Calcola quanti sample leggere nel sample rate SORGENTE
-        # per ottenere segment_samples dopo eventuale resampling
+        # Calculate how many samples to read in the SOURCE sample rate
+        # to obtain segment_samples after possible resampling
         if src_sr != self.sample_rate and "sample_rate" not in self.skip_criteria:
-            # Dobbiamo leggere più sample dal file sorgente
+            # We need to read more samples from the source file
             src_segment_samples = int(np.ceil(self.segment_samples * (src_sr / self.sample_rate)))
         else:
             src_segment_samples = self.segment_samples
 
         if total_frames < src_segment_samples:
-            # File troppo corto, fallback a load completo con padding
+            # File too short, fallback to full load with padding
             wav, sr = self._load_waveform(path)
             seg = self._random_crop_or_pad(wav, generator=gen)
             return seg.to(torch.float32), sr
@@ -350,7 +350,7 @@ class OnTheFlySTFTDataset(Dataset):
                 normalize=True
             )
         except Exception as e:
-            # Fallback: load completo + crop
+            # Fallback: full load + crop
             try:
                 wav, sr = self._load_waveform(path)
                 seg = self._random_crop_or_pad(wav, generator=gen)
@@ -365,8 +365,8 @@ class OnTheFlySTFTDataset(Dataset):
             wav = torchaudio.functional.resample(wav, sr, self.sample_rate)
             sr = self.sample_rate
         
-        # Dopo resampling, potremmo avere qualche sample in più o in meno
-        # Crop/pad per ottenere esattamente segment_samples
+        # After resampling, we might have a few samples more or less
+        # Crop/pad to get exactly segment_samples
         cur_len = wav.shape[-1]
         if cur_len > self.segment_samples:
             wav = wav[..., :self.segment_samples]
@@ -505,13 +505,12 @@ class OnTheFlySTFTDataset(Dataset):
             nc = int(meta.info.channels)
             return sr, nf, nc
 
-        # torchaudio.info se esiste
+        # torchaudio.info if available
         if hasattr(torchaudio, "info"):
             def _probe(path):
                 if path.suffix.lower() == ".mp3":
                     return _probe_mp3(path)
                 i = torchaudio.info(str(path))
-                # In torchaudio nuove versioni: AudioMetaData con sample_rate, num_frames, num_channels
                 sr = getattr(i, "sample_rate", None)
                 nf = getattr(i, "num_frames", None)
                 nc = getattr(i, "num_channels", getattr(i, "channels", None))
@@ -520,7 +519,7 @@ class OnTheFlySTFTDataset(Dataset):
                 return int(sr), int(nf), int(nc)
             return _probe
 
-        # soundfile per wav/flac/ogg ecc.
+        # soundfile for wav/flac/ogg etc.
         try:
             import soundfile as sf
             def _probe(path):
@@ -530,5 +529,5 @@ class OnTheFlySTFTDataset(Dataset):
         except Exception:
             pass
 
-        # nessun probe veloce disponibile
+        # no fast probe available
         return None

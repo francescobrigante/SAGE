@@ -46,22 +46,21 @@ class ComplexRMSNorm(nn.Module):
         if not torch.is_complex(x):
             raise TypeError("ComplexRMSNorm expects a complex tensor as input")
 
-        # assicuriamoci che le ultime dims corrispondano
         assert x.shape[-len(self.normalized_shape):] == self.normalized_shape, (
             f"Expected trailing dimensions {self.normalized_shape}, "
             f"got {x.shape[-len(self.normalized_shape):]}"
         )
 
-        # assi su cui fare la RMS (come LayerNorm)
+        # axes over which to compute the RMS (like LayerNorm)
         axes = tuple(range(-len(self.normalized_shape), 0))
 
         # |x|^2 = Re^2 + Im^2
         mag_sq = x.real.pow(2) + x.imag.pow(2)
 
-        # mean su feature, poi sqrt
+        # mean over feature, then sqrt
         rms = torch.sqrt(mag_sq.mean(dim=axes, keepdim=True) + self.eps)
 
-        # normalizzazione
+        # normalization
         x_norm = x / rms
 
         if self.elementwise_affine:
