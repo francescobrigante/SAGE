@@ -2,7 +2,8 @@
 
 EulerAudioBackbone is a complex-valued autoencoder designed for generative modeling directly on STFT spectrograms. It supports research on neural audio coding, diffusion-ready VAEs, and source separation while preserving analyticity throughout the pipeline.
 
-> 🚀 **Pro Tip:** We strongly recommend logging into [Weights & Biases](https://wandb.ai/site) to track your experiments. Run `wandb login` before starting training to enable rich logging and visualization.
+> [!WARNING]
+> This library is just born, I din't even started writing the full documentation, and has plenty of bug, just wait until its stable.
 
 ---
 
@@ -31,32 +32,18 @@ Choose a single workflow and stick to it - either Astral `uv` or a classic virtu
   uv sync
   ```
   This creates `.venv/`, installs dependencies from `pyproject.toml`, and honors `uv.lock`.
-- Execute scripts without manual activation:
+  - Execute scripts without manual activation:
   ```bash
   uv run train.py
-  uv run inference.py
   ```
-- To add packages, edit `pyproject.toml` and re-run `uv sync` (ignore `requirements.txt`) or follow uv official documentation with `uv.add ...` .
+  - To add packages, edit `pyproject.toml` and re-run `uv sync` (ignore `requirements.txt`) or follow uv official documentation with `uv.add ...` .
 
-### Option B - Classic virtualenv + pip
-- Create and activate a virtual environment:
-  ```bash
-  python -m venv .venv
-  source .venv/bin/activate  # use .venv\Scripts\Activate.ps1 on Windows
-  ```
-- Install dependencies from `requirements.txt`:
-  ```bash
-  pip install --upgrade pip
-  pip install -r requirements.txt
-  ```
-- Run scripts via the active environment:
-  ```bash
-  python train.py
-  python inference.py
-  ```
+<div style="border-left: 4px solid #2da44e; padding: 0.75rem 1rem; background: #f1f8f4; border-radius: 8px; margin: 1rem 0;">
+<strong style="color:#2da44e;">Important</strong> — We strongly recommend logging into <a href="https://wandb.ai/site">Weights & Biases</a> to track your experiments. Run <code>wandb login</code> before starting training to enable rich logging and visualization.
+</div>
+
 
 ---
-
 
 ## ⚙️ Configuration
 
@@ -99,21 +86,8 @@ latents, info = codec.encode_audio(waveform_batch)
 recons = codec.decode_audio(latents, info)
 ```
 
-Under the hood the helper rebuilds the `AutoEncoder` from the serialized specs,
-restores the canonical STFT configuration, and exposes encode/decode methods
-that operate directly on waveforms. This same utility is what `inference.py`
-invokes, so CLI entry points still work via:
 
-```bash
-uv run inference.py
-# or
-python inference.py
-```
-
-> **Note**: regenerate checkpoints after pulling this change so they include
-> the `inference_config` block required by the helper.
-
-### Building Models from Configs
+## Building Models from Configs
 
 When adding new model architectures, you must ensure that your YAML configuration
 exposes the parameters required by the trainer to inject channel information.
@@ -151,13 +125,15 @@ training time.
   configuring 2 channels for a mono dataset) will cause runtime errors.
 - **Example of `auto` working**: if the dataset has CAC activated and stereo there is going to be an `input_size` of 4. 
 
-**Note on Checkpoints**: Once trained, the resolved values are baked into the
+<div style="border-left: 4px solid #2da44e; padding: 0.75rem 1rem; background: #f1f8f4; border-radius: 8px; margin: 1rem 0;">
+<strong style="color:#2da44e;">Note on Checkpoints</strong>: Once trained, the resolved values are baked into the
 checkpoint's `inference_config`. The inference loader reads these saved values
 automatically, so you do not need to worry about `auto` resolution when loading
 a trained model.
 
 If there are problems with checkpoint use in inference we suggest the following
 procedure as a fallback.
+</div>
 
 ### Regenerating legacy checkpoints
 
