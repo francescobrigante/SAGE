@@ -5,10 +5,8 @@ device: cuda
 optimizer:
   type: RAdam
   config:
-    lr: 1e-3
+    lr: 3e-4
     weight_decay: 1e-5
-    decoupled_weight_decay: true
-
 
 scheduler:
   type: InverseLR
@@ -39,16 +37,33 @@ trainer:
   num_gpus: 1
   terminate_on_nan: true
   detect_anomaly: true
-  gradient_clip_val: 5.0
+  gradient_clip_val: 1.0
   gradient_clip_algorithm: norm
 
   NaNDetector:
-    enable: false
+    enable: true
     check_inputs: true
     check_outputs: true
     check_gradients: true
     check_parameters: true
+    every_n_steps: 0.5
+
+  GradNormMonitor:
+    enable: true
     every_n_steps: 1
+    warn_low: 1e-14
+    warn_high: 1e2
+    log_norm: false
+    log_max: true
+    log_ratio: true
+    log_rms: true
+    ratio_eps: 1e-12
+
+  LayerNormLogging:
+    enable: true
+    every_n_steps: 20
+    max_modules: 8
+    prefix: ln
 
 wandb:
   project: ICML_2026

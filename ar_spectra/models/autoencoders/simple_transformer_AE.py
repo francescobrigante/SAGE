@@ -3,7 +3,7 @@ from torch.nn import Module, ModuleList
 import torch.nn as nn
 from typing import Sequence, Tuple, Union
 from ar_spectra.modules.cplx_attention import CMultiHeadedAttention
-from ar_spectra.modules.attention import RelPositionMultiHeadedAttention
+from ar_spectra.modules.attention import MultiHeadedAttention, RelPositionMultiHeadedAttention
 from ar_spectra.modules.normed_modules.conv import (
     NormConv2d, NormConvTranspose2d,
     SConv2d, SConvTranspose2d,
@@ -69,59 +69,92 @@ class RelPositionalEncoding(nn.Module):
         return pos
 
 
-
 class Transformer(Module):
-    def __init__(self, n_heads: int, in_dim: int, feat_dim: int, dropout_rate: float, use_complex: bool = True) -> None:
+    def __init__(
+        self,
+        n_heads: int,
+        feat_dim: int,
+        dropout_rate: float,
+        use_complex: bool = False,
+        use_rel_pos: bool = True,
+    ) -> None:
         super().__init__()
-        self.in_dim = in_dim
         self.feat_dim = feat_dim
         self.use_complex = use_complex
-        
-        if not use_complex:
-            raise NotImplementedError("This transformer class only supports complex operations.")
+        self.use_rel_pos = use_rel_pos
 
         if use_complex:
-            self.norm = ComplexLayerNorm(self.in_dim)
+            self.norm = ComplexLayerNorm(feat_dim)
             self.attn = CMultiHeadedAttention(
-                n_heads, self.in_dim, dropout_rate=dropout_rate
+                n_heads, feat_dim, dropout_rate=dropout_rate
             )
-            self.pos_enc = None  
+            self.pos_enc = None  # o un'altra versione complessa se ti serve
+        else:
+            self.norm = nn.LayerNorm(2 * feat_dim)
+            if use_rel_pos:
+                self.attn = RelPositionMultiHeadedAttention(
+                    n_heads, 2 * feat_dim, dropout_rate=dropout_rate
+                )
+                # Positional encoding relativo per il ramo reale
+                self.pos_enc = RelPositionalEncoding(d_model=2 * feat_dim)
+            else:
+                self.attn = MultiHeadedAttention(
+                    n_heads, 2 * feat_dim, dropout_rate=dropout_rate
+                )
+                self.pos_enc = None
 
-        self.norm2 = ComplexLayerNorm(self.in_dim)
-        self.linear1 = nn.Linear(self.in_dim, self.feat_dim, dtype=torch.complex64)
+        self.norm2 = ComplexLayerNorm(feat_dim)
+        self.linear1 = nn.Linear(feat_dim, feat_dim, dtype=torch.complex64)
         self.activation = get_activation("CReLU", is_complex=True)
-        self.linear2 = nn.Linear(self.feat_dim, self.in_dim, dtype=torch.complex64)
+        self.linear2 = nn.Linear(feat_dim, feat_dim, dtype=torch.complex64)
 
     def forward(self, x: torch.Tensor, mask=None, debug=False) -> torch.Tensor:
         """
         x: (B, T, D) complesso, dove D = feat_dim = channels * frequency
         """
-        if debug:
-            console.log(f"Transformer input shape: {x.shape}")
         D = self.feat_dim
 
         # self-attention (pre-LN)
         if self.use_complex:
+            # ramo complesso puro (se la tua C-attn non usa pos_emb)
             q = self.norm(x)
             k = q
             v = q
             x = x + self.attn(query=q, key=k, value=v, mask=mask)
-            
-            if debug:
-                console.log(f"Transformer after attention shape: {x.shape}")
+        else:
+            # CAC: C^D -> R^{2D}
+            x_r = torch.cat([x.real, x.imag], dim=-1)  # (B, T, 2D)
 
-        # Feed-forward complex-valued (pre-LN)
+            # pos_emb reale in R^{B x (2T-1) x 2D}
+            pos_emb_r = self.pos_enc(x_r) if self.pos_enc is not None else None
+
+            q = self.norm(x_r)
+            k = q
+            v = q
+            if pos_emb_r is not None:
+                x_r = x_r + self.attn(
+                    query=q,
+                    key=k,
+                    value=v,
+                    pos_emb=pos_emb_r,
+                    mask=mask,
+                )
+            else:
+                x_r = x_r + self.attn(
+                    query=q,
+                    key=k,
+                    value=v,
+                    mask=mask,
+                )
+
+            # ritorno in C^D
+            x = torch.complex(x_r[..., :D], x_r[..., D:])
+
+        # Feed-forward complesso (pre-LN)
         residual = x
-        x = self.linear1(self.norm2(x))
-        if debug:
-            console.log(f"Transformer after feed-forward linear1 shape: {x.shape}")
-        x = self.activation(x)
-        x = self.linear2(x)
-        if debug:
-            console.log(f"Transformer after feed-forward linear2 shape: {x.shape}")
-        x = residual + x
-        if debug:
-            console.log(f"Transformer output shape: {x.shape}")
+        ff_out = self.linear2(self.activation(self.linear1(self.norm2(x))))
+
+        x = residual + ff_out
 
         return x
 
@@ -141,6 +174,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
         image_size: Tuple[int, int] = (256, 32),
         patch_size: Union[int, Tuple[int, int]] = (8, 8),
         is_complex: bool = True,
+        use_rel_pos: bool = True,
         ) -> None:
         super().__init__(input_size=input_size, is_complex=is_complex)
         self.input_size = input_size
@@ -151,6 +185,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
         self.activation = activation
         self.inter_dim = inter_dim
         self.mlp_mult = mlp_mult
+        self.use_rel_pos = use_rel_pos
         
         image_height, image_width = pair(image_size)
         self.image_size = (image_height, image_width)
@@ -164,7 +199,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
 
         self.conv0 = SConv2d(self.input_size, self.input_size, kernel_size=3, stride=1,is_complex=True)
         self.act0 = get_activation(self.activation, is_complex= True)
-        self.conv1 = SConv2d(self.input_size, self.dim, kernel_size=8, stride=4, is_complex=True)
+        self.conv1 = SConv2d(self.input_size, self.dim, kernel_size=5, stride=1, is_complex=True)
         
         self.unfold = nn.Unfold(kernel_size=self.patch_size, stride=self.patch_size)
         self.linear_proj = nn.Linear(patch_dim, self.inter_dim, dtype=torch.complex64)
@@ -174,9 +209,9 @@ class SimpleTransformerEncoder(AbstractEncoder):
         self.attn_blocks = ModuleList([
             Transformer(
                 n_heads=self.n_heads,
-                in_dim=self.inter_dim,
-                feat_dim=self.inter_dim * self.mlp_mult,
+                feat_dim=self.inter_dim,
                 dropout_rate=self.dropout_rate,
+                use_rel_pos=self.use_rel_pos,
             )
             for _ in range(self.depth)
         ])
@@ -217,7 +252,6 @@ class SimpleTransformerEncoder(AbstractEncoder):
 
 class SimpleTransformerDecoder(AbastractDecoder):
     """
-
     """
 
     def __init__(
@@ -235,6 +269,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
         deconv_out_padding: Union[int, tuple] = ((0, 1), (0, 0)),
         final_out_padding: Union[int, tuple] = ((0, 0), (0, 0)),
         is_complex: bool = True,
+        use_rel_pos: bool = True,
     ) -> None:
         super().__init__(channels=channels, is_complex=is_complex)
         self.channels = channels
@@ -245,6 +280,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
         self.activation = activation
         self.inter_dim = inter_dim
         self.mlp_mult = mlp_mult
+        self.use_rel_pos = use_rel_pos
 
         F1, T1 = pair(image_size)
         self.image_size = (F1, T1)
@@ -262,7 +298,12 @@ class SimpleTransformerDecoder(AbastractDecoder):
         self.linear_tok = nn.Linear(inter_dim, inter_dim, dtype=torch.complex64)
 
         self.blocks = nn.ModuleList([
-            Transformer(n_heads=n_heads, in_dim=inter_dim, feat_dim=inter_dim*self.mlp_mult, dropout_rate=dropout_rate)
+            Transformer(
+                n_heads=n_heads,
+                feat_dim=inter_dim,
+                dropout_rate=dropout_rate,
+                use_rel_pos=self.use_rel_pos,
+            )
             for _ in range(depth)
         ])
 
@@ -276,7 +317,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
         self.deconv1 = SConvTranspose2d(
             dim,
             channels,
-            kernel_size=8, stride=4,
+            kernel_size=5, stride=1,
             out_padding=deconv_out_padding,
             is_complex=True,
         )
