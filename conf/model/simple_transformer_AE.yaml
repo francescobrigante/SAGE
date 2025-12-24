@@ -23,8 +23,7 @@ model:
       patch_size: [16, 16]
       image_size: [1024, 128]
       inter_dim: 64
-      mlp_mult: 4
-      use_rel_pos: false
+      use_pos_enc: true
 
   decoder:
     class: ar_spectra.models.autoencoders.simple_transformer_AE.SimpleTransformerDecoder
@@ -37,8 +36,7 @@ model:
       patch_size: [16, 16]
       image_size: [1024, 128]
       inter_dim: 64
-      mlp_mult: 4
-      use_rel_pos: false
+      use_pos_enc: true
 
 
   bottleneck:

@@ -16,7 +16,7 @@ model:
     class: ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d
     kwargs:
       input_size: auto           # will be patched at runtime
-      dimension: 128
+      dimension: 64
       n_filters: 8
       n_residual_layers: 1
       ratios: [[4,2],[1,2],[4,2]]
@@ -48,4 +48,4 @@ model:
       is_complex: true
   bottleneck:
     class: ar_spectra.models.bottlenecks.VAEBottleneck
-    skip_bottleneck: false
+    skip_bottleneck: true
