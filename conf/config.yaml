@@ -5,7 +5,7 @@
 
 defaults:
   - data: data
-  - model: SEANet_cplx_model
+  - model: simple_transformer_AE
   - trainer: trainer
   - _self_
 

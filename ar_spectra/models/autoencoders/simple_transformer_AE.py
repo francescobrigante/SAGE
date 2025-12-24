@@ -8,9 +8,12 @@ from ar_spectra.modules.normed_modules.conv import (
     NormConv2d, NormConvTranspose2d,
     SConv2d, SConvTranspose2d,
 )
+import typing as tp
+from ar_spectra.modules.cplx_embedding import ComplexPositionalEncoding, ComplexScaledPositionalEncoding
 from ar_spectra.modules.normed_modules.norm import ComplexLayerNorm, ComplexBatchNorm1d
 from ar_spectra.modules.activations import get_activation
 from ar_spectra.models.autoencoders.abstract_ae import AbstractEncoder, AbastractDecoder
+from ar_spectra.models.autoencoders.SeaNET_AE import SEANetResnetBlock2d
 from rich.console import Console
 console = Console()
 
@@ -75,23 +78,30 @@ class Transformer(Module):
         n_heads: int,
         feat_dim: int,
         dropout_rate: float,
-        use_complex: bool = False,
-        use_rel_pos: bool = True,
+        use_complex: bool = True,
+        use_pos_enc: bool = False,
     ) -> None:
         super().__init__()
         self.feat_dim = feat_dim
         self.use_complex = use_complex
-        self.use_rel_pos = use_rel_pos
+        self.use_pos = use_pos_enc
+        self.pos_enc = None
 
         if use_complex:
             self.norm = ComplexLayerNorm(feat_dim)
+            if use_pos_enc:
+                self.pos_enc = ComplexScaledPositionalEncoding(
+                    d_model=feat_dim,
+                    dropout_rate=dropout_rate,
+                    max_len=5000,
+                )
+                
             self.attn = CMultiHeadedAttention(
                 n_heads, feat_dim, dropout_rate=dropout_rate
             )
-            self.pos_enc = None  # o un'altra versione complessa se ti serve
         else:
             self.norm = nn.LayerNorm(2 * feat_dim)
-            if use_rel_pos:
+            if use_pos_enc:
                 self.attn = RelPositionMultiHeadedAttention(
                     n_heads, 2 * feat_dim, dropout_rate=dropout_rate
                 )
@@ -102,6 +112,9 @@ class Transformer(Module):
                     n_heads, 2 * feat_dim, dropout_rate=dropout_rate
                 )
                 self.pos_enc = None
+        ok("Created transformer block with {} heads, feat_dim={}, use_complex={}, use_pos_enc={}".format(
+            n_heads, feat_dim, use_complex, use_pos_enc
+        ))
 
         self.norm2 = ComplexLayerNorm(feat_dim)
         self.linear1 = nn.Linear(feat_dim, feat_dim, dtype=torch.complex64)
@@ -116,8 +129,11 @@ class Transformer(Module):
 
         # self-attention (pre-LN)
         if self.use_complex:
-            # ramo complesso puro (se la tua C-attn non usa pos_emb)
-            q = self.norm(x)
+            if self.use_pos:
+                x_in = self.pos_enc(x)
+            else:
+                x_in = x
+            q = self.norm(x_in)
             k = q
             v = q
             x = x + self.attn(query=q, key=k, value=v, mask=mask)
@@ -166,15 +182,25 @@ class SimpleTransformerEncoder(AbstractEncoder):
         input_size: int,
         dim: int = 4,
         inter_dim: int = 256,
-        mlp_mult: int = 4,
         n_heads: int = 4,
         depth: int = 6,
         dropout_rate: float = 0.1,
         activation: str = "CReLU",
         image_size: Tuple[int, int] = (256, 32),
         patch_size: Union[int, Tuple[int, int]] = (8, 8),
+        norm: str = "none",
         is_complex: bool = True,
-        use_rel_pos: bool = True,
+        use_pos_enc: bool = True,
+        n_residual_layers: int = 1,
+        residual_kernel_size: int = 3, 
+        dilation_base: int = 2,
+        norm_params: dict = {},
+        activation_params: dict = {},
+        causal: bool = False,
+        true_skip: bool = False, 
+        compress: int = 2,
+        pad_mode: str = 'reflect',
+        conv_group_ratio: int = -1,
         ) -> None:
         super().__init__(input_size=input_size, is_complex=is_complex)
         self.input_size = input_size
@@ -184,8 +210,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
         self.dropout_rate = dropout_rate
         self.activation = activation
         self.inter_dim = inter_dim
-        self.mlp_mult = mlp_mult
-        self.use_rel_pos = use_rel_pos
+        self.use_pos_enc = use_pos_enc
         
         image_height, image_width = pair(image_size)
         self.image_size = (image_height, image_width)
@@ -197,9 +222,22 @@ class SimpleTransformerEncoder(AbstractEncoder):
         num_patches = (image_height // patch_height) * (image_width // patch_width)
         patch_dim = self.dim * patch_height * patch_width   # 32*8*8 = 2048
 
-        self.conv0 = SConv2d(self.input_size, self.input_size, kernel_size=3, stride=1,is_complex=True)
+        self.conv0 = SConv2d(self.input_size, self.input_size, kernel_size=3, stride=1,is_complex=True, norm=norm)
         self.act0 = get_activation(self.activation, is_complex= True)
-        self.conv1 = SConv2d(self.input_size, self.dim, kernel_size=5, stride=1, is_complex=True)
+        self.conv1 = SConv2d(self.input_size, self.dim, kernel_size=5, stride=1, is_complex=True, norm=norm)
+        
+        resnet : tp.List[nn.Module] = []
+        for j in range(n_residual_layers): # This is always 1, parameter never gets changed from default anywhere
+            resnet += [
+                SEANetResnetBlock2d(self.dim,
+                                    kernel_sizes=[(residual_kernel_size, residual_kernel_size), (1, 1)],
+                                    dilations=[(1, dilation_base ** j), (1, 1)],
+                                    norm=norm, norm_params=norm_params,
+                                    activation=activation, activation_params=activation_params,
+                                    causal=causal, pad_mode=pad_mode, compress=compress, true_skip=true_skip,
+                                    conv_group_ratio=conv_group_ratio, is_complex=is_complex)]
+            
+        self.resnet = nn.Sequential(*resnet)
         
         self.unfold = nn.Unfold(kernel_size=self.patch_size, stride=self.patch_size)
         self.linear_proj = nn.Linear(patch_dim, self.inter_dim, dtype=torch.complex64)
@@ -211,7 +249,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
                 n_heads=self.n_heads,
                 feat_dim=self.inter_dim,
                 dropout_rate=self.dropout_rate,
-                use_rel_pos=self.use_rel_pos,
+                use_pos_enc=self.use_pos_enc,
             )
             for _ in range(self.depth)
         ])
@@ -222,30 +260,31 @@ class SimpleTransformerEncoder(AbstractEncoder):
     def forward(self, x: torch.Tensor, skip_attn: bool = False, debug: bool = False) -> torch.Tensor:
         x = self.conv0(x)
         if debug:
-            console.log(f"Encoder after conv0 shape: {x.shape}")
+            ok(f"Encoder after conv0 shape: {x.shape}")
         x = self.act0(x)
         x = self.conv1(x)                              # (B, D, F', T')
         if debug:
-            console.log(f"Encoder after conv1 shape: {x.shape}")
-
+            ok(f"Encoder after conv1 shape: {x.shape}")
+        x = self.resnet(x)                            # (B, D, F', T')
+        if debug:
+            ok(f"Encoder after resnet shape: {x.shape}")
         x = self.unfold(x)                         # (B, P, L)
         if debug:
-            console.log(f"Encoder after unfold shape: {x.shape}")
+            ok(f"Encoder after unfold shape: {x.shape}")
         x = x.transpose(1, 2).contiguous()         # (B, L, P)
         x = self.linear_proj(x)                    # (B, L, D)
         if debug:
-            console.log(f"Encoder after linear_proj shape: {x.shape}")
+            ok(f"Encoder after linear_proj shape: {x.shape}")
 
         if not skip_attn:
             for blk in self.attn_blocks:
                 x = blk(x, debug=debug)                       # (B, L, D)
                 if debug:
-                    console.log(f"Encoder after attention block shape: {x.shape}")
+                    ok(f"Encoder after attention block shape: {x.shape}")
 
         x = self.linear(self.norm(x))              # (B, L, D)
         if debug:
-            console.log(f"Encoder after final norm+linear shape: {x.shape}")
-
+            ok(f"Encoder after final norm+linear shape: {x.shape}")
         # se vuoi uscire come (B, D, L) per compatibilità col decoder:
         x = x.transpose(1, 2).contiguous()         # (B, D, L)
         return x
@@ -263,13 +302,23 @@ class SimpleTransformerDecoder(AbastractDecoder):
         depth: int = 6,
         dropout_rate: float = 0.1,
         activation: str = "CReLU",
-        mlp_mult: int = 4,
         image_size: Tuple[int, int] = (256, 32),          # = (F1,T1) dopo conv1
         patch_size: Union[int, Tuple[int, int]] = (8, 8), # = encoder.patch_size
         deconv_out_padding: Union[int, tuple] = ((0, 1), (0, 0)),
         final_out_padding: Union[int, tuple] = ((0, 0), (0, 0)),
         is_complex: bool = True,
-        use_rel_pos: bool = True,
+        use_pos_enc: bool = True,
+        n_residual_layers: int = 1,
+        norm: str = "none",
+        residual_kernel_size: int = 3, 
+        dilation_base: int = 2,
+        norm_params: dict = {},
+        activation_params: dict = {},
+        causal: bool = False,
+        true_skip: bool = False, 
+        compress: int = 2,
+        pad_mode: str = 'reflect',
+        conv_group_ratio: int = -1,
     ) -> None:
         super().__init__(channels=channels, is_complex=is_complex)
         self.channels = channels
@@ -279,8 +328,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
         self.dropout_rate = dropout_rate
         self.activation = activation
         self.inter_dim = inter_dim
-        self.mlp_mult = mlp_mult
-        self.use_rel_pos = use_rel_pos
+        self.use_pos_enc = use_pos_enc
 
         F1, T1 = pair(image_size)
         self.image_size = (F1, T1)
@@ -288,7 +336,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
         ph, pw = pair(patch_size)
         self.patch_size = (ph, pw)
 
-        assert F1 % ph == 0 and T1 % pw == 0, "image_size (F1,T1) deve essere divisibile per patch_size"
+        assert F1 % ph == 0 and T1 % pw == 0, "image_size (F1,T1) must be divisible by patch_size"
 
         self.L_expected = (F1 // ph) * (T1 // pw)
         self.P = dim * ph * pw  # = dim*patch_area
@@ -302,7 +350,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
                 n_heads=n_heads,
                 feat_dim=inter_dim,
                 dropout_rate=dropout_rate,
-                use_rel_pos=self.use_rel_pos,
+                use_pos_enc=self.use_pos_enc,
             )
             for _ in range(depth)
         ])
@@ -312,6 +360,19 @@ class SimpleTransformerDecoder(AbastractDecoder):
 
         # Fold: (B, P, L) -> (B, dim, F1, T1)
         self.fold = nn.Fold(output_size=self.image_size, kernel_size=self.patch_size, stride=self.patch_size)
+        
+        resnet : tp.List[nn.Module] = []
+        for j in range(n_residual_layers): # This is always 1, parameter never gets changed from default anywhere
+            resnet += [
+                SEANetResnetBlock2d(self.dim,
+                                    kernel_sizes=[(residual_kernel_size, residual_kernel_size), (1, 1)],
+                                    dilations=[(1, dilation_base ** j), (1, 1)],
+                                    norm=norm, norm_params=norm_params,
+                                    activation=activation, activation_params=activation_params,
+                                    causal=causal, pad_mode=pad_mode, compress=compress, true_skip=true_skip,
+                                    conv_group_ratio=conv_group_ratio, is_complex=is_complex)]
+            
+        self.resnet = nn.Sequential(*resnet)
 
         # Deconv per invertire conv1: (B, dim, F1, T1) -> (B, C, F, T) circa
         self.deconv1 = SConvTranspose2d(
@@ -320,6 +381,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
             kernel_size=5, stride=1,
             out_padding=deconv_out_padding,
             is_complex=True,
+            norm=norm,
         )
         self.act = get_activation(self.activation, is_complex=True)
 
@@ -331,23 +393,24 @@ class SimpleTransformerDecoder(AbastractDecoder):
             stride=(1,1),
             out_padding=final_out_padding,
             is_complex=True,
+            norm=norm,
         )
 
     def forward(self, z: torch.Tensor, skip_attn: bool = False, debug: bool = False) -> torch.Tensor:
         # z: (B, inter_dim, L) where inter_dim matches the token size used in the encoder
         if debug:
-            console.log(f"Decoder input (latent) shape: {z.shape}")
+            ok(f"Decoder input (latent) shape: {z.shape}")
 
         B, D, L = z.shape
-        assert D == self.inter_dim, f"Decoder attende inter_dim={self.inter_dim}, ma ha ricevuto D={D}"
-        assert L == self.L_expected, f"Decoder attende L={self.L_expected} (da image_size/patch), ma ha ricevuto L={L}"
+        assert D == self.inter_dim, f"Decoder expects inter_dim={self.inter_dim}, but received D={D}"
+        assert L == self.L_expected, f"Decoder expects L={self.L_expected} (from image_size/patch), but received L={L}"
 
         x = z.transpose(1, 2).contiguous()  # (B, L, dim)
 
         # norm+linear token-wise (feature-last)
         x = self.linear_tok(self.norm_tok(x))  # (B, L, dim)
         if debug:
-            console.log(f"Decoder after token norm+linear shape: {x.shape}")
+            ok(f"Decoder after token norm+linear shape: {x.shape}")
 
         # Transformer blocks
         if not skip_attn:
@@ -355,19 +418,23 @@ class SimpleTransformerDecoder(AbastractDecoder):
                 x = blk(x, debug=debug)  # (B, L, dim)
 
             if debug:
-                console.log(f"Decoder after attention stack shape: {x.shape}")
+                ok(f"Decoder after attention stack shape: {x.shape}")
 
         # unproject tokens -> patch vectors
         x = self.linear_unproj(x)                # (B, L, P)
         x = x.transpose(1, 2).contiguous()       # (B, P, L)
         if debug:
-            console.log(f"Decoder after unprojection shape: {x.shape}")
+            ok(f"Decoder after unprojection shape: {x.shape}")
 
         # Fold back to feature map (B, dim, F1, T1)
         fm = self.fold(x)  # (B, dim, F1, T1)
         
         if debug:
-            console.log(f"Decoder after fold shape: {fm.shape}")
+            ok(f"Decoder after fold shape: {fm.shape}")
+            
+        fm = self.resnet(fm)                      # (B, dim, F1, T1)
+        if debug:
+            ok(f"Decoder after resnet shape: {fm.shape}")
 
         # Invert conv1
         y = self.deconv1(fm)
@@ -375,7 +442,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
         y = self.final_conv(y)
 
         if debug:
-            console.log(f"Decoder output shape: {y.shape}")
+            ok(f"Decoder output shape: {y.shape}")
 
         return y
 
@@ -392,9 +459,10 @@ if __name__ == "__main__":
         n_heads=4,
         depth=2,
         dropout_rate=0.1,
+        image_size=(1024, 128),
         patch_size=(16, 16),
         activation="CRelu",
-        inter_dim=128,
+        inter_dim=64,
     ).to(device)
 
     # Decoder: channels=2 to match original input channels.
@@ -405,9 +473,9 @@ if __name__ == "__main__":
         depth=2,
         dropout_rate=0.1,
         activation="CRelu",
-        image_size=(256, 32),     # = shape dopo conv1
+        image_size=(1024, 128),
         patch_size=(16, 16),
-        inter_dim=128,
+        inter_dim=64,
         deconv_out_padding=((0, 1), (0, 0)),  # lascia come avevi se ti serve recuperare 1025
     ).to(device)
 

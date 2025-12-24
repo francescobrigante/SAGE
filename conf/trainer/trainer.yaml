@@ -41,7 +41,7 @@ trainer:
   gradient_clip_algorithm: norm
 
   NaNDetector:
-    enable: true
+    enable: false
     check_inputs: true
     check_outputs: true
     check_gradients: true
@@ -49,7 +49,7 @@ trainer:
     every_n_steps: 0.5
 
   GradNormMonitor:
-    enable: true
+    enable: false
     every_n_steps: 1
     warn_low: 1e-14
     warn_high: 1e2
@@ -60,7 +60,7 @@ trainer:
     ratio_eps: 1e-12
 
   LayerNormLogging:
-    enable: true
+    enable: false
     every_n_steps: 20
     max_modules: 8
     prefix: ln
