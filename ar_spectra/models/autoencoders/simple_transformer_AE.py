@@ -1,7 +1,7 @@
 import torch
 from torch.nn import Module, ModuleList
 import torch.nn as nn
-from typing import Sequence, Tuple, Union
+from typing import Sequence, Tuple, Union, Dict
 from ar_spectra.modules.cplx_attention import CMultiHeadedAttention
 from ar_spectra.modules.attention import MultiHeadedAttention, RelPositionMultiHeadedAttention
 from ar_spectra.modules.normed_modules.conv import (
@@ -186,7 +186,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
         depth: int = 6,
         dropout_rate: float = 0.1,
         activation: str = "CReLU",
-        image_size: Tuple[int, int] = (256, 32),
+        image_size: tp.Optional[Tuple[int, int]] = None,
         patch_size: Union[int, Tuple[int, int]] = (8, 8),
         norm: str = "none",
         is_complex: bool = True,
@@ -201,6 +201,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
         compress: int = 2,
         pad_mode: str = 'reflect',
         conv_group_ratio: int = -1,
+        downsample_ratio: Union[int, Tuple[int, int]] = 4,
         ) -> None:
         super().__init__(input_size=input_size, is_complex=is_complex)
         self.input_size = input_size
@@ -212,14 +213,15 @@ class SimpleTransformerEncoder(AbstractEncoder):
         self.inter_dim = inter_dim
         self.use_pos_enc = use_pos_enc
         
-        image_height, image_width = pair(image_size)
-        self.image_size = (image_height, image_width)
+        self.downsample_ratio = pair(downsample_ratio)
+        image_height, image_width = pair(image_size) if image_size is not None else (None, None)
+        self.image_size = (image_height, image_width) if image_size is not None else None
         self.patch_size = pair(patch_size)
         patch_height, patch_width = self.patch_size
 
-        assert image_height % patch_height == 0 and image_width % patch_width == 0, 'Image dimensions must be divisible by the patch size.'
+        if image_size is not None:
+            assert image_height % patch_height == 0 and image_width % patch_width == 0, 'Image dimensions must be divisible by the patch size.'
 
-        num_patches = (image_height // patch_height) * (image_width // patch_width)
         patch_dim = self.dim * patch_height * patch_width   # 32*8*8 = 2048
 
         self.conv0 = SConv2d(self.input_size, self.input_size, kernel_size=3, stride=1,is_complex=True, norm=norm)
@@ -238,6 +240,20 @@ class SimpleTransformerEncoder(AbstractEncoder):
                                     conv_group_ratio=conv_group_ratio, is_complex=is_complex)]
             
         self.resnet = nn.Sequential(*resnet)
+        downsampling: tp.List[nn.Module] = []
+        ds_kernel = tuple(2 * s for s in self.downsample_ratio)
+        downsampling += [
+            SConv2d(
+                self.dim,
+                self.dim,
+                kernel_size=ds_kernel,
+                stride=self.downsample_ratio,
+                is_complex=True,
+                norm=norm,
+            ),
+            get_activation(self.activation, is_complex=True),
+        ]
+        self.downsampling = nn.Sequential(*downsampling)
         
         self.unfold = nn.Unfold(kernel_size=self.patch_size, stride=self.patch_size)
         self.linear_proj = nn.Linear(patch_dim, self.inter_dim, dtype=torch.complex64)
@@ -256,8 +272,24 @@ class SimpleTransformerEncoder(AbstractEncoder):
         self._attn_feat = None
         self.norm = ComplexLayerNorm(self.inter_dim)
         self.linear = nn.Linear(self.inter_dim, self.inter_dim, dtype=torch.complex64)
+        self._last_feature_shape: tp.Optional[Tuple[int, int]] = None
 
-    def forward(self, x: torch.Tensor, skip_attn: bool = False, debug: bool = False) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        skip_attn: bool = False,
+        debug: bool = False,
+    ) -> Tuple[torch.Tensor, Dict[str, tp.Any]]:
+        """Encode spectrograms and return latents plus metadata.
+
+        Returns
+        -------
+        latents: torch.Tensor
+            Channels-first latent tokens shaped as (B, inter_dim, L).
+        info: Dict[str, Any]
+            Metadata including ``feature_shape`` (F1, T1) after downsampling,
+            patch size, token count and channel count.
+        """
         x = self.conv0(x)
         if debug:
             ok(f"Encoder after conv0 shape: {x.shape}")
@@ -268,6 +300,16 @@ class SimpleTransformerEncoder(AbstractEncoder):
         x = self.resnet(x)                            # (B, D, F', T')
         if debug:
             ok(f"Encoder after resnet shape: {x.shape}")
+        x = self.downsampling(x)                      # (B, D, F1, T1)
+        if debug:
+            ok(f"Encoder after downsampling shape: {x.shape}")
+        F1, T1 = x.shape[-2:]
+        self._last_feature_shape = (F1, T1)
+        if F1 % self.patch_size[0] != 0 or T1 % self.patch_size[1] != 0:
+            raise ValueError(
+                f"Downsampled feature map {F1}x{T1} not divisible by patch_size {self.patch_size}. "
+                "Adjust patch_size or downsample_ratio so the grid aligns."
+            )
         x = self.unfold(x)                         # (B, P, L)
         if debug:
             ok(f"Encoder after unfold shape: {x.shape}")
@@ -287,7 +329,13 @@ class SimpleTransformerEncoder(AbstractEncoder):
             ok(f"Encoder after final norm+linear shape: {x.shape}")
         # se vuoi uscire come (B, D, L) per compatibilità col decoder:
         x = x.transpose(1, 2).contiguous()         # (B, D, L)
-        return x
+        latent_info: Dict[str, tp.Any] = {
+            "feature_shape": self._last_feature_shape,
+            "patch_size": self.patch_size,
+            "tokens": x.shape[-1],
+            "channels": x.shape[1],
+        }
+        return x, latent_info
 
 class SimpleTransformerDecoder(AbastractDecoder):
     """
@@ -302,7 +350,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
         depth: int = 6,
         dropout_rate: float = 0.1,
         activation: str = "CReLU",
-        image_size: Tuple[int, int] = (256, 32),          # = (F1,T1) dopo conv1
+        feature_shape: tp.Optional[Tuple[int, int]] = None,          # (F1, T1) dopo downsampling encoder
         patch_size: Union[int, Tuple[int, int]] = (8, 8), # = encoder.patch_size
         deconv_out_padding: Union[int, tuple] = ((0, 1), (0, 0)),
         final_out_padding: Union[int, tuple] = ((0, 0), (0, 0)),
@@ -319,6 +367,8 @@ class SimpleTransformerDecoder(AbastractDecoder):
         compress: int = 2,
         pad_mode: str = 'reflect',
         conv_group_ratio: int = -1,
+        downsample_ratio: Union[int, Tuple[int, int]] = 4,
+        upsampling_out_padding: Union[int, tuple] = 0,
     ) -> None:
         super().__init__(channels=channels, is_complex=is_complex)
         self.channels = channels
@@ -329,17 +379,15 @@ class SimpleTransformerDecoder(AbastractDecoder):
         self.activation = activation
         self.inter_dim = inter_dim
         self.use_pos_enc = use_pos_enc
-
-        F1, T1 = pair(image_size)
-        self.image_size = (F1, T1)
+        self.feature_shape = feature_shape
+        self.downsample_ratio = pair(downsample_ratio)
 
         ph, pw = pair(patch_size)
         self.patch_size = (ph, pw)
 
-        assert F1 % ph == 0 and T1 % pw == 0, "image_size (F1,T1) must be divisible by patch_size"
-
-        self.L_expected = (F1 // ph) * (T1 // pw)
         self.P = dim * ph * pw  # = dim*patch_area
+        self._fold_output_size: tp.Optional[Tuple[int, int]] = None
+        self.fold: tp.Optional[nn.Fold] = None
 
         # Token stack (uguale all’encoder): (B,L,dim) -> (B,L,dim)
         self.norm_tok = ComplexLayerNorm(inter_dim)
@@ -358,8 +406,23 @@ class SimpleTransformerDecoder(AbastractDecoder):
         # unprojection: dim -> P per ogni token
         self.linear_unproj = nn.Linear(inter_dim, self.P, dtype=torch.complex64)
 
-        # Fold: (B, P, L) -> (B, dim, F1, T1)
-        self.fold = nn.Fold(output_size=self.image_size, kernel_size=self.patch_size, stride=self.patch_size)
+        # Fold is built lazily once we know the feature map size coming from the encoder
+        
+        upsampling: tp.List[nn.Module] = []
+        up_kernel = tuple(2 * s for s in self.downsample_ratio)
+        upsampling += [
+            SConvTranspose2d(
+                self.dim,
+                self.dim,
+                kernel_size=up_kernel,
+                stride=self.downsample_ratio,
+                is_complex=True,
+                norm=norm,
+                out_padding=upsampling_out_padding,
+            ),
+            get_activation(self.activation, is_complex=True),
+        ]
+        self.upsampling = nn.Sequential(*upsampling)
         
         resnet : tp.List[nn.Module] = []
         for j in range(n_residual_layers): # This is always 1, parameter never gets changed from default anywhere
@@ -373,6 +436,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
                                     conv_group_ratio=conv_group_ratio, is_complex=is_complex)]
             
         self.resnet = nn.Sequential(*resnet)
+        
 
         # Deconv per invertire conv1: (B, dim, F1, T1) -> (B, C, F, T) circa
         self.deconv1 = SConvTranspose2d(
@@ -396,14 +460,43 @@ class SimpleTransformerDecoder(AbastractDecoder):
             norm=norm,
         )
 
-    def forward(self, z: torch.Tensor, skip_attn: bool = False, debug: bool = False) -> torch.Tensor:
+    def forward(
+        self,
+        z: torch.Tensor,
+        feature_shape: tp.Optional[Tuple[int, int]] = None,
+        skip_attn: bool = False,
+        debug: bool = False,
+    ) -> torch.Tensor:
         # z: (B, inter_dim, L) where inter_dim matches the token size used in the encoder
         if debug:
             ok(f"Decoder input (latent) shape: {z.shape}")
 
         B, D, L = z.shape
         assert D == self.inter_dim, f"Decoder expects inter_dim={self.inter_dim}, but received D={D}"
-        assert L == self.L_expected, f"Decoder expects L={self.L_expected} (from image_size/patch), but received L={L}"
+
+        target_shape = feature_shape or self.feature_shape
+        if target_shape is None:
+            raise ValueError(
+                "Decoder needs the encoder feature_shape (F1, T1). "
+                "Pass feature_shape=encoder._last_feature_shape or supply it on the first call."
+            )
+        F1, T1 = pair(target_shape)
+        self.feature_shape = (F1, T1)
+
+        if F1 % self.patch_size[0] != 0 or T1 % self.patch_size[1] != 0:
+            raise ValueError(
+                f"feature_shape {F1}x{T1} not divisible by patch_size {self.patch_size}."
+            )
+
+        L_expected = (F1 // self.patch_size[0]) * (T1 // self.patch_size[1])
+        assert L == L_expected, (
+            f"Decoder expects L={L_expected} tokens for feature_shape={F1}x{T1} and patch_size={self.patch_size}, "
+            f"but received L={L}."
+        )
+
+        if self.fold is None or self._fold_output_size != (F1, T1):
+            self.fold = nn.Fold(output_size=(F1, T1), kernel_size=self.patch_size, stride=self.patch_size)
+            self._fold_output_size = (F1, T1)
 
         x = z.transpose(1, 2).contiguous()  # (B, L, dim)
 
@@ -432,6 +525,10 @@ class SimpleTransformerDecoder(AbastractDecoder):
         if debug:
             ok(f"Decoder after fold shape: {fm.shape}")
             
+        fm = self.upsampling(fm)                      # (B, dim, ~F, ~T)
+        if debug:
+            ok(f"Decoder after upsampling shape: {fm.shape}")
+            
         fm = self.resnet(fm)                      # (B, dim, F1, T1)
         if debug:
             ok(f"Decoder after resnet shape: {fm.shape}")
@@ -459,10 +556,10 @@ if __name__ == "__main__":
         n_heads=4,
         depth=2,
         dropout_rate=0.1,
-        image_size=(1024, 128),
         patch_size=(16, 16),
         activation="CRelu",
         inter_dim=64,
+        downsample_ratio=(4, 4),
     ).to(device)
 
     # Decoder: channels=2 to match original input channels.
@@ -473,15 +570,15 @@ if __name__ == "__main__":
         depth=2,
         dropout_rate=0.1,
         activation="CRelu",
-        image_size=(1024, 128),
         patch_size=(16, 16),
         inter_dim=64,
         deconv_out_padding=((0, 1), (0, 0)),  # lascia come avevi se ti serve recuperare 1025
+        downsample_ratio=(4, 4),
     ).to(device)
 
     with torch.no_grad():
-        latent = encoder(dummy, debug=True)
-        recon = decoder(latent, debug=True)
+        latent, info = encoder(dummy, debug=True)
+        recon = decoder(latent, feature_shape=info["feature_shape"], debug=True)
 
     print(f"Input shape:   {tuple(dummy.shape)}")
     print(f"Latent shape:  {tuple(latent.shape)}")
