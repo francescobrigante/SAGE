@@ -251,7 +251,8 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                 return [opt_gen], [sched_gen]
             return [opt_gen]
     def forward(self, reals):
-        latents, _ = self.engine.autoencoder.encode(reals, return_info=True)
+        enc_out = self.engine.autoencoder.encode(reals, return_info=True)
+        latents = enc_out[0] if isinstance(enc_out, tuple) else enc_out
         decoded = self.engine.autoencoder.decode(latents)
         return decoded
 

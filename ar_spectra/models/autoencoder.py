@@ -147,9 +147,15 @@ class STFTConfig:
 
 
 class AutoEncoder(nn.Module):
-    """
-    Generic container. Manages forward pass encoder->decoder.
-    If return_latent=True, forward returns (reconstruction, latent).
+    """Generic container wiring encoder, optional bottleneck, and decoder.
+
+    This class standardises how autoencoders are built and invoked across the
+    repository. Encoders are expected to return ``(latents, encoder_info)``
+    where ``encoder_info`` may expose spatial hints like ``feature_shape``.
+    Bottlenecks (when present) may add a third info dict. Decoders consume the
+    latents (and optionally the propagated feature_shape) to produce a
+    spectrogram reconstruction. Pre/post transforms are applied automatically
+    when configured.
     """
     def __init__(
         self,
@@ -406,13 +412,28 @@ class AutoEncoder(nn.Module):
         Tuple[torch.Tensor, Dict[str, Any]],
         Tuple[torch.Tensor, Dict[str, Any], Dict[str, Any]],
     ]:
-        """Run encoder (and optional bottleneck) on a spectrogram batch.
+        """Run encoder and optional bottleneck on a spectrogram batch.
 
-        When ``return_info=True`` the method returns ``(latents, encoder_info)``
-        if no bottleneck is present, otherwise ``(latents, encoder_info,
-        bottleneck_info)``. Encoder modules are expected to emit
-        ``(latents, encoder_info)`` where the info dictionary can carry spatial
-        shapes (e.g., ``feature_shape``) required by decoders.
+        Parameters
+        ----------
+        inputs : torch.Tensor
+            Spectrograms shaped (B, C, F, T) or (B, C, T) depending on the
+            encoder implementation.
+        return_info : bool
+            If True, also returns encoder and bottleneck metadata.
+        debug : bool
+            If True, prints shapes at key stages.
+
+        Returns
+        -------
+        latents : torch.Tensor
+            Encoded representation passed to the decoder (and bottleneck if
+            present).
+        encoder_info : dict, optional
+            Metadata emitted by the encoder (e.g., ``feature_shape``) always
+            included when ``return_info`` is True.
+        bottleneck_info : dict, optional
+            Metadata emitted by the bottleneck (only when present).
         """
 
         x = inputs
@@ -474,7 +495,18 @@ class AutoEncoder(nn.Module):
         debug: bool = False,
         apply_inverse: Optional[bool] = None,
     ) -> torch.Tensor:
-        """Run optional bottleneck decode followed by the decoder module."""
+        """Decode latents back to spectrogram space.
+
+        Parameters
+        ----------
+        latents : torch.Tensor
+            Latent representation, possibly sampled by a bottleneck.
+        debug : bool
+            If True, prints decoder output shape.
+        apply_inverse : bool, optional
+            Override for applying the inverse pre-transform. Defaults to the
+            configuration set in ``configure_pre_transform``.
+        """
 
         z = latents
         if self.bottleneck is not None:
