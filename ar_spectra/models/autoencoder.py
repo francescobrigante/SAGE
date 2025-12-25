@@ -401,8 +401,19 @@ class AutoEncoder(nn.Module):
         *,
         return_info: bool = False,
         debug: bool = False,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, Any]]]:
-        """Run encoder (and optional bottleneck) on a spectrogram batch."""
+    ) -> Union[
+        torch.Tensor,
+        Tuple[torch.Tensor, Dict[str, Any]],
+        Tuple[torch.Tensor, Dict[str, Any], Dict[str, Any]],
+    ]:
+        """Run encoder (and optional bottleneck) on a spectrogram batch.
+
+        When ``return_info=True`` the method returns ``(latents, encoder_info)``
+        if no bottleneck is present, otherwise ``(latents, encoder_info,
+        bottleneck_info)``. Encoder modules are expected to emit
+        ``(latents, encoder_info)`` where the info dictionary can carry spatial
+        shapes (e.g., ``feature_shape``) required by decoders.
+        """
 
         x = inputs
         if self.pre_transform is not None and self._pre_transform_apply_encoder:
@@ -413,25 +424,47 @@ class AutoEncoder(nn.Module):
 
         if debug:
             print(f"[AutoEncoder.encode] encoder input shape={tuple(x.shape)}")
+        enc_out = self.encoder(x)
+        enc_info: Dict[str, Any] = {}
+        latents: torch.Tensor
 
-        latents = self.encoder(x)
+        if isinstance(enc_out, tuple):
+            # Standard contract: encoder returns (latents, info)
+            latents, enc_info = enc_out[0], enc_out[1] if len(enc_out) > 1 else {}
+        else:
+            latents = enc_out
+
+        if isinstance(enc_info, dict):
+            enc_info = {**enc_info, "pre_bottleneck_latents": latents}
+        else:
+            enc_info = {"pre_bottleneck_latents": latents}
+
         if debug:
             print(f"Latents shape after encoder: {tuple(latents.shape)}")
 
         if debug:
             print(f"[AutoEncoder.encode] encoder output shape={tuple(latents.shape)}")
 
-        info: Dict[str, Any] = {"pre_bottleneck_latents": latents}
+        if hasattr(self.decoder, "feature_shape") and isinstance(enc_info, dict):
+            feature_shape = enc_info.get("feature_shape", None)
+            if feature_shape is not None:
+                try:
+                    self.decoder.feature_shape = tuple(feature_shape)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+        bottleneck_info: Optional[Dict[str, Any]] = None
 
         if self.bottleneck is not None:
             latents, bottleneck_info = self.bottleneck.encode(latents, return_info=True)
-            info.update(bottleneck_info)
 
         if debug and self.bottleneck is not None:
             print(f"[AutoEncoder.encode] bottleneck output shape={tuple(latents.shape)}")
 
         if return_info:
-            return latents, info
+            if bottleneck_info is not None:
+                return latents, enc_info, bottleneck_info
+            return latents, enc_info
         return latents
 
     def decode(
