@@ -237,12 +237,25 @@ class SEANetEncoder2d(nn.Module):
         return self.dimension
 
     def forward(self, x):
+        """Encode spectrograms into channel-first latents.
+
+        Returns the latent tensor plus a small info dict carrying the
+        downsampled spatial shape required by decoders that need to rebuild
+        2D layouts.
+        """
+
         if x.dim() == 3:
             x = x.unsqueeze(1)
         # returns latents channels-first (B, C, T)
         y = self.model(x)
 
-        return y                   
+        latent_info = {
+            "feature_shape": (self.latent_fbins, y.shape[-1]),
+            "latent_channels": y.shape[1],
+            "latent_frames": y.shape[-1],
+        }
+
+        return y, latent_info                 
 
 
 

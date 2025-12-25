@@ -33,6 +33,13 @@ encoder:
     ratios: [[2, 2], [2, 2], [2, 2]]
 ```
 
+  **Return convention:** encoder modules must return ``(latents, encoder_info)``
+  where ``encoder_info`` is a dictionary that at least exposes
+  ``feature_shape`` when the decoder needs spatial hints (e.g., transformer
+  fold/unfold). The autoencoder container propagates this info and, when a
+  bottleneck is active, exposes it as an optional third element in the returned
+  tuple.
+
 Use the sentinel `auto` for parameters whose value depends on dataset inspection (e.g., spectrogram channel count). `resolve_auto_channels` patches these fields automatically once data is available.
 
 ### Trainer-required parameters
