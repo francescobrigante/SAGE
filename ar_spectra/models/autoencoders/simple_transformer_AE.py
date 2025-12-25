@@ -86,6 +86,7 @@ class Transformer(Module):
         self.use_complex = use_complex
         self.use_pos = use_pos_enc
         self.pos_enc = None
+        # Pre-norm Transformer block supporting complex or real tokens.
 
         if use_complex:
             self.norm = ComplexLayerNorm(feat_dim)
@@ -122,8 +123,17 @@ class Transformer(Module):
         self.linear2 = nn.Linear(feat_dim, feat_dim, dtype=torch.complex64)
 
     def forward(self, x: torch.Tensor, mask=None, debug=False) -> torch.Tensor:
-        """
-        x: (B, T, D) complesso, dove D = feat_dim = channels * frequency
+        """Apply self-attention followed by a complex feed-forward block.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Tokens shaped (B, T, D) where D equals ``feat_dim``. Complex when
+            ``use_complex`` is True, otherwise real.
+        mask : torch.Tensor, optional
+            Attention mask broadcastable to (B, heads, T, T).
+        debug : bool
+            If True, prints intermediate shapes.
         """
         D = self.feat_dim
 
@@ -175,7 +185,16 @@ class Transformer(Module):
         return x
 
 class SimpleTransformerEncoder(AbstractEncoder):
-    """A simple Transformer encoder for spectrograms."""
+    """Patch-and-attend encoder for complex spectrograms.
+
+    Inputs are spectrograms shaped (B, C, F, T) where ``C`` matches
+    ``input_size``. The encoder applies shallow convolutions and residual
+    blocks, downsamples, partitions the feature map into non-overlapping
+    patches, projects them to ``inter_dim``, and refines with ``depth``
+    Transformer blocks. It returns channel-first latents (B, inter_dim, L)
+    plus metadata with the downsampled feature shape and patch geometry that
+    decoders require to fold tokens back.
+    """
 
     def __init__(
         self,
@@ -338,7 +357,12 @@ class SimpleTransformerEncoder(AbstractEncoder):
         return x, latent_info
 
 class SimpleTransformerDecoder(AbastractDecoder):
-    """
+    """Reconstruct spectrograms from Transformer tokens.
+
+    This decoder consumes channel-first tokens emitted by the encoder,
+    unprojects them into patches, folds them back into a feature map using the
+    provided ``feature_shape``, upsamples to the original stride, and applies a
+    shallow convolutional head to recover the spectrogram.
     """
 
     def __init__(
@@ -467,7 +491,20 @@ class SimpleTransformerDecoder(AbastractDecoder):
         skip_attn: bool = False,
         debug: bool = False,
     ) -> torch.Tensor:
-        # z: (B, inter_dim, L) where inter_dim matches the token size used in the encoder
+        """Decode tokens into a spectrogram.
+
+        Parameters
+        ----------
+        z : torch.Tensor
+            Latent tokens shaped (B, inter_dim, L) from the paired encoder.
+        feature_shape : tuple[int, int], optional
+            Downsampled spatial shape (freq, time) before patching. If not
+            provided, uses ``self.feature_shape`` populated earlier.
+        skip_attn : bool
+            If True, bypasses the Transformer stack for ablation or speed.
+        debug : bool
+            If True, prints tensor shapes at key steps.
+        """
         if debug:
             ok(f"Decoder input (latent) shape: {z.shape}")
 

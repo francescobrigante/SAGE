@@ -406,11 +406,20 @@ class AutoencoderEngine(nn.Module):
         # Encode
         if warmed_up and self.encoder_freeze_on_warmup:
             with torch.no_grad():
-                latents, encoder_info = self.autoencoder.encode(encoder_input, return_info=True)
+                enc_out = self.autoencoder.encode(encoder_input, return_info=True)
         else:
-            latents, encoder_info = self.autoencoder.encode(encoder_input, return_info=True)
+            enc_out = self.autoencoder.encode(encoder_input, return_info=True)
+
+        bottleneck_info: Dict[str, Any] = {}
+        if isinstance(enc_out, tuple) and len(enc_out) == 3:
+            latents, encoder_info, bottleneck_info = enc_out
+        elif isinstance(enc_out, tuple):
+            latents, encoder_info = enc_out
+        else:
+            latents, encoder_info = enc_out, {}
         loss_info["latents"] = latents
         loss_info.update(encoder_info)
+        loss_info.update(bottleneck_info)
 
         # Distillation
         teacher_latents = self._encode_teacher_if_needed(encoder_input)
