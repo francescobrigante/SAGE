@@ -24,6 +24,7 @@ model:
       image_size: [1024, 128]
       inter_dim: 64
       use_pos_enc: true
+      downsample_ratio: 2
 
   decoder:
     class: ar_spectra.models.autoencoders.simple_transformer_AE.SimpleTransformerDecoder
@@ -34,9 +35,9 @@ model:
       n_heads: 8
       dropout_rate: 0.05
       patch_size: [16, 16]
-      image_size: [1024, 128]
       inter_dim: 64
       use_pos_enc: true
+      downsample_ratio: 2
 
 
   bottleneck:

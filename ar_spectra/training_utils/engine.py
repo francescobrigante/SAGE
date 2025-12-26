@@ -570,30 +570,6 @@ class AutoencoderEngine(nn.Module):
             val_loss_dict[eval_key] = value
         return val_loss_dict
 
-    def configure_optimizers(self):
-        """
-        Ritorna gli stessi formati attesi da Lightning:
-        - solo gen: [opt_gen] o ([opt_gen],[sched_gen])
-        - con disc: [opt_gen, opt_disc] o ([opt_gen, opt_disc],[sched_gen, sched_disc])
-        Gli adapter Fabric possono usare lo stesso metodo e gestire i ritorni.
-        """
-        gen_params = list(self.autoencoder.parameters())
-        if self.discriminator is not None:
-            opt_gen = create_optimizer_from_config(self.optimizer_configs['autoencoder']['optimizer'], gen_params)
-            opt_disc = create_optimizer_from_config(self.optimizer_configs['discriminator']['optimizer'], self.discriminator.parameters())
-            sched_gen = sched_disc = None
-            if ("scheduler" in self.optimizer_configs['autoencoder']) and ("scheduler" in self.optimizer_configs['discriminator']):
-                sched_gen = create_scheduler_from_config(self.optimizer_configs['autoencoder']['scheduler'], opt_gen)
-                sched_disc = create_scheduler_from_config(self.optimizer_configs['discriminator']['scheduler'], opt_disc)
-                return [opt_gen, opt_disc], [sched_gen, sched_disc]
-            return [opt_gen, opt_disc]
-        else:
-            opt_gen = create_optimizer_from_config(self.optimizer_configs['autoencoder']['optimizer'], gen_params)
-            if "scheduler" in self.optimizer_configs['autoencoder']:
-                sched_gen = create_scheduler_from_config(self.optimizer_configs['autoencoder']['scheduler'], opt_gen)
-                return [opt_gen], [sched_gen]
-            return [opt_gen]
-
     def _extract_hparams(self, module: nn.Module) -> dict:
         # Estrae solo attributi semplici stampabili
         simple = {}
