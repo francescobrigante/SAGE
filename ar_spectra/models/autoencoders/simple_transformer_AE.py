@@ -356,6 +356,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
         }
         return x, latent_info
 
+
 class SimpleTransformerDecoder(AbastractDecoder):
     """Reconstruct spectrograms from Transformer tokens.
 
