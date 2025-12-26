@@ -544,7 +544,13 @@ class AutoencoderEngine(nn.Module):
         if self.force_input_mono and encoder_input.shape[1] > 1:
             encoder_input = encoder_input.mean(dim=1, keepdim=True)
 
-        latents, _ = self.autoencoder.encode(encoder_input, return_info=True)
+        enc_out = self.autoencoder.encode(encoder_input, return_info=True)
+        if isinstance(enc_out, tuple) and len(enc_out) == 3:
+            latents, _enc_info, _bn_info = enc_out
+        elif isinstance(enc_out, tuple):
+            latents, _enc_info = enc_out
+        else:
+            latents = enc_out
         sp_decoded = self.autoencoder.decode(latents, apply_inverse=False)
         sp_decoded_linear = (
             self.autoencoder.apply_inverse_pre_transform(sp_decoded)
