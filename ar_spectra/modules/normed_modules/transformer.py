@@ -1,26 +1,26 @@
-ùfrom typing import List
+from typing import List
 from typing import Optional
 from typing import Tuple
 import torch
-from typeguard import check_argument_types
-from funcodec.models.encoder.abs_encoder import AbsEncoder
-from funcodec.modules.attention import MultiHeadedAttention
-from funcodec.modules.embedding import PositionalEncoding
-from funcodec.modules.layer_norm import LayerNorm
-from funcodec.modules.multi_layer_conv import Conv1dLinear
-from funcodec.modules.multi_layer_conv import MultiLayeredConv1d
-from funcodec.modules.nets_utils import make_pad_mask
-from funcodec.modules.positionwise_feed_forward import (
+from ar_spectra.models.autoencoders.AbsEncoder import AbsDecoder, AbsEncoder
+from ar_spectra.modules.attention import MultiHeadedAttention
+from ar_spectra.models.autoencoders.conformer_base import EncoderLayer
+from ar_spectra.modules.embedding import PositionalEncoding
+from ar_spectra.modules.layer_norm import LayerNorm
+from ar_spectra.modules.multi_layer_conv import Conv1dLinear
+from ar_spectra.modules.multi_layer_conv import MultiLayeredConv1d
+from ar_spectra.modules.nets_utils import make_pad_mask
+from ar_spectra.modules.positionwise_feed_forward import (
     PositionwiseFeedForward,  # noqa: H301
 )
-from funcodec.modules.repeat import repeat
-from funcodec.modules.subsampling import Conv2dSubsampling
-from funcodec.modules.subsampling import Conv2dSubsampling2
-from funcodec.modules.subsampling import Conv2dSubsampling6
-from funcodec.modules.subsampling import Conv2dSubsampling8
-from funcodec.modules.subsampling import TooShortUttError
-from funcodec.modules.subsampling import check_short_utt
-from funcodec.models.encoder.transformer_encoder import EncoderLayer
+from ar_spectra.modules.repeat import repeat
+from ar_spectra.modules.subsampling import Conv2dSubsampling
+from ar_spectra.modules.subsampling import Conv2dSubsampling2
+from ar_spectra.modules.subsampling import Conv2dSubsampling6
+from ar_spectra.modules.subsampling import Conv2dSubsampling8
+from ar_spectra.modules.subsampling import TooShortUttError
+from ar_spectra.modules.subsampling import check_short_utt
+
 
 
 class TransformerEncoder(torch.nn.Module):
@@ -68,7 +68,6 @@ class TransformerEncoder(torch.nn.Module):
             causal_mode: str = "None",
             skip: bool = False,
     ):
-        assert check_argument_types()
         super().__init__()
         self._output_size = output_size
         self.causal_mode = causal_mode
