@@ -185,15 +185,114 @@ class Transformer(Module):
         return x
 
 class SimpleTransformerEncoder(AbstractEncoder):
-    """Patch-and-attend encoder for complex spectrograms.
+    """Vision Transformer-style encoder for complex-valued spectrograms.
 
-    Inputs are spectrograms shaped (B, C, F, T) where ``C`` matches
-    ``input_size``. The encoder applies shallow convolutions and residual
-    blocks, downsamples, partitions the feature map into non-overlapping
-    patches, projects them to ``inter_dim``, and refines with ``depth``
-    Transformer blocks. It returns channel-first latents (B, inter_dim, L)
-    plus metadata with the downsampled feature shape and patch geometry that
-    decoders require to fold tokens back.
+    Parameters
+    ----------
+    input_size : int
+        Number of input channels in the spectrogram. For mono audio with
+        complex STFT representation, this is typically 1 (single complex
+        channel) or 2 (separate real/imaginary channels depending on upstream
+        preprocessing).
+    dim : int, default=4
+        Number of feature channels after the initial convolutional stem. This
+        determines the capacity of the convolutional feature extractor before
+        tokenization. Higher values increase model capacity at the cost of
+        computational overhead.
+    inter_dim : int, default=256
+        Dimensionality of the Transformer token embeddings. This is the hidden
+        size used throughout the self-attention layers. Controls the
+        representational capacity of the latent space.
+    n_heads : int, default=4
+        Number of attention heads in the multi-head self-attention mechanism.
+        Must evenly divide ``inter_dim``. More heads enable the model to attend
+        to different representation subspaces jointly.
+    depth : int, default=6
+        Number of stacked Transformer blocks. Each block consists of layer
+        normalization, multi-head self-attention, and a feed-forward network.
+        Deeper networks can capture more complex dependencies but require more
+        computation.
+    dropout_rate : float, default=0.1
+        Dropout probability applied within attention and feed-forward layers
+        for regularization during training.
+    activation : str, default="CReLU"
+        Activation function used in convolutional layers and residual blocks.
+        For complex-valued networks, "CReLU" (Cardioid ReLU or Complex ReLU)
+        is recommended.
+    image_size : tuple[int, int], optional
+        Expected spatial dimensions (freq_bins, time_frames) of the input
+        spectrogram **including the Nyquist bin**. Used for validation and to
+        communicate the original shape to the decoder for reconstruction.
+        If None, the encoder operates in a resolution-agnostic mode.
+    patch_size : int or tuple[int, int], default=(8, 8)
+        Size of non-overlapping patches (height, width) for tokenization.
+        The downsampled feature map dimensions must be divisible by patch_size.
+        Smaller patches yield more tokens with finer spatial resolution;
+        larger patches reduce sequence length but may lose detail.
+    norm : str, default="none"
+        Normalization scheme for convolutional layers. Options include "none",
+        "weight_norm", "spectral_norm", or "layer_norm".
+    is_complex : bool, default=True
+        Whether the encoder operates on complex-valued tensors. When True, all
+        convolutional and linear layers use complex arithmetic.
+    use_pos_enc : bool, default=True
+        Whether to apply positional encoding to tokens before self-attention.
+        Enables the Transformer to leverage spatial position information.
+    n_residual_layers : int, default=1
+        Number of residual blocks in the convolutional stem. More layers
+        increase the receptive field before tokenization.
+    residual_kernel_size : int, default=3
+        Kernel size for convolutions within residual blocks.
+    dilation_base : int, default=2
+        Base for exponential dilation growth in residual blocks. Layer j uses
+        dilation = dilation_base^j, expanding the receptive field.
+    norm_params : dict, default={}
+        Additional parameters passed to the normalization layers.
+    activation_params : dict, default={}
+        Additional parameters passed to the activation functions.
+    causal : bool, default=False
+        Whether to use causal (left-only) padding in convolutions, suitable
+        for autoregressive or streaming applications.
+    true_skip : bool, default=False
+        If True, residual blocks use identity skip connections; otherwise,
+        a 1x1 convolution is applied to the skip path.
+    compress : int, default=2
+        Channel compression factor within residual blocks (hidden dimension
+        is dim // compress).
+    pad_mode : str, default='reflect'
+        Padding mode for convolutional layers ('reflect', 'replicate', 'zeros').
+    conv_group_ratio : int, default=-1
+        Group convolution ratio. If positive, uses grouped convolutions with
+        groups = channels // conv_group_ratio. -1 disables grouping.
+    downsample_ratio : int or tuple[int, int], default=4
+        Spatial downsampling factor (freq, time) applied before tokenization.
+        Can be a single integer for isotropic downsampling or a tuple for
+        anisotropic downsampling.
+
+    Attributes
+    ----------
+    _last_feature_shape : tuple[int, int] or None
+        Cached spatial shape (F1, T1) of the feature map after downsampling,
+        before patch tokenization. Populated during forward pass.
+
+    Returns
+    -------
+    latents : torch.Tensor
+        Channel-first latent tensor of shape (B, inter_dim, L) where L is the
+        number of tokens (determined by downsampled size and patch size).
+    info : dict
+        Metadata dictionary containing:
+        - ``feature_shape``: (F1, T1) downsampled spatial dimensions
+        - ``patch_size``: (ph, pw) patch dimensions
+        - ``tokens``: number of tokens L
+        - ``channels``: latent channel count (inter_dim)
+        - ``image_size``: original input shape including Nyquist bin
+
+    Notes
+    -----
+    The encoder stores `image_size` (original spectrogram shape with Nyquist)
+    in the returned info dict. The decoder uses this to verify that its output
+    matches the expected reconstruction dimensions.
     """
 
     def __init__(
@@ -233,13 +332,20 @@ class SimpleTransformerEncoder(AbstractEncoder):
         self.use_pos_enc = use_pos_enc
         
         self.downsample_ratio = pair(downsample_ratio)
+        # image_size stores the ORIGINAL spectrogram shape INCLUDING Nyquist bin
+        # This is used by the decoder to verify reconstruction dimensions
         image_height, image_width = pair(image_size) if image_size is not None else (None, None)
         self.image_size = (image_height, image_width) if image_size is not None else None
         self.patch_size = pair(patch_size)
         patch_height, patch_width = self.patch_size
 
+        # Validate that the frequency dimension AFTER removing Nyquist is divisible by patch size
         if image_size is not None:
-            assert image_height % patch_height == 0 and image_width % patch_width == 0, 'Image dimensions must be divisible by the patch size.'
+            freq_without_nyquist = image_height - 1  # Remove Nyquist bin
+            assert freq_without_nyquist % patch_height == 0 and image_width % patch_width == 0, (
+                f'Image dimensions after Nyquist removal ({freq_without_nyquist}, {image_width}) '
+                f'must be divisible by patch size ({patch_height}, {patch_width}).'
+            )
 
         patch_dim = self.dim * patch_height * patch_width   # 32*8*8 = 2048
 
@@ -301,14 +407,45 @@ class SimpleTransformerEncoder(AbstractEncoder):
     ) -> Tuple[torch.Tensor, Dict[str, tp.Any]]:
         """Encode spectrograms and return latents plus metadata.
 
+        The forward pass first removes the Nyquist frequency bin from the input
+        spectrogram, then processes through convolutions, downsampling, patch
+        tokenization, and Transformer blocks.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input complex spectrogram of shape (B, C, F, T) where F includes
+            the Nyquist bin (e.g., n_fft//2 + 1 = 1025 for n_fft=2048).
+        skip_attn : bool, default=False
+            If True, bypasses the Transformer attention blocks for ablation
+            studies or faster inference with reduced quality.
+        debug : bool, default=False
+            If True, prints tensor shapes at each processing stage.
+
         Returns
         -------
-        latents: torch.Tensor
-            Channels-first latent tokens shaped as (B, inter_dim, L).
-        info: Dict[str, Any]
-            Metadata including ``feature_shape`` (F1, T1) after downsampling,
-            patch size, token count and channel count.
+        latents : torch.Tensor
+            Channels-first latent tokens of shape (B, inter_dim, L).
+        info : dict
+            Metadata dictionary containing:
+            - ``feature_shape``: (F1, T1) spatial dimensions after downsampling
+            - ``patch_size``: (ph, pw) patch dimensions used for tokenization
+            - ``tokens``: total number of tokens L
+            - ``channels``: latent channel dimension (inter_dim)
+            - ``image_size``: original input shape (F, T) INCLUDING Nyquist bin,
+              required by the decoder to verify reconstruction dimensions
         """
+        # Store original input shape INCLUDING Nyquist for decoder verification
+        original_freq, original_time = x.shape[-2], x.shape[-1]
+        original_image_size = (original_freq, original_time)
+        
+        # Remove Nyquist bin (last frequency bin) for even frequency dimensions
+        # The Nyquist bin carries limited information and its removal ensures
+        # compatibility with patch-based tokenization
+        x = x[..., :-1, :]
+        if debug:
+            ok(f"Encoder after Nyquist removal: {x.shape} (original F={original_freq})")
+        
         x = self.conv0(x)
         if debug:
             ok(f"Encoder after conv0 shape: {x.shape}")
@@ -353,17 +490,111 @@ class SimpleTransformerEncoder(AbstractEncoder):
             "patch_size": self.patch_size,
             "tokens": x.shape[-1],
             "channels": x.shape[1],
+            "image_size": original_image_size,  # Original shape INCLUDING Nyquist for decoder
         }
         return x, latent_info
 
 
 class SimpleTransformerDecoder(AbastractDecoder):
-    """Reconstruct spectrograms from Transformer tokens.
+    """Vision Transformer-style decoder for complex-valued spectrogram reconstruction.
 
-    This decoder consumes channel-first tokens emitted by the encoder,
-    unprojects them into patches, folds them back into a feature map using the
-    provided ``feature_shape``, upsamples to the original stride, and applies a
-    shallow convolutional head to recover the spectrogram.
+    Parameters
+    ----------
+    channels : int
+        Number of output channels in the reconstructed spectrogram. Must match
+        the encoder's ``input_size`` for consistent reconstruction.
+    dim : int, default=4
+        Number of feature channels in the convolutional layers. Must match the
+        encoder's ``dim`` parameter for architectural symmetry.
+    inter_dim : int, default=128
+        Dimensionality of the Transformer token embeddings. Must match the
+        encoder's ``inter_dim`` for compatible latent representations.
+    n_heads : int, default=4
+        Number of attention heads in the multi-head self-attention mechanism.
+        Must evenly divide ``inter_dim``.
+    depth : int, default=6
+        Number of stacked Transformer blocks for token refinement before
+        spatial reconstruction.
+    dropout_rate : float, default=0.1
+        Dropout probability applied within attention and feed-forward layers.
+    activation : str, default="CReLU"
+        Activation function used in convolutional and residual layers.
+        For complex-valued networks, "CReLU" is recommended.
+    feature_shape : tuple[int, int], optional
+        Spatial dimensions (freq, time) of the downsampled feature map before
+        patch tokenization in the encoder. Can be provided at init or passed
+        dynamically during forward from the encoder's metadata.
+    patch_size : int or tuple[int, int], default=(8, 8)
+        Patch dimensions (height, width) used for token folding back to spatial
+        feature maps. Must match the encoder's ``patch_size``.
+    deconv_out_padding : int or tuple, default=((0, 1), (0, 0))
+        Asymmetric output padding for the transposed convolution that inverts
+        the encoder's conv1. Format: ((top, bottom), (left, right)). The default
+        ((0, 1), (0, 0)) adds one frequency bin at the bottom to recover the
+        Nyquist bin dimension (e.g., 1024 -> 1025).
+    final_out_padding : int or tuple, default=((0, 0), (0, 0))
+        Asymmetric output padding for the final transposed convolution layer.
+    image_size : tuple[int, int], optional
+        Expected output spectrogram dimensions (freq_bins, time_frames)
+        INCLUDING the Nyquist bin. Used for assertion-based verification of
+        reconstruction correctness. Should match the encoder's input shape.
+    is_complex : bool, default=True
+        Whether the decoder operates on complex-valued tensors.
+    use_pos_enc : bool, default=True
+        Whether to apply positional encoding to tokens before self-attention.
+    n_residual_layers : int, default=1
+        Number of residual blocks after upsampling.
+    norm : str, default="none"
+        Normalization scheme for convolutional layers.
+    residual_kernel_size : int, default=3
+        Kernel size for convolutions within residual blocks.
+    dilation_base : int, default=2
+        Base for exponential dilation growth in residual blocks.
+    norm_params : dict, default={}
+        Additional parameters for normalization layers.
+    activation_params : dict, default={}
+        Additional parameters for activation functions.
+    causal : bool, default=False
+        Whether to use causal padding in convolutions.
+    true_skip : bool, default=False
+        If True, residual blocks use identity skip connections.
+    compress : int, default=2
+        Channel compression factor within residual blocks.
+    pad_mode : str, default='reflect'
+        Padding mode for convolutional layers.
+    conv_group_ratio : int, default=-1
+        Group convolution ratio. -1 disables grouping.
+    downsample_ratio : int or tuple[int, int], default=4
+        Spatial upsampling factor (freq, time). Must match the encoder's
+        ``downsample_ratio`` for symmetric reconstruction.
+    upsampling_out_padding : int or tuple, default=0
+        Output padding for the transposed convolution upsampling layer.
+
+    Attributes
+    ----------
+    image_size : tuple[int, int] or None
+        Expected output shape (F, T) including Nyquist. Set at init or
+        dynamically from encoder metadata during forward.
+    fold : nn.Fold or None
+        Lazily instantiated Fold module for reconstructing spatial feature maps
+        from token sequences.
+
+    Returns
+    -------
+    reconstruction : torch.Tensor
+        Reconstructed complex spectrogram of shape (B, channels, F, T) where
+        (F, T) matches ``image_size`` (including Nyquist bin).
+
+    Raises
+    ------
+    AssertionError
+        If the output spatial dimensions do not match ``image_size``.
+
+    Notes
+    -----
+    The decoder validates its output shape against ``image_size`` when provided.
+    This assertion catches dimensional mismatches early, which is critical for
+    ensuring correct STFT reconstruction and downstream iSTFT compatibility.
     """
 
     def __init__(
@@ -379,6 +610,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
         patch_size: Union[int, Tuple[int, int]] = (8, 8), # = encoder.patch_size
         deconv_out_padding: Union[int, tuple] = ((0, 1), (0, 0)),
         final_out_padding: Union[int, tuple] = ((0, 0), (0, 0)),
+        image_size: tp.Optional[Tuple[int, int]] = None,
         is_complex: bool = True,
         use_pos_enc: bool = True,
         n_residual_layers: int = 1,
@@ -406,6 +638,10 @@ class SimpleTransformerDecoder(AbastractDecoder):
         self.use_pos_enc = use_pos_enc
         self.feature_shape = feature_shape
         self.downsample_ratio = pair(downsample_ratio)
+        # image_size stores the expected OUTPUT spectrogram shape INCLUDING Nyquist bin
+        # Used for assertion-based verification of reconstruction dimensions
+        image_height, image_width = pair(image_size) if image_size is not None else (None, None)
+        self.image_size = (image_height, image_width) if image_size is not None else None
 
         ph, pw = pair(patch_size)
         self.patch_size = (ph, pw)
@@ -489,6 +725,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
         self,
         z: torch.Tensor,
         feature_shape: tp.Optional[Tuple[int, int]] = None,
+        image_size: tp.Optional[Tuple[int, int]] = None,
         skip_attn: bool = False,
         debug: bool = False,
     ) -> torch.Tensor:
@@ -501,11 +738,29 @@ class SimpleTransformerDecoder(AbastractDecoder):
         feature_shape : tuple[int, int], optional
             Downsampled spatial shape (freq, time) before patching. If not
             provided, uses ``self.feature_shape`` populated earlier.
+        image_size : tuple[int, int], optional
+            Expected output spectrogram shape (freq, time) INCLUDING Nyquist
+            bin. Passed from encoder's info dict. Used for output verification.
+            If not provided, uses ``self.image_size`` set at init.
         skip_attn : bool
             If True, bypasses the Transformer stack for ablation or speed.
         debug : bool
             If True, prints tensor shapes at key steps.
+
+        Returns
+        -------
+        torch.Tensor
+            Reconstructed spectrogram of shape (B, channels, F, T).
+
+        Raises
+        ------
+        AssertionError
+            If output shape does not match ``image_size`` when specified.
         """
+        # Update image_size from forward argument if provided
+        if image_size is not None:
+            self.image_size = pair(image_size)
+        
         if debug:
             ok(f"Decoder input (latent) shape: {z.shape}")
 
@@ -579,15 +834,27 @@ class SimpleTransformerDecoder(AbastractDecoder):
         if debug:
             ok(f"Decoder output shape: {y.shape}")
 
+        # Verify output dimensions match expected image_size (including Nyquist)
+        if self.image_size is not None:
+            expected_F, expected_T = self.image_size
+            actual_F, actual_T = y.shape[-2], y.shape[-1]
+            assert actual_F == expected_F and actual_T == expected_T, (
+                f"Decoder output shape mismatch: expected ({expected_F}, {expected_T}) "
+                f"but got ({actual_F}, {actual_T}). Check deconv_out_padding and "
+                f"final_out_padding parameters to ensure correct Nyquist bin reconstruction."
+            )
+
         return y
 
 
 if __name__ == "__main__":
     torch.manual_seed(0)
     device = "cuda"
+    # Input spectrogram: (B, C, F, T) where F=1025 includes Nyquist bin
     dummy = torch.zeros((32, 2, 1025, 128), dtype=torch.complex64).to(device)
 
     # Encoder: input_size matches dummy channels (2).
+    # image_size=(1025, 128) is the ORIGINAL shape INCLUDING Nyquist
     encoder = SimpleTransformerEncoder(
         input_size=2,
         dim=4,
@@ -595,12 +862,15 @@ if __name__ == "__main__":
         depth=2,
         dropout_rate=0.1,
         patch_size=(16, 16),
+        image_size=(1025, 128),  # Original shape with Nyquist (F-1=1024 must be divisible by patch_size)
+        use_pos_enc=True,
         activation="CRelu",
         inter_dim=64,
-        downsample_ratio=(4, 4),
+        downsample_ratio=(1, 1),
     ).to(device)
 
     # Decoder: channels=2 to match original input channels.
+    # image_size=(1025, 128) ensures output matches original spectrogram dimensions
     decoder = SimpleTransformerDecoder(
         channels=2,
         dim=4,
@@ -610,14 +880,22 @@ if __name__ == "__main__":
         activation="CRelu",
         patch_size=(16, 16),
         inter_dim=64,
-        deconv_out_padding=((0, 1), (0, 0)),  # lascia come avevi se ti serve recuperare 1025
-        downsample_ratio=(4, 4),
+        deconv_out_padding=((0, 1), (0, 0)),  # Adds 1 freq bin to recover Nyquist (1024 -> 1025)
+        image_size=(1025, 128),  # Expected output shape INCLUDING Nyquist
+        downsample_ratio=(1, 1),
     ).to(device)
 
     with torch.no_grad():
         latent, info = encoder(dummy, debug=True)
-        recon = decoder(latent, feature_shape=info["feature_shape"], debug=True)
+        # Pass image_size from encoder info to decoder for verification
+        recon = decoder(
+            latent, 
+            feature_shape=info["feature_shape"], 
+            image_size=info["image_size"],
+            debug=True
+        )
 
     print(f"Input shape:   {tuple(dummy.shape)}")
     print(f"Latent shape:  {tuple(latent.shape)}")
     print(f"Output shape:  {tuple(recon.shape)}")
+    print(f"Reconstruction matches input shape: {dummy.shape == recon.shape}")
