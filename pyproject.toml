@@ -26,6 +26,7 @@ dependencies = [
     "complexpytorch>=0.4",
     "deepspeed>=0.18.2",
     "mutagen>=1.47.0",
+    "cdpam>=0.0.6",
 ]
 
 [tool.uv.sources]

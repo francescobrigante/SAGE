@@ -283,6 +283,15 @@ wheels = [
 ]
 
 [[package]]
+name = "cdpam"
+version = "0.0.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/59/76/d4be81f695c7269e05a46c046f9af0c8eba920add735f1c50f9843545a29/cdpam-0.0.6.tar.gz", hash = "sha256:d1e8d9ba0cf49ecb226b8263e13cbabba9574997f9eefe0dce9683e57a7fe734", size = 98327546, upload-time = "2021-09-03T13:14:21.628Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/94/a1bb744131083b36f778864bb05338e6e4153e6cde5acf9a6767e50160f6/cdpam-0.0.6-py3-none-any.whl", hash = "sha256:abd860166a55ada94cb653997deed481b518e3a593e9b417a969f99522009eba", size = 98326874, upload-time = "2021-09-03T13:14:15.012Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2025.11.12"
 source = { registry = "https://pypi.org/simple" }
@@ -814,6 +823,7 @@ name = "eulero-backbone"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "cdpam" },
     { name = "complexpytorch" },
     { name = "complextorch" },
     { name = "deepspeed" },
@@ -841,6 +851,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cdpam", specifier = ">=0.0.6" },
     { name = "complexpytorch", specifier = ">=0.4" },
     { name = "complextorch", specifier = ">=1.2.0" },
     { name = "deepspeed", specifier = ">=0.18.2" },
