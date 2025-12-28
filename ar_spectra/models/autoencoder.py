@@ -462,17 +462,10 @@ class AutoEncoder(nn.Module):
 
         if debug:
             print(f"Latents shape after encoder: {tuple(latents.shape)}")
-
-        if debug:
             print(f"[AutoEncoder.encode] encoder output shape={tuple(latents.shape)}")
 
-        if hasattr(self.decoder, "feature_shape") and isinstance(enc_info, dict):
-            feature_shape = enc_info.get("feature_shape", None)
-            if feature_shape is not None:
-                try:
-                    self.decoder.feature_shape = tuple(feature_shape)  # type: ignore[attr-defined]
-                except Exception:
-                    pass
+        # Store encoder_info for decode() - decoder will extract what it needs
+        self._last_encoder_info = enc_info
 
         bottleneck_info: Optional[Dict[str, Any]] = None
 
@@ -492,6 +485,7 @@ class AutoEncoder(nn.Module):
         self,
         latents: torch.Tensor,
         *,
+        encoder_info: Optional[Dict[str, Any]] = None,
         debug: bool = False,
         apply_inverse: Optional[bool] = None,
     ) -> torch.Tensor:
@@ -501,6 +495,10 @@ class AutoEncoder(nn.Module):
         ----------
         latents : torch.Tensor
             Latent representation, possibly sampled by a bottleneck.
+        encoder_info : dict, optional
+            Metadata from encoder. Passed directly to decoder which extracts
+            what it needs (e.g., feature_shape, image_size). If None, uses
+            cached info from last encode() call.
         debug : bool
             If True, prints decoder output shape.
         apply_inverse : bool, optional
@@ -512,7 +510,11 @@ class AutoEncoder(nn.Module):
         if self.bottleneck is not None:
             z = self.bottleneck.decode(z)
 
-        decoded = self.decoder(z)
+        # Use provided encoder_info or fallback to cached from last encode()
+        info = encoder_info if encoder_info is not None else getattr(self, '_last_encoder_info', None)
+
+        # Pass encoder_info to decoder - each decoder extracts what it needs
+        decoded = self.decoder(z, encoder_info=info)
 
         if apply_inverse is None:
             apply_inverse = self._pre_transform_apply_inverse

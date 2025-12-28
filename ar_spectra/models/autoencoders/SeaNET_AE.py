@@ -391,8 +391,20 @@ class SEANetDecoder2d(nn.Module):
     def output_size(self):
         return self.channels
 
-    def forward(self, z):
-        # z : (B, C, T)  [channels-first]
-        y = self.model(z)      
-        #print("Decoder output shape:", y.shape)     
+    def forward(self, z, *, encoder_info=None, **kwargs):
+        """Decode latents back to spectrogram.
+
+        Parameters
+        ----------
+        z : torch.Tensor
+            Latent tensor (B, C, T) channels-first.
+        encoder_info : dict, optional
+            Metadata from encoder. SEANetDecoder2d does not use this but
+            accepts it for API compatibility with AutoEncoder.
+        **kwargs
+            Additional arguments (ignored, for API compatibility).
+        """
+        # SEANetDecoder2d is fully convolutional and doesn't need encoder metadata
+        del encoder_info, kwargs  # unused
+        y = self.model(z)
         return y

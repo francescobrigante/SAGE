@@ -724,6 +724,8 @@ class SimpleTransformerDecoder(AbastractDecoder):
     def forward(
         self,
         z: torch.Tensor,
+        *,
+        encoder_info: tp.Optional[tp.Dict[str, tp.Any]] = None,
         feature_shape: tp.Optional[Tuple[int, int]] = None,
         image_size: tp.Optional[Tuple[int, int]] = None,
         skip_attn: bool = False,
@@ -735,13 +737,16 @@ class SimpleTransformerDecoder(AbastractDecoder):
         ----------
         z : torch.Tensor
             Latent tokens shaped (B, inter_dim, L) from the paired encoder.
+        encoder_info : dict, optional
+            Full metadata dict from encoder. If provided, extracts feature_shape
+            and image_size automatically (explicit kwargs take precedence).
         feature_shape : tuple[int, int], optional
             Downsampled spatial shape (freq, time) before patching. If not
-            provided, uses ``self.feature_shape`` populated earlier.
+            provided, extracted from encoder_info or uses ``self.feature_shape``.
         image_size : tuple[int, int], optional
             Expected output spectrogram shape (freq, time) INCLUDING Nyquist
-            bin. Passed from encoder's info dict. Used for output verification.
-            If not provided, uses ``self.image_size`` set at init.
+            bin. Used for output verification. If not provided, extracted from
+            encoder_info or uses ``self.image_size`` set at init.
         skip_attn : bool
             If True, bypasses the Transformer stack for ablation or speed.
         debug : bool
@@ -757,6 +762,11 @@ class SimpleTransformerDecoder(AbastractDecoder):
         AssertionError
             If output shape does not match ``image_size`` when specified.
         """
+        # Extract values from encoder_info if not explicitly provided
+        if encoder_info is not None:
+            feature_shape = feature_shape or encoder_info.get("feature_shape")
+            image_size = image_size or encoder_info.get("image_size")
+
         # Update image_size from forward argument if provided
         if image_size is not None:
             self.image_size = pair(image_size)
