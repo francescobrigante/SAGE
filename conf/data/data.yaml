@@ -18,7 +18,7 @@ train_dataset:
     skip_criteria: ["sample_rate"]
 
 train_dataloader:
-  batch_size: 16
+  batch_size: 32
   num_workers: 8
   prefetch_factor: 8
   pin_memory: false   # can be 'auto' as string if desired
@@ -44,7 +44,7 @@ eval_dataset:
     skip_criteria: ["sample_rate"]
 
 eval_dataloader:
-  batch_size: 16
+  batch_size: 32
   num_workers: 8
   prefetch_factor: 8
   pin_memory: false
