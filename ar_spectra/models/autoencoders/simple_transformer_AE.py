@@ -8,6 +8,7 @@ from ar_spectra.modules.normed_modules.conv import (
     NormConv2d, NormConvTranspose2d,
     SConv2d, SConvTranspose2d,
 )
+from ar_spectra.modules.cplx_patch_merging import ConvPatchDownsampleComplex, ConvPatchUpsampleComplex
 import typing as tp
 from ar_spectra.modules.cplx_embedding import ComplexPositionalEncoding, ComplexScaledPositionalEncoding
 from ar_spectra.modules.normed_modules.norm import ComplexLayerNorm, ComplexBatchNorm1d
@@ -79,7 +80,7 @@ class Transformer(Module):
         feat_dim: int,
         dropout_rate: float,
         use_complex: bool = True,
-        use_pos_enc: bool = False,
+        use_pos_enc: bool = True,
     ) -> None:
         super().__init__()
         self.feat_dim = feat_dim
@@ -384,7 +385,6 @@ class SimpleTransformerEncoder(AbstractEncoder):
         self.linear_proj = nn.Linear(patch_dim, self.inter_dim, dtype=torch.complex64)
         # Lightning will move this anchor buffer together with the module; we re-use
         # it to place lazily-built attention stacks without manual device handling.
-        self.register_buffer("_attn_anchor", torch.empty(0), persistent=False)
         self.attn_blocks = ModuleList([
             Transformer(
                 n_heads=self.n_heads,
@@ -394,9 +394,16 @@ class SimpleTransformerEncoder(AbstractEncoder):
             )
             for _ in range(self.depth)
         ])
-        self._attn_feat = None
         self.norm = ComplexLayerNorm(self.inter_dim)
         self.linear = nn.Linear(self.inter_dim, self.inter_dim, dtype=torch.complex64)
+        
+        self.patch_merge = ConvPatchDownsampleComplex(
+            dim=self.inter_dim,
+            out_dim=self.inter_dim,
+            kernel_size=(2, 1),  # ad es. downsampling solo in “freq”
+            stride=(2, 1),
+            padding=(0, 0),
+        )
         self._last_feature_shape: tp.Optional[Tuple[int, int]] = None
 
     def forward(
@@ -447,20 +454,17 @@ class SimpleTransformerEncoder(AbstractEncoder):
             ok(f"Encoder after Nyquist removal: {x.shape} (original F={original_freq})")
         
         x = self.conv0(x)
-        if debug:
-            ok(f"Encoder after conv0 shape: {x.shape}")
         x = self.act0(x)
         x = self.conv1(x)                              # (B, D, F', T')
-        if debug:
-            ok(f"Encoder after conv1 shape: {x.shape}")
         x = self.resnet(x)                            # (B, D, F', T')
         if debug:
-            ok(f"Encoder after resnet shape: {x.shape}")
+            ok(f"Encoder after conv stems shape: {x.shape}")
         x = self.downsampling(x)                      # (B, D, F1, T1)
         if debug:
             ok(f"Encoder after downsampling shape: {x.shape}")
         F1, T1 = x.shape[-2:]
         self._last_feature_shape = (F1, T1)
+        patch_h, patch_w = self.patch_size
         if F1 % self.patch_size[0] != 0 or T1 % self.patch_size[1] != 0:
             raise ValueError(
                 f"Downsampled feature map {F1}x{T1} not divisible by patch_size {self.patch_size}. "
@@ -481,8 +485,14 @@ class SimpleTransformerEncoder(AbstractEncoder):
                     ok(f"Encoder after attention block shape: {x.shape}")
 
         x = self.linear(self.norm(x))              # (B, L, D)
-        if debug:
-            ok(f"Encoder after final norm+linear shape: {x.shape}")
+        
+        H = F1 // patch_h
+        W = T1 // patch_w
+        x, (H, W) = self.patch_merge(x, (H, W))  # (B, L', 2*D)
+        
+        # Update feature_shape to reflect the new spatial dimensions after patch_merge
+        self._last_feature_shape = (H * patch_h, W * patch_w)
+        
         # se vuoi uscire come (B, D, L) per compatibilità col decoder:
         x = x.transpose(1, 2).contiguous()         # (B, D, L)
         latent_info: Dict[str, tp.Any] = {
@@ -490,7 +500,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
             "patch_size": self.patch_size,
             "tokens": x.shape[-1],
             "channels": x.shape[1],
-            "image_size": original_image_size,  # Original shape INCLUDING Nyquist for decoder
+            "image_size": original_image_size, 
         }
         return x, latent_info
 
@@ -650,6 +660,15 @@ class SimpleTransformerDecoder(AbastractDecoder):
         self._fold_output_size: tp.Optional[Tuple[int, int]] = None
         self.fold: tp.Optional[nn.Fold] = None
 
+        
+        self.patch_merge = ConvPatchUpsampleComplex(
+            dim=self.inter_dim,
+            out_dim=self.inter_dim,
+            kernel_size=(2, 1),  # ad es. downsampling solo in “freq”
+            stride=(2, 1),
+            padding=(0, 0),
+        )
+                
         # Token stack (uguale all’encoder): (B,L,dim) -> (B,L,dim)
         self.norm_tok = ComplexLayerNorm(inter_dim)
         self.linear_tok = nn.Linear(inter_dim, inter_dim, dtype=torch.complex64)
@@ -785,6 +804,8 @@ class SimpleTransformerDecoder(AbastractDecoder):
             )
         F1, T1 = pair(target_shape)
         self.feature_shape = (F1, T1)
+        patch_h, patch_w = self.patch_size
+
 
         if F1 % self.patch_size[0] != 0 or T1 % self.patch_size[1] != 0:
             raise ValueError(
@@ -797,16 +818,25 @@ class SimpleTransformerDecoder(AbastractDecoder):
             f"but received L={L}."
         )
 
-        if self.fold is None or self._fold_output_size != (F1, T1):
-            self.fold = nn.Fold(output_size=(F1, T1), kernel_size=self.patch_size, stride=self.patch_size)
-            self._fold_output_size = (F1, T1)
-
         x = z.transpose(1, 2).contiguous()  # (B, L, dim)
+        
+        H = F1 // patch_h
+        W = T1 // patch_w
+        x, (H, W) = self.patch_merge(x, (H, W))  # (B, L', D) - upsample doubles H
+        if debug:
+            ok(f"Decoder after patch unmerge shape: {x.shape}")
+
+        # Update fold dimensions to match the upsampled spatial size
+        F1_upsampled = H * patch_h
+        T1_upsampled = W * patch_w
+        
+        if self.fold is None or self._fold_output_size != (F1_upsampled, T1_upsampled):
+            self.fold = nn.Fold(output_size=(F1_upsampled, T1_upsampled), kernel_size=self.patch_size, stride=self.patch_size)
+            self._fold_output_size = (F1_upsampled, T1_upsampled)
 
         # norm+linear token-wise (feature-last)
         x = self.linear_tok(self.norm_tok(x))  # (B, L, dim)
-        if debug:
-            ok(f"Decoder after token norm+linear shape: {x.shape}")
+
 
         # Transformer blocks
         if not skip_attn:
@@ -830,19 +860,14 @@ class SimpleTransformerDecoder(AbastractDecoder):
             
         fm = self.upsampling(fm)                      # (B, dim, ~F, ~T)
         if debug:
-            ok(f"Decoder after upsampling shape: {fm.shape}")
+            ok(f"Decoder after upsampling and before stem shape: {fm.shape}")
             
         fm = self.resnet(fm)                      # (B, dim, F1, T1)
-        if debug:
-            ok(f"Decoder after resnet shape: {fm.shape}")
 
         # Invert conv1
         y = self.deconv1(fm)
         y = self.act(y)
         y = self.final_conv(y)
-
-        if debug:
-            ok(f"Decoder output shape: {y.shape}")
 
         # Verify output dimensions match expected image_size (including Nyquist)
         if self.image_size is not None:
@@ -862,12 +887,13 @@ if __name__ == "__main__":
     device = "cuda"
     # Input spectrogram: (B, C, F, T) where F=1025 includes Nyquist bin
     dummy = torch.zeros((32, 2, 1025, 128), dtype=torch.complex64).to(device)
+    batch = dummy.shape[0]
 
     # Encoder: input_size matches dummy channels (2).
     # image_size=(1025, 128) is the ORIGINAL shape INCLUDING Nyquist
     encoder = SimpleTransformerEncoder(
         input_size=2,
-        dim=4,
+        dim=2,
         n_heads=4,
         depth=2,
         dropout_rate=0.1,
@@ -883,7 +909,7 @@ if __name__ == "__main__":
     # image_size=(1025, 128) ensures output matches original spectrogram dimensions
     decoder = SimpleTransformerDecoder(
         channels=2,
-        dim=4,
+        dim=2,
         n_heads=4,
         depth=2,
         dropout_rate=0.1,
@@ -909,3 +935,4 @@ if __name__ == "__main__":
     print(f"Latent shape:  {tuple(latent.shape)}")
     print(f"Output shape:  {tuple(recon.shape)}")
     print(f"Reconstruction matches input shape: {dummy.shape == recon.shape}")
+    print(f"Compression ratio (input / latent): {44100*1.5*2*batch / latent.numel():.2f}x")
