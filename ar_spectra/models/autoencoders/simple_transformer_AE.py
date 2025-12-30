@@ -341,6 +341,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
                 dilations=[(1, 1), (1, 1)],
                 norm=norm,
                 activation=activation,
+                activation_params ={},
                 is_complex=is_complex,
             )
         )
@@ -660,6 +661,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
                 norm=norm,
                 activation=activation,
                 is_complex=is_complex,
+                activation_params ={},
             )
         )
         
