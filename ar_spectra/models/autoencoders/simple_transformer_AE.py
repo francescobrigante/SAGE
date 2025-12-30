@@ -118,10 +118,17 @@ class Transformer(Module):
             n_heads, feat_dim, use_complex, use_pos_enc
         ))
 
-        self.norm2 = ComplexLayerNorm(feat_dim)
-        self.linear1 = nn.Linear(feat_dim, feat_dim, dtype=torch.complex64)
-        self.activation = get_activation("CReLU", is_complex=True)
-        self.linear2 = nn.Linear(feat_dim, feat_dim, dtype=torch.complex64)
+        # Feed-forward block: must match complex/real mode
+        if use_complex:
+            self.norm2 = ComplexLayerNorm(feat_dim)
+            self.linear1 = nn.Linear(feat_dim, feat_dim, dtype=torch.complex64)
+            self.activation = get_activation("CReLU", is_complex=True)
+            self.linear2 = nn.Linear(feat_dim, feat_dim, dtype=torch.complex64)
+        else:
+            self.norm2 = nn.LayerNorm(2 * feat_dim)
+            self.linear1 = nn.Linear(2 * feat_dim, 2 * feat_dim)
+            self.activation = get_activation("ReLU", is_complex=False)
+            self.linear2 = nn.Linear(2 * feat_dim, 2 * feat_dim)
 
     def forward(self, x: torch.Tensor, mask=None, debug=False) -> torch.Tensor:
         """Apply self-attention followed by a complex feed-forward block.
@@ -177,11 +184,19 @@ class Transformer(Module):
             # ritorno in C^D
             x = torch.complex(x_r[..., :D], x_r[..., D:])
 
-        # Feed-forward complesso (pre-LN)
-        residual = x
-        ff_out = self.linear2(self.activation(self.linear1(self.norm2(x))))
-
-        x = residual + ff_out
+        # Feed-forward (pre-LN) - handles both complex and real modes
+        if self.use_complex:
+            residual = x
+            ff_out = self.linear2(self.activation(self.linear1(self.norm2(x))))
+            x = residual + ff_out
+        else:
+            # x is already complex from attention output, convert to real for FFN
+            x_r = torch.cat([x.real, x.imag], dim=-1)
+            residual = x_r
+            ff_out = self.linear2(self.activation(self.linear1(self.norm2(x_r))))
+            x_r = residual + ff_out
+            # Convert back to complex
+            x = torch.complex(x_r[..., :D], x_r[..., D:])
 
         return x
 
@@ -239,32 +254,6 @@ class SimpleTransformerEncoder(AbstractEncoder):
     use_pos_enc : bool, default=True
         Whether to apply positional encoding to tokens before self-attention.
         Enables the Transformer to leverage spatial position information.
-    n_residual_layers : int, default=1
-        Number of residual blocks in the convolutional stem. More layers
-        increase the receptive field before tokenization.
-    residual_kernel_size : int, default=3
-        Kernel size for convolutions within residual blocks.
-    dilation_base : int, default=2
-        Base for exponential dilation growth in residual blocks. Layer j uses
-        dilation = dilation_base^j, expanding the receptive field.
-    norm_params : dict, default={}
-        Additional parameters passed to the normalization layers.
-    activation_params : dict, default={}
-        Additional parameters passed to the activation functions.
-    causal : bool, default=False
-        Whether to use causal (left-only) padding in convolutions, suitable
-        for autoregressive or streaming applications.
-    true_skip : bool, default=False
-        If True, residual blocks use identity skip connections; otherwise,
-        a 1x1 convolution is applied to the skip path.
-    compress : int, default=2
-        Channel compression factor within residual blocks (hidden dimension
-        is dim // compress).
-    pad_mode : str, default='reflect'
-        Padding mode for convolutional layers ('reflect', 'replicate', 'zeros').
-    conv_group_ratio : int, default=-1
-        Group convolution ratio. If positive, uses grouped convolutions with
-        groups = channels // conv_group_ratio. -1 disables grouping.
     downsample_ratio : int or tuple[int, int], default=4
         Spatial downsampling factor (freq, time) applied before tokenization.
         Can be a single integer for isotropic downsampling or a tuple for
@@ -310,16 +299,6 @@ class SimpleTransformerEncoder(AbstractEncoder):
         norm: str = "none",
         is_complex: bool = True,
         use_pos_enc: bool = True,
-        n_residual_layers: int = 1,
-        residual_kernel_size: int = 3, 
-        dilation_base: int = 2,
-        norm_params: dict = {},
-        activation_params: dict = {},
-        causal: bool = False,
-        true_skip: bool = False, 
-        compress: int = 2,
-        pad_mode: str = 'reflect',
-        conv_group_ratio: int = -1,
         downsample_ratio: Union[int, Tuple[int, int]] = 4,
         ) -> None:
         super().__init__(input_size=input_size, is_complex=is_complex)
@@ -350,22 +329,21 @@ class SimpleTransformerEncoder(AbstractEncoder):
 
         patch_dim = self.dim * patch_height * patch_width   # 32*8*8 = 2048
 
-        self.conv0 = SConv2d(self.input_size, self.input_size, kernel_size=3, stride=1,is_complex=True, norm=norm)
-        self.act0 = get_activation(self.activation, is_complex= True)
+        self.conv0 = SConv2d(self.input_size, self.input_size, kernel_size=3, stride=1, is_complex=True, norm=norm)
+        self.act0 = get_activation(self.activation, is_complex=True)
         self.conv1 = SConv2d(self.input_size, self.dim, kernel_size=5, stride=1, is_complex=True, norm=norm)
         
-        resnet : tp.List[nn.Module] = []
-        for j in range(n_residual_layers): # This is always 1, parameter never gets changed from default anywhere
-            resnet += [
-                SEANetResnetBlock2d(self.dim,
-                                    kernel_sizes=[(residual_kernel_size, residual_kernel_size), (1, 1)],
-                                    dilations=[(1, dilation_base ** j), (1, 1)],
-                                    norm=norm, norm_params=norm_params,
-                                    activation=activation, activation_params=activation_params,
-                                    causal=causal, pad_mode=pad_mode, compress=compress, true_skip=true_skip,
-                                    conv_group_ratio=conv_group_ratio, is_complex=is_complex)]
-            
-        self.resnet = nn.Sequential(*resnet)
+        # Single residual block for feature refinement
+        self.resnet = nn.Sequential(
+            SEANetResnetBlock2d(
+                self.dim,
+                kernel_sizes=[(3, 3), (1, 1)],
+                dilations=[(1, 1), (1, 1)],
+                norm=norm,
+                activation=activation,
+                is_complex=is_complex,
+            )
+        )
         downsampling: tp.List[nn.Module] = []
         ds_kernel = tuple(2 * s for s in self.downsample_ratio)
         downsampling += [
@@ -463,9 +441,8 @@ class SimpleTransformerEncoder(AbstractEncoder):
         if debug:
             ok(f"Encoder after downsampling shape: {x.shape}")
         F1, T1 = x.shape[-2:]
-        self._last_feature_shape = (F1, T1)
         patch_h, patch_w = self.patch_size
-        if F1 % self.patch_size[0] != 0 or T1 % self.patch_size[1] != 0:
+        if F1 % patch_h != 0 or T1 % patch_w != 0:
             raise ValueError(
                 f"Downsampled feature map {F1}x{T1} not divisible by patch_size {self.patch_size}. "
                 "Adjust patch_size or downsample_ratio so the grid aligns."
@@ -488,7 +465,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
         
         H = F1 // patch_h
         W = T1 // patch_w
-        x, (H, W) = self.patch_merge(x, (H, W))  # (B, L', 2*D)
+        x, (H, W) = self.patch_merge(x, (H, W))  # (B, L', D) - L' = L/2 due to freq downsampling
         
         # Update feature_shape to reflect the new spatial dimensions after patch_merge
         self._last_feature_shape = (H * patch_h, W * patch_w)
@@ -552,28 +529,8 @@ class SimpleTransformerDecoder(AbastractDecoder):
         Whether the decoder operates on complex-valued tensors.
     use_pos_enc : bool, default=True
         Whether to apply positional encoding to tokens before self-attention.
-    n_residual_layers : int, default=1
-        Number of residual blocks after upsampling.
     norm : str, default="none"
         Normalization scheme for convolutional layers.
-    residual_kernel_size : int, default=3
-        Kernel size for convolutions within residual blocks.
-    dilation_base : int, default=2
-        Base for exponential dilation growth in residual blocks.
-    norm_params : dict, default={}
-        Additional parameters for normalization layers.
-    activation_params : dict, default={}
-        Additional parameters for activation functions.
-    causal : bool, default=False
-        Whether to use causal padding in convolutions.
-    true_skip : bool, default=False
-        If True, residual blocks use identity skip connections.
-    compress : int, default=2
-        Channel compression factor within residual blocks.
-    pad_mode : str, default='reflect'
-        Padding mode for convolutional layers.
-    conv_group_ratio : int, default=-1
-        Group convolution ratio. -1 disables grouping.
     downsample_ratio : int or tuple[int, int], default=4
         Spatial upsampling factor (freq, time). Must match the encoder's
         ``downsample_ratio`` for symmetric reconstruction.
@@ -623,17 +580,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
         image_size: tp.Optional[Tuple[int, int]] = None,
         is_complex: bool = True,
         use_pos_enc: bool = True,
-        n_residual_layers: int = 1,
         norm: str = "none",
-        residual_kernel_size: int = 3, 
-        dilation_base: int = 2,
-        norm_params: dict = {},
-        activation_params: dict = {},
-        causal: bool = False,
-        true_skip: bool = False, 
-        compress: int = 2,
-        pad_mode: str = 'reflect',
-        conv_group_ratio: int = -1,
         downsample_ratio: Union[int, Tuple[int, int]] = 4,
         upsampling_out_padding: Union[int, tuple] = 0,
     ) -> None:
@@ -704,18 +651,17 @@ class SimpleTransformerDecoder(AbastractDecoder):
         ]
         self.upsampling = nn.Sequential(*upsampling)
         
-        resnet : tp.List[nn.Module] = []
-        for j in range(n_residual_layers): # This is always 1, parameter never gets changed from default anywhere
-            resnet += [
-                SEANetResnetBlock2d(self.dim,
-                                    kernel_sizes=[(residual_kernel_size, residual_kernel_size), (1, 1)],
-                                    dilations=[(1, dilation_base ** j), (1, 1)],
-                                    norm=norm, norm_params=norm_params,
-                                    activation=activation, activation_params=activation_params,
-                                    causal=causal, pad_mode=pad_mode, compress=compress, true_skip=true_skip,
-                                    conv_group_ratio=conv_group_ratio, is_complex=is_complex)]
-            
-        self.resnet = nn.Sequential(*resnet)
+        # Single residual block for feature refinement
+        self.resnet = nn.Sequential(
+            SEANetResnetBlock2d(
+                self.dim,
+                kernel_sizes=[(3, 3), (1, 1)],
+                dilations=[(1, 1), (1, 1)],
+                norm=norm,
+                activation=activation,
+                is_complex=is_complex,
+            )
+        )
         
 
         # Deconv per invertire conv1: (B, dim, F1, T1) -> (B, C, F, T) circa
