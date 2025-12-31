@@ -23,6 +23,7 @@ model:
       patch_size: [16, 16]
       image_size: [1025, 128]      # original spectrogram shape INCLUDING Nyquist bin (F = n_fft//2 + 1)
       inter_dim: 64
+      mlp_ch_mult: 4
       use_pos_enc: true
       downsample_ratio: 1
 
@@ -36,6 +37,7 @@ model:
       dropout_rate: 0.05
       patch_size: [16, 16]
       inter_dim: 64
+      mlp_ch_mult: 4
       image_size: [1025, 128]      # expected output shape INCLUDING Nyquist bin (F = n_fft//2 + 1)
       use_pos_enc: true
       downsample_ratio: 1
