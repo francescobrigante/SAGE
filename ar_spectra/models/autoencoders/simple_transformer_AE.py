@@ -81,6 +81,7 @@ class Transformer(Module):
         dropout_rate: float,
         use_complex: bool = True,
         use_pos_enc: bool = True,
+        mlp_ch_mult: int = 2,
     ) -> None:
         super().__init__()
         self.feat_dim = feat_dim
@@ -121,14 +122,14 @@ class Transformer(Module):
         # Feed-forward block: must match complex/real mode
         if use_complex:
             self.norm2 = ComplexLayerNorm(feat_dim)
-            self.linear1 = nn.Linear(feat_dim, feat_dim, dtype=torch.complex64)
+            self.linear1 = nn.Linear(feat_dim, feat_dim * mlp_ch_mult, dtype=torch.complex64)
             self.activation = get_activation("CReLU", is_complex=True)
-            self.linear2 = nn.Linear(feat_dim, feat_dim, dtype=torch.complex64)
+            self.linear2 = nn.Linear(feat_dim * mlp_ch_mult, feat_dim, dtype=torch.complex64)
         else:
             self.norm2 = nn.LayerNorm(2 * feat_dim)
-            self.linear1 = nn.Linear(2 * feat_dim, 2 * feat_dim)
+            self.linear1 = nn.Linear(2 * feat_dim, 2 * feat_dim * mlp_ch_mult)
             self.activation = get_activation("ReLU", is_complex=False)
-            self.linear2 = nn.Linear(2 * feat_dim, 2 * feat_dim)
+            self.linear2 = nn.Linear(2 * feat_dim * mlp_ch_mult, 2 * feat_dim)
 
     def forward(self, x: torch.Tensor, mask=None, debug=False) -> torch.Tensor:
         """Apply self-attention followed by a complex feed-forward block.
@@ -258,6 +259,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
         Spatial downsampling factor (freq, time) applied before tokenization.
         Can be a single integer for isotropic downsampling or a tuple for
         anisotropic downsampling.
+    mlp_ch_mult : int, channel multiplier for the MLP in Transformer blocks, default=2
 
     Attributes
     ----------
@@ -300,6 +302,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
         is_complex: bool = True,
         use_pos_enc: bool = True,
         downsample_ratio: Union[int, Tuple[int, int]] = 4,
+        mlp_ch_mult: int = 2,
         ) -> None:
         super().__init__(input_size=input_size, is_complex=is_complex)
         self.input_size = input_size
@@ -368,6 +371,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
             Transformer(
                 n_heads=self.n_heads,
                 feat_dim=self.inter_dim,
+                mlp_ch_mult=mlp_ch_mult,
                 dropout_rate=self.dropout_rate,
                 use_pos_enc=self.use_pos_enc,
             )
@@ -537,6 +541,8 @@ class SimpleTransformerDecoder(AbastractDecoder):
         ``downsample_ratio`` for symmetric reconstruction.
     upsampling_out_padding : int or tuple, default=0
         Output padding for the transposed convolution upsampling layer.
+    mlp_ch_mult: int, default=2
+        Channel multiplier for the MLP in Transformer blocks.
 
     Attributes
     ----------
@@ -581,6 +587,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
         image_size: tp.Optional[Tuple[int, int]] = None,
         is_complex: bool = True,
         use_pos_enc: bool = True,
+        mlp_ch_mult: int = 2,
         norm: str = "none",
         downsample_ratio: Union[int, Tuple[int, int]] = 4,
         upsampling_out_padding: Union[int, tuple] = 0,
@@ -625,6 +632,7 @@ class SimpleTransformerDecoder(AbastractDecoder):
             Transformer(
                 n_heads=n_heads,
                 feat_dim=inter_dim,
+                mlp_ch_mult=mlp_ch_mult,
                 dropout_rate=dropout_rate,
                 use_pos_enc=self.use_pos_enc,
             )
@@ -841,7 +849,7 @@ if __name__ == "__main__":
     # image_size=(1025, 128) is the ORIGINAL shape INCLUDING Nyquist
     encoder = SimpleTransformerEncoder(
         input_size=2,
-        dim=2,
+        dim=4,
         n_heads=4,
         depth=2,
         dropout_rate=0.1,
@@ -857,7 +865,7 @@ if __name__ == "__main__":
     # image_size=(1025, 128) ensures output matches original spectrogram dimensions
     decoder = SimpleTransformerDecoder(
         channels=2,
-        dim=2,
+        dim=4,
         n_heads=4,
         depth=2,
         dropout_rate=0.1,
