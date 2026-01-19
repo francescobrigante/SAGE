@@ -12,7 +12,6 @@ from .losses import (
 from .losses import auraloss as auraloss
 from .losses.ar_spectra_losses import (ComplexSpectralConvergence, MultiResSpectralConvergence, 
                                        ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance)
-from .utils import create_optimizer_from_config, create_scheduler_from_config
 from rich.console import Console
 console = Console()  
 

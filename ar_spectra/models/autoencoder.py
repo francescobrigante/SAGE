@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
+from hydra.utils import instantiate as hydra_instantiate
 
 from ar_spectra.models.bottlenecks import SkipBottleneck, VAEBottleneck
 from ar_spectra.training_utils.pre_transform import resolve_pre_transform
@@ -33,23 +34,28 @@ def _locate_class(class_path: Union[str, type]) -> type:
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
 
-def instantiate_from_spec(spec: Dict[str, Any]) -> Any:
-    """Instantiate an object from a simple spec.
 
-    This local helper is used only inside this module to
-    build encoder/decoder/bottleneck components. For the
-    global training/inference initialization logic, use
-    ``ar_spectra.training_utils.initialization.instantiate_from_spec``.
+def _instantiate_component(spec: Dict[str, Any]) -> Any:
+    """Instantiate a component from a Hydra-style config dict.
+    
+    Supports both new Hydra format (_target_) and converts legacy format (class/kwargs)
+    for backwards compatibility with existing checkpoints.
     """
-
-    if "class" not in spec:
-        raise ValueError("spec is missing the 'class' key.")
-    module_path, class_name = spec["class"].rsplit(".", 1)
-    module = importlib.import_module(module_path)
-    cls = getattr(module, class_name)
-    args = spec.get("args", []) or []
-    kwargs = spec.get("kwargs", {}) or {}
-    return cls(*args, **kwargs)
+    if spec is None:
+        return None
+    
+    # If already has _target_, use hydra directly
+    if "_target_" in spec:
+        return hydra_instantiate(spec, _convert_="all")
+    
+    # Legacy format conversion: class/kwargs -> _target_
+    if "class" in spec:
+        converted = {"_target_": spec["class"]}
+        kwargs = spec.get("kwargs", {}) or {}
+        converted.update(kwargs)
+        return hydra_instantiate(converted, _convert_="all")
+    
+    raise ValueError("spec must contain either '_target_' (Hydra) or 'class' (legacy) key.")
 
 
 def _class_path(obj: Union[str, type, nn.Module]) -> str:
@@ -174,18 +180,18 @@ class AutoEncoder(nn.Module):
         self._stft_config_source: Optional[Dict[str, Any]] = None
         # Allow passing either direct instances or specs / class names
         self.encoder = (
-            instantiate_from_spec(encoder) if isinstance(encoder, dict) else
+            _instantiate_component(encoder) if isinstance(encoder, dict) else
             _locate_class(encoder)() if isinstance(encoder, (str, type)) else
             encoder
         )
         self.decoder = (
-            instantiate_from_spec(decoder) if isinstance(decoder, dict) else
+            _instantiate_component(decoder) if isinstance(decoder, dict) else
             _locate_class(decoder)() if isinstance(decoder, (str, type)) else
             decoder
         )
         self.return_latent = return_latent
         self.bottleneck = (
-            instantiate_from_spec(bottleneck) if isinstance(bottleneck, dict) else
+            _instantiate_component(bottleneck) if isinstance(bottleneck, dict) else
             (_locate_class(bottleneck)() if isinstance(bottleneck, (str, type)) else bottleneck)
             if bottleneck is not None else None
         )
