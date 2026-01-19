@@ -5,7 +5,7 @@
 
 defaults:
   - data: data
-  - model: simple_transformer_AE
+  - model: SEANet_real_model
   - trainer: trainer
   - _self_
 

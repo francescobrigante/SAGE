@@ -1,29 +1,36 @@
 """
-Audio STFT Dataset with custom metadata support.
+Audio STFT Dataset with support for custom file providers.
 
-Supports pluggable metadata providers via `custom_metadata_module` parameter.
-Example metadata module:
+Supports pluggable file providers via `custom_metadata_module` parameter.
+The module should implement `get_audio_files(audio_dir, **kwargs) -> list[str]`
+to return the list of audio file paths for a specific split/subset.
 
-    # my_metadata.py
-    def get_custom_metadata(info, audio):
-        return {"prompt": info["relpath"]}
+Example file provider module:
+
+    # my_dataset_provider.py
+    def get_audio_files(audio_dir, split="training", subset="small", **kwargs):
+        # Return list of absolute file paths for the requested split
+        return ["/path/to/file1.mp3", "/path/to/file2.mp3", ...]
 
 Then in your config:
-    custom_metadata_module: "my_metadata"
+    custom_metadata_module: "my_dataset_provider"
+    custom_metadata_kwargs:
+      split: training
+      subset: small
 """
 
 import torch
 import torchaudio
 import os
 from pathlib import Path
-from typing import Callable, Optional, Sequence, Union, List
+from typing import Callable, Optional, Sequence, Union, List, Any
 import torch.nn.functional as F
 from mutagen.mp3 import MP3
 from torch.utils.data import Dataset
 import numpy as np
 from rich.console import Console
 
-from .metadata_providers import load_metadata_fn
+from .metadata_providers import load_file_provider_fn
 
 console = Console()
 
@@ -126,7 +133,8 @@ class OnTheFlySTFTDataset(Dataset):
         target_frames: Number of STFT time frames to output.
         stereo: If True, output stereo (2 channels); if False, mono.
         cac: If True, output complex-as-channels format.
-        custom_metadata_module: Dotted path to module with get_custom_metadata(info, audio).
+        custom_metadata_module: Dotted path to module with get_audio_files(audio_dir, **kwargs).
+        custom_metadata_kwargs: Dict of kwargs passed to get_audio_files (e.g., split, subset).
         skip_mismatched_sr: Skip files with different sample rate (no resampling).
         skip_mismatched_channels: Skip files with different channel count (no conversion).
         extensions: Allowed audio file extensions.
@@ -160,6 +168,7 @@ class OnTheFlySTFTDataset(Dataset):
         full_waveform: bool = False,
         return_paths: bool = False,
         custom_metadata_module: Optional[str] = None,
+        custom_metadata_kwargs: Optional[dict] = None,
     ):
         super().__init__()
         self.audio_dir = Path(audio_dir).expanduser().resolve()
@@ -181,6 +190,10 @@ class OnTheFlySTFTDataset(Dataset):
         self.full_waveform = bool(full_waveform)
         self.return_paths = bool(return_paths)
         
+        # Custom file provider (for datasets like FMA with splits)
+        self._file_provider = load_file_provider_fn(custom_metadata_module)
+        self._file_provider_kwargs = custom_metadata_kwargs or {}
+        
         # Skip criteria
         self.skip_mismatched_sr = bool(skip_mismatched_sr)
         self.skip_mismatched_channels = bool(skip_mismatched_channels)
@@ -188,9 +201,6 @@ class OnTheFlySTFTDataset(Dataset):
         # Channel info
         self.audio_channels = 2 if self.stereo else 1
         self.spec_channels = 2 * self.audio_channels if self.cac else self.audio_channels
-        
-        # Metadata provider
-        self._get_metadata = load_metadata_fn(custom_metadata_module)
         
         # Segment length calculation
         if self.full_waveform:
@@ -244,8 +254,17 @@ class OnTheFlySTFTDataset(Dataset):
 
     def _scan_and_filter_files(self) -> list[Path]:
         """Scan audio directory and filter files based on criteria."""
-        _, file_paths = fast_scandir(str(self.audio_dir), self.extensions)
-        files = [Path(p) for p in sorted(file_paths)]
+        # Use custom file provider if available
+        if self._file_provider is not None:
+            file_paths = self._file_provider(
+                str(self.audio_dir), 
+                **self._file_provider_kwargs
+            )
+            files = [Path(p) for p in sorted(file_paths)]
+        else:
+            # Default: scan directory recursively
+            _, file_paths = fast_scandir(str(self.audio_dir), self.extensions)
+            files = [Path(p) for p in sorted(file_paths)]
         
         if self._probe_fn is None:
             return files
@@ -360,13 +379,6 @@ class OnTheFlySTFTDataset(Dataset):
             return torch.float64
         return torch.float32
 
-    def _get_file_info(self, path: Path) -> dict:
-        """Build info dict for metadata provider."""
-        return {
-            "path": str(path),
-            "relpath": str(path.relative_to(self.audio_dir)),
-        }
-
     def __getitem__(self, index: int):
         path = self.files[index]
         
@@ -383,13 +395,9 @@ class OnTheFlySTFTDataset(Dataset):
         # Full waveform mode
         if self.full_waveform:
             wav = wav.contiguous()
-            result = (None, wav)
-            if self._get_metadata:
-                info = self._get_file_info(path)
-                result = (*result, self._get_metadata(info, wav))
             if self.return_paths:
-                result = (*result, str(path))
-            return result
+                return None, wav, str(path)
+            return None, wav
         
         # Crop/pad segment - skip on failure
         try:
@@ -419,23 +427,20 @@ class OnTheFlySTFTDataset(Dataset):
         
         # Format output
         if self.cac:
-            S_ri = torch.stack((S.real, S.imag), dim=1)
-            S = S_ri.flatten(0, 1).contiguous()
+            # CAC format: concat real parts then imag parts along channel axis
+            # This matches AutoEncoder._pack_complex which does cat([S.real, S.imag], dim=1)
+            # Input S shape: [C, F, T] complex -> Output: [2C, F, T] real
+            # Order: [real_ch0, real_ch1, ..., imag_ch0, imag_ch1, ...]
+            S = torch.cat([S.real, S.imag], dim=0).contiguous()
             S = S.to(self._real_dtype_for(self.dtype))
         else:
             S = S.contiguous()
         
         seg = seg.contiguous()
-        result = (S, seg)
-        
-        if self._get_metadata:
-            info = self._get_file_info(path)
-            result = (*result, self._get_metadata(info, seg))
         
         if self.return_paths:
-            result = (*result, str(path))
-        
-        return result
+            return S, seg, str(path)
+        return S, seg
 
     def _pick_probe_fn(self):
         """Pick the best available probe function for file metadata."""
