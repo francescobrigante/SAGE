@@ -3,7 +3,7 @@
 
 train_dataset:
   _target_: ar_spectra.dataset.OnTheFlySTFTDataset
-  audio_dir: /home/cerovaz/repos/data/jamendo_full/train
+  audio_dir: /home/ec2-user/cerovaz/data/fma_small
   target_frames: 128
   sample_rate: 44100
   n_fft: 2048
@@ -14,8 +14,9 @@ train_dataset:
   extensions: [".mp3"]
   stereo: true
   cac: false
-  skip_broken_files: true
-  skip_criteria: ["sample_rate"]
+  skip_mismatched_sr: false
+  skip_mismatched_channels: false
+  custom_metadata_module: ar_spectra.fma_metadata
 
 train_dataloader:
   batch_size: 32
@@ -28,7 +29,7 @@ train_dataloader:
 
 eval_dataset:
   _target_: ar_spectra.dataset.OnTheFlySTFTDataset
-  audio_dir: /home/cerovaz/repos/data/jamendo_full/eval
+  audio_dir: /home/ec2-user/cerovaz/data/fma_small
   target_frames: 128
   sample_rate: 44100
   n_fft: 2048
@@ -39,8 +40,9 @@ eval_dataset:
   extensions: [".mp3"]
   stereo: true
   cac: false
-  skip_broken_files: true
-  skip_criteria: ["sample_rate"]
+  skip_mismatched_sr: false
+  skip_mismatched_channels: false
+  custom_metadata_module: ar_spectra.fma_metadata
 
 eval_dataloader:
   batch_size: 32
