@@ -3,17 +3,15 @@ seed: 94
 device: cuda
 
 optimizer:
-  type: RAdam
-  config:
-    lr: 3e-4
-    weight_decay: 1e-5
+  _target_: torch.optim.RAdam
+  lr: 3e-4
+  weight_decay: 1e-5
 
 scheduler:
-  type: InverseLR
-  config:
-    inv_gamma: 30000
-    power: 0.5
-    warmup: 0
+  _target_: ar_spectra.training_utils.utils.InverseLR
+  inv_gamma: 30000
+  power: 0.5
+  warmup: 0
 
 trainer:
   precision: 32-true
@@ -39,31 +37,6 @@ trainer:
   detect_anomaly: true
   gradient_clip_val: 1.0
   gradient_clip_algorithm: norm
-
-  NaNDetector:
-    enable: false
-    check_inputs: true
-    check_outputs: true
-    check_gradients: true
-    check_parameters: true
-    every_n_steps: 0.5
-
-  GradNormMonitor:
-    enable: false
-    every_n_steps: 1
-    warn_low: 1e-14
-    warn_high: 1e2
-    log_norm: false
-    log_max: true
-    log_ratio: true
-    log_rms: true
-    ratio_eps: 1e-12
-
-  LayerNormLogging:
-    enable: false
-    every_n_steps: 20
-    max_modules: 8
-    prefix: ln
 
 wandb:
   project: ICML_2026
@@ -93,8 +66,3 @@ loss_config:
         reduction: mean
 
     weights: {stft_mse: 1.0}
-
-
-# Legacy fallback controls
-use_json: false
-json_path: null

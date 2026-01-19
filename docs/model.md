@@ -1,10 +1,10 @@
 # Model Configuration Guide
 
 ## Purpose
-This document details how to describe the autoencoder architecture that powers EulerAudioBackbone. Model definitions are written in Hydra YAML and consumed by `AutoEncoder.from_config`, enabling interchangeable encoder/decoder pairs, bottlenecks, and pre/post transforms.
+This document details how to describe the autoencoder architecture that powers EulerAudioBackbone. Model definitions are written in Hydra YAML using the `_target_` instantiation pattern and consumed by `AutoEncoder.from_config`, enabling interchangeable encoder/decoder pairs, bottlenecks, and pre/post transforms.
 
 ## Configuration Entry Points
-- Default model specification: `conf/model/SEANet_cplx_model.yaml`.
+- Default model specification: `conf/model/simple_transformer_AE.yaml`.
 - Custom variants can be added under `conf/model/` and selected via `model=<name>` on the training command line or by editing `conf/inference.yaml` for evaluation.
 
 ## Core Structure
@@ -12,25 +12,29 @@ Every model YAML exposes a `model` node with the following fields:
 ```yaml
 model:
   autoencoder:
-    encoder: {...}
-    decoder: {...}
-    bottleneck: {...}
+    return_latent: false
     pre_transform: {...}   # optional
+  encoder:
+    _target_: ar_spectra.models.autoencoders...
+    input_size: 2          # MUST match data.model_channels
+    ...
+  decoder:
+    _target_: ar_spectra.models.autoencoders...
+    channels: 2            # MUST match data.model_channels
+    ...
+  bottleneck:
+    _target_: ar_spectra.models.bottlenecks.VAEBottleneck
+    skip_bottleneck: true
 ```
 
 ### Encoder / Decoder Blocks
-Each block supports multiple declaration styles:
-- **Config dictionaries** with `class` and `kwargs`.
-- Fully qualified class paths (string).
-- Direct class or instance references (Python-side construction).
+Each block uses Hydra's `_target_` instantiation pattern:
 
-When specified in YAML, the recommended pattern is:
 ```yaml
 encoder:
-  class: ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d
-  kwargs:
-    input_size: auto
-    ratios: [[2, 2], [2, 2], [2, 2]]
+  _target_: ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d
+  input_size: 2              # stereo without CAC
+  ratios: [[2, 2], [2, 2], [2, 2]]
 ```
 
   **Return convention:** encoder modules must return ``(latents, encoder_info)``
@@ -40,16 +44,38 @@ encoder:
   bottleneck is active, exposes it as an optional third element in the returned
   tuple.
 
-Use the sentinel `auto` for parameters whose value depends on dataset inspection (e.g., spectrogram channel count). `resolve_auto_channels` patches these fields automatically once data is available.
+### Channel Configuration (MANUAL)
+**Important:** Channel parameters must be set manually to match the dataset configuration.
+
+| Dataset Settings | audio_channels | model_channels |
+|-----------------|----------------|----------------|
+| stereo=true, cac=false | 2 | 2 |
+| stereo=true, cac=true | 2 | 4 |
+| stereo=false, cac=false | 1 | 1 |
+| stereo=false, cac=true | 1 | 2 |
+
+Set in `conf/data/data.yaml`:
+```yaml
+audio_channels: 2
+model_channels: 2
+```
+
+And ensure encoder/decoder configs match:
+```yaml
+encoder:
+  input_size: 2    # = model_channels
+decoder:
+  channels: 2      # = model_channels
+```
 
 ### Trainer-required parameters
-The training loop injects dataset-aware values into the model config and expects the following arguments to be present in the encoder/decoder kwargs:
+The training loop expects the following arguments to be present in the encoder/decoder configs:
 
 - `input_size` on the encoder.
 - `channels` on the decoder.
-- `is_complex` on both encoder and decoder.
+- `is_complex` on both encoder and decoder (optional).
 
-`input_size` and `channels` can be set to `auto` so the trainer can pick the right counts from the dataset (complex dtype vs. CAC layout, mono/stereo). `is_complex` is used during training to decide whether audio logged to Weights & Biases should be packed/unpacked as real/imaginary channel pairs; set it to mirror the dataset output representation.
+`is_complex` is used during training to decide whether audio logged to Weights & Biases should be packed/unpacked as real/imaginary channel pairs; set it to mirror the dataset output representation.
 
 When implementing new autoencoders, prefer subclassing the base classes in [ar_spectra/models/autoencoders/abstract_ae.py](ar_spectra/models/autoencoders/abstract_ae.py). This keeps constructor signatures aligned with the required `input_size`, `channels`, and `is_complex` fields and avoids mismatches at training time.
 

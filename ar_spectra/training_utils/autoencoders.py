@@ -20,7 +20,8 @@ from ..models.discriminators import EncodecDiscriminator, OobleckDiscriminator, 
 from ..models.bottlenecks import VAEBottleneck
 from .losses import MelSpectrogramLoss, MultiLoss, AuralossLoss, ValueLoss, TargetValueLoss, L1Loss, LossWithTarget, MSELoss, HubertLoss
 from .losses import auraloss as auraloss
-from .utils import create_optimizer_from_config, create_scheduler_from_config, log_audio, log_image, log_metric, log_point_cloud, logger_project_name
+from .utils import log_audio, log_image, log_metric, log_point_cloud, logger_project_name
+from hydra.utils import instantiate as hydra_instantiate
 import torch.nn.functional as F
 from ..models.eulero_inference import encode_audio as inference_encode_audio
 from ..models.eulero_inference import decode_audio as inference_decode_audio
@@ -197,50 +198,40 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
     
     def configure_optimizers(self):
         """
-        Create optimizers/schedulers here using utils helpers.
-        Pull specs from JSON (self._optimizer_spec/self._scheduler_spec), with sensible fallbacks.
+        Create optimizers/schedulers using Hydra instantiate with _target_ format.
+        Fallbacks to sensible defaults if specs are missing.
         """
-        def normalize_spec(spec: Optional[dict], default: dict, kind: str):
-            # Accept both {"type": "...", "config": {...}} and legacy {"class": "...", "kwargs": {...}}
-            if spec is None:
-                warn(f"{kind}: missing in config, using fallback {default['type']} with config {default.get('config', {})}")
-                return default
-            if not isinstance(spec, dict):
-                warn(f"{kind}: invalid spec type {type(spec).__name__}, using fallback {default['type']}")
-                return default
-            spec = deepcopy(spec)
-            if "type" not in spec and "class" in spec:
-                # convert legacy "class" -> "type"
-                spec["type"] = spec.pop("class")
-            if "config" not in spec and "kwargs" in spec:
-                spec["config"] = spec.pop("kwargs")
-            if "type" not in spec:
-                warn(f"{kind}: missing 'type', using fallback {default['type']}")
-                return default
-            spec.setdefault("config", {})
-            return spec
+        default_opt = {"_target_": "torch.optim.AdamW", "lr": 2e-4, "betas": [0.8, 0.99]}
+        default_sched = {"_target_": "ar_spectra.training_utils.utils.InverseLR", "inv_gamma": 200000, "power": 0.5, "warmup": 0.999}
 
-        default_opt = {"type": "AdamW", "config": {"lr": 2e-4, "betas": (0.8, 0.99)}}
-        default_sched = {"type": "InverseLR", "config": {"inv_gamma": 200000, "power": 0.5, "warmup": 0.999}}
+        opt_spec = self._optimizer_spec if self._optimizer_spec else default_opt
+        sched_spec = self._scheduler_spec if self._scheduler_spec else default_sched
 
-        opt_spec = normalize_spec(self._optimizer_spec, default_opt, "optimizer")
-        sched_spec = normalize_spec(self._scheduler_spec, default_sched, "scheduler")
+        # Ensure spec is a mutable copy
+        opt_spec = deepcopy(opt_spec) if isinstance(opt_spec, dict) else default_opt
+        sched_spec = deepcopy(sched_spec) if isinstance(sched_spec, dict) else default_sched
 
-        # Create optimizers
+        # Handle missing _target_ with fallback
+        if "_target_" not in opt_spec:
+            warn(f"optimizer: missing '_target_', using fallback {default_opt['_target_']}")
+            opt_spec = default_opt
+        if "_target_" not in sched_spec:
+            warn(f"scheduler: missing '_target_', using fallback {default_sched['_target_']}")
+            sched_spec = default_sched
+
+        # Create optimizers via Hydra instantiate
         gen_params = list(self.autoencoder.parameters())
-        opt_gen = create_optimizer_from_config(opt_spec, gen_params)
+        opt_gen = hydra_instantiate(opt_spec, params=gen_params, _convert_="all")
 
         opt_disc = None
         if self.use_disc and self.discriminator is not None:
-            # Same spec for discriminator by default
-            opt_disc = create_optimizer_from_config(opt_spec, self.discriminator.parameters())
+            opt_disc = hydra_instantiate(opt_spec, params=self.discriminator.parameters(), _convert_="all")
 
-        # Create schedulers
-        sched_gen = create_scheduler_from_config(sched_spec, opt_gen) if sched_spec else None
-        sched_disc = create_scheduler_from_config(sched_spec, opt_disc) if (sched_spec and opt_disc is not None) else None
+        # Create schedulers via Hydra instantiate (optimizer passed as positional arg)
+        sched_gen = hydra_instantiate(sched_spec, optimizer=opt_gen, _convert_="all") if sched_spec else None
+        sched_disc = hydra_instantiate(sched_spec, optimizer=opt_disc, _convert_="all") if (sched_spec and opt_disc is not None) else None
 
-        ok(f"Using optimizer {opt_spec['type']} with config {opt_spec.get('config', {})} "
-           f"and scheduler {sched_spec['type']} with config {sched_spec.get('config', {})}")
+        ok(f"Using optimizer {opt_spec['_target_']} and scheduler {sched_spec['_target_']}")
 
         if self.use_disc and opt_disc is not None:
             if sched_gen is not None and sched_disc is not None:

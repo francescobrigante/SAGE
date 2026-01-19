@@ -1,51 +1,54 @@
-# Model configuration (encoder/decoder/bottleneck) 
+# Model configuration - Hydra instantiate API (Complex SEANet)
+# Use _target_ for automatic instantiation via hydra.utils.instantiate
+
 model:
   autoencoder:
     return_latent: false
-    # Spectrogram normalization applied at encoder input and inverted at decoder output
     pre_transform:
       type: power_norm     # none | log_mag | power_norm
-      apply_target: true   # set apply_target: true to apply the normalization also to the target spectrograms
-      apply_inverse: true # set apply_inverse: false to apply the normalization only before the encoder
+      apply_target: true
+      apply_inverse: true
       config:
         eps: 1.0e-8
         alpha: 0.65
         beta: 0.35
 
   encoder:
-    class: ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d
-    kwargs:
-      input_size: auto           # will be patched at runtime
-      dimension: 64
-      n_filters: 8
-      n_residual_layers: 1
-      ratios: [[4,2],[1,2],[4,2]]
-      activation: CReLU
-      activation_params: {}
-      norm: weight_norm
-      norm_params: {}
-      causal: false
-      latent_fbins: 64
-      dilation_base: 2
-      seq_model: none
-      is_complex: true
+    _target_: ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d
+    # input_size MUST match data.model_channels
+    input_size: 2
+    dimension: 64
+    n_filters: 8
+    n_residual_layers: 1
+    ratios: [[4,2],[1,2],[4,2]]
+    activation: CReLU
+    activation_params: {}
+    norm: weight_norm
+    norm_params: {}
+    causal: false
+    latent_fbins: 64
+    dilation_base: 2
+    seq_model: none
+    is_complex: true
+
   decoder:
-    class: ar_spectra.models.autoencoders.SeaNET_AE.SEANetDecoder2d
-    kwargs:
-      channels: auto             # will be patched at runtime
-      input_size: 64
-      n_filters: 8
-      n_residual_layers: 1
-      ratios: [[4,2],[1,2],[4,2]]
-      activation: CReLU
-      activation_params: {}
-      norm: weight_norm
-      norm_params: {}
-      causal: false
-      latent_fbins: 64
-      dilation_base: 2
-      seq_model: none
-      is_complex: true
+    _target_: ar_spectra.models.autoencoders.SeaNET_AE.SEANetDecoder2d
+    # channels MUST match data.model_channels
+    channels: 2
+    input_size: 64
+    n_filters: 8
+    n_residual_layers: 1
+    ratios: [[4,2],[1,2],[4,2]]
+    activation: CReLU
+    activation_params: {}
+    norm: weight_norm
+    norm_params: {}
+    causal: false
+    latent_fbins: 64
+    dilation_base: 2
+    seq_model: none
+    is_complex: true
+
   bottleneck:
-    class: ar_spectra.models.bottlenecks.VAEBottleneck
+    _target_: ar_spectra.models.bottlenecks.VAEBottleneck
     skip_bottleneck: true

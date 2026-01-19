@@ -1,79 +1,42 @@
+"""Training script for audio autoencoders using Hydra configuration.
+
+All instantiation is done via hydra.utils.instantiate with _target_ configs.
+"""
 import json
 from pathlib import Path
+from typing import Dict, List
+
 import torch
-import hydra
-from hydra.utils import get_original_cwd
-from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import DataLoader
+import torch.profiler as torch_profiler
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer, seed_everything
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, ModelSummary, TQDMProgressBar
-from pytorch_lightning.loggers import WandbLogger
-import torch.profiler as torch_profiler
+from pytorch_lightning.callbacks import (
+    ModelCheckpoint, LearningRateMonitor, ModelSummary, TQDMProgressBar
+)
+from pytorch_lightning.loggers import WandbLogger, TensorBoardLogger
 from pytorch_lightning.profilers import PyTorchProfiler
+from pytorch_lightning.utilities.rank_zero import rank_zero_only
+from torch.utils.data import DataLoader
+
+import hydra
+from hydra.utils import get_original_cwd, instantiate
+from omegaconf import DictConfig, OmegaConf
+import wandb
+
 from ar_spectra.models.autoencoder import AutoEncoder
 from ar_spectra.training_utils.autoencoders import AutoencoderTrainingWrapper, AutoencoderValDemoCallback
-from ar_spectra.training_utils.layernorm_logging import LayerNormStatsCallback
-from ar_spectra.training_utils.initialization import (build_training_wrapper_from_cfg,)
+from ar_spectra.training_utils.initialization import collate_stft
 from ar_spectra.training_utils.reproducibility import configure_reproducibility
-from tqdm import tqdm
-from rich.console import Console
-from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from ar_spectra.training_utils.get_model_config import extract_model_config
-import wandb
-import time
-from pytorch_lightning.callbacks import Callback
-from pytorch_lightning.loggers import TensorBoardLogger
-from typing import Dict, List
-console = Console()  
+
+from rich.console import Console
+console = Console()
 
 def ok(msg):     console.print(msg, style="bold green")
 def warn(msg):   console.print(msg, style="bold yellow")
 def err(msg):    console.print(msg, style="bold red")
 def info(msg):   console.print(msg, style="cyan")
 
-def collate_stft(batch):
-    Ss, wavs = zip(*batch)
-    s0 = Ss[0].shape
-    w0 = wavs[0].shape
-    assert all(x.shape == s0 for x in Ss), f"STFT shapes differ: {[x.shape for x in Ss]}"
-    assert all(x.shape == w0 for x in wavs), f"Wav shapes differ: {[x.shape for x in wavs]}"
-    return torch.stack(Ss, 0), torch.stack(wavs, 0)
-
-# Auto pin-memory helpers 
-def _max_pinnable_mb() -> int:
-    if not torch.cuda.is_available():
-        return 0
-    mb_list = [8, 16, 24, 32, 40, 48, 56, 64, 96, 128, 192, 256, 384, 512]
-    last_ok = 0
-    for mb in mb_list:
-        try:
-            x = torch.empty((mb * 1024 * 1024) // 4, dtype=torch.float32)
-            x.pin_memory()
-            last_ok = mb
-        except Exception:
-            break
-    return last_ok
-
-def _parse_pin_flag(value):
-    # Accept bools or strings: "auto"|"true"|"false"
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        v = value.strip().lower()
-        if v in ("true", "1", "yes", "y"):
-            return True
-        if v in ("false", "0", "no", "n"):
-            return False
-        if v == "auto":
-            return "auto"
-    # default to auto if unspecified
-    return "auto"
-
-
-def load_json(path: str):
-    with open(path, "r") as f:
-        return json.load(f)
 
 class WandbConfigLogger:
     """Utility per caricare l'intera cartella di configurazione Hydra su W&B.
@@ -215,176 +178,20 @@ class ModelInfoLogger(pl.Callback):
                 warn(f"ModelInfoLogger: W&B log skipped ({type(e).__name__}: {e})")
 
 
-class NaNDetector(pl.Callback):
-    """Abort training as soon as non-finite tensors are detected."""
-
-    def __init__(
-        self,
-        *,
-        check_inputs: bool = False,
-        check_outputs: bool = True,
-        check_gradients: bool = True,
-        check_parameters: bool = False,
-        every_n_steps: int = 1,
-    ) -> None:
-        super().__init__()
-        self.check_inputs = bool(check_inputs)
-        self.check_outputs = bool(check_outputs)
-        self.check_gradients = bool(check_gradients)
-        self.check_parameters = bool(check_parameters)
-        self.every_n_steps = max(int(every_n_steps), 1)
-
-    def _should_check(self, trainer: Trainer) -> bool:
-        step = int(getattr(trainer, "global_step", 0))
-        return (step % self.every_n_steps) == 0
-
-    def _scan_tensors(self, payload, label: str) -> None:
-        if payload is None:
-            return
-        if isinstance(payload, torch.Tensor):
-            if not torch.isfinite(payload).all():
-                raise RuntimeError(f"Detected non-finite values in {label} (shape={tuple(payload.shape)}, dtype={payload.dtype})")
-            return
-        if isinstance(payload, dict):
-            for key, value in payload.items():
-                self._scan_tensors(value, f"{label}.{key}")
-            return
-        if isinstance(payload, (list, tuple)):
-            for idx, value in enumerate(payload):
-                self._scan_tensors(value, f"{label}[{idx}]")
-
-    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
-        if self.check_inputs and self._should_check(trainer):
-            self._scan_tensors(batch, "train_batch")
-
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        if self.check_outputs and self._should_check(trainer):
-            self._scan_tensors(outputs, "train_outputs")
-
-    def on_after_backward(self, trainer, pl_module):
-        if not self._should_check(trainer):
-            return
-        if self.check_gradients:
-            for name, param in pl_module.named_parameters():
-                grad = getattr(param, "grad", None)
-                if grad is None:
-                    continue
-                if not torch.isfinite(grad).all():
-                    raise RuntimeError(f"Detected non-finite gradient in {name} (shape={tuple(grad.shape)})")
-        if self.check_parameters:
-            for name, param in pl_module.named_parameters():
-                if not torch.isfinite(param).all():
-                    raise RuntimeError(f"Detected non-finite parameter tensor in {name} (shape={tuple(param.shape)})")
-
-class GradNormMonitor(pl.Callback):
-    """Log per-step gradient stats to spot vanishing/exploding gradients."""
-
-    def __init__(
-        self,
-        *,
-        every_n_steps: int = 100,
-        warn_low: float = 1e-8,
-        warn_high: float = 1e2,
-        log_norm: bool = True,
-        log_max: bool = True,
-        log_ratio: bool = False,
-        log_rms: bool = False,
-        ratio_eps: float = 1e-12,
-    ):
-        super().__init__()
-        self.every_n_steps = max(1, int(every_n_steps))
-        self.warn_low = float(warn_low)
-        self.warn_high = float(warn_high)
-        self.log_norm = bool(log_norm)
-        self.log_max = bool(log_max)
-        self.log_ratio = bool(log_ratio)
-        self.log_rms = bool(log_rms)
-        self.ratio_eps = float(ratio_eps)
-
-    def on_after_backward(self, trainer, pl_module):
-        step = int(getattr(trainer, "global_step", 0))
-        if step % self.every_n_steps:
-            return
-        stats = []
-        for name, p in pl_module.named_parameters():
-            g = getattr(p, "grad", None)
-            if g is None:
-                continue
-
-            g_abs = g.abs()  # support complex gradients by operating on magnitude
-            gn = g_abs.norm(2).item()
-            gmax = g_abs.max().item()
-            rms = (g_abs.pow(2).mean().sqrt().item()) if self.log_rms else None
-
-            # ratio between grad norm and weight norm, helps spot vanishing gradients
-            ratio = None
-            if self.log_ratio:
-                pn = p.abs().norm(2).item()
-                ratio = gn / (pn + self.ratio_eps)
-
-            is_finite = torch.isfinite(g).all()
-            if gn < self.warn_low:
-                warn(f"[grad vanishing] {name} | L2={gn:.2e} max={gmax:.2e}")
-            if gn > self.warn_high or not is_finite:
-                err(f"[grad exploding] {name} | L2={gn:.2e} max={gmax:.2e}")
-
-            stats.append((name, gn, gmax, ratio, rms))
-
-        if stats and trainer.logger is not None:
-            log_payload = {}
-            if self.log_norm:
-                log_payload.update({f"grad/L2/{n}": v for n, v, _, _, _ in stats})
-            if self.log_max:
-                log_payload.update({f"grad/max/{n}": m for n, _, m, _, _ in stats})
-            if self.log_ratio:
-                log_payload.update({f"grad/ratio/{n}": r for n, _, _, r, _ in stats if r is not None})
-            if self.log_rms:
-                log_payload.update({f"grad/rms/{n}": rms for n, _, _, _, rms in stats if rms is not None})
-            if log_payload:
-                trainer.logger.log_metrics(log_payload, step=step)
-
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig):
-    """Hydra entrypoint. Falls back to a monolithic JSON when trainer.use_json=true."""
-    # Determine configuration mode (Hydra vs legacy JSON)
-    is_json_mode = cfg.trainer.get("use_json", False)
-    if is_json_mode:
-        legacy_path = cfg.trainer.get("json_path")
-        if not legacy_path:
-            raise ValueError("trainer.use_json=true but trainer.json_path is empty")
-        legacy_cfg = load_json(legacy_path)
-        ok(f"Loaded legacy JSON: {legacy_path}")
-        unified = legacy_cfg
-    else:
-        # Rebuild unified experiment dictionary
-        trainer_pre_transform = cfg.trainer.get("pre_transform", None)
-        if trainer_pre_transform is not None:
-            trainer_pre_transform = OmegaConf.to_container(trainer_pre_transform, resolve=True)
-        unified = {
-            "seed": int(cfg.trainer.seed),
-            "device": cfg.device if hasattr(cfg, "device") else cfg.trainer.get("device", "cuda"),
-            "train_dataset": OmegaConf.to_container(cfg.data.train_dataset, resolve=True),
-            "train_dataloader": OmegaConf.to_container(cfg.data.train_dataloader, resolve=True),
-            "eval_dataset": OmegaConf.to_container(cfg.data.get("eval_dataset", {}), resolve=True),
-            "eval_dataloader": OmegaConf.to_container(cfg.data.get("eval_dataloader", {}), resolve=True),
-            "demo": OmegaConf.to_container(cfg.data.get("demo", {}), resolve=True),
-            "model": OmegaConf.to_container(cfg.model.model, resolve=True),
-            "optimizer": OmegaConf.to_container(cfg.trainer.get("optimizer", {}), resolve=True),
-            "scheduler": OmegaConf.to_container(cfg.trainer.get("scheduler", {}), resolve=True),
-            "trainer": OmegaConf.to_container(cfg.trainer.trainer, resolve=True),
-            "wandb": OmegaConf.to_container(cfg.trainer.get("wandb", {}), resolve=True),
-            "eval_loss_config": OmegaConf.to_container(cfg.trainer.get("eval_loss_config", {}), resolve=True),
-            "loss_config": OmegaConf.to_container(cfg.trainer.get("loss_config", {}), resolve=True),
-            "pre_transform": trainer_pre_transform,
-        }
-        ok("Hydra composition complete")
-
-    cfg = unified
-    seed = int(cfg.get("seed", 42))
-    deterministic_flag = bool(cfg.get("trainer", {}).get("deterministic", True))
-    strict_deterministic_flag = bool(
-        cfg.get("trainer", {}).get("strict_deterministic", False)
-    )
+    """Hydra entrypoint using native instantiate API.
+    
+    All datasets, models, and components are instantiated via hydra.utils.instantiate
+    with _target_ configuration format.
+    """
+    # ─────────────────────────────────────────────────────────────────────────
+    # Reproducibility setup
+    # ─────────────────────────────────────────────────────────────────────────
+    seed = int(cfg.trainer.seed)
+    deterministic_flag = bool(cfg.trainer.trainer.get("deterministic", False))
+    strict_deterministic_flag = bool(cfg.trainer.trainer.get("strict_deterministic", False))
+    
     configure_reproducibility(
         seed,
         deterministic=deterministic_flag,
@@ -392,47 +199,141 @@ def main(cfg: DictConfig):
         warn=warn,
     )
     seed_everything(seed, workers=True)
+    ok(f"Reproducibility configured with seed={seed}")
 
-    # Base directory centralized
+    # ─────────────────────────────────────────────────────────────────────────
+    # Directory setup
+    # ─────────────────────────────────────────────────────────────────────────
     runs_dir = Path(get_original_cwd()) / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
-
-    # Standard subdirectories
-    # Checkpoints fuori da runs (richiesta: cartella root 'checkpoints')
     ckpt_dir = Path(get_original_cwd()) / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     profiler_dir = runs_dir / "profiler"
     profiler_dir.mkdir(parents=True, exist_ok=True)
-    media_dir = runs_dir / "media"
-    media_dir.mkdir(parents=True, exist_ok=True)
 
-    # Datasets, dataloaders and wrapper initialization (single source of truth)
-    wrapper, data_init = build_training_wrapper_from_cfg(cfg)
-    train_ds = data_init.train_dataset
-    train_dl = data_init.train_dataloader
-    eval_dl = data_init.eval_dataloader
-    audio_channels = data_init.audio_channels
-    ok("Instantiated datasets, dataloaders, AutoEncoder and Lightning wrapper.")
+    # ─────────────────────────────────────────────────────────────────────────
+    # Dataset instantiation via Hydra
+    # ─────────────────────────────────────────────────────────────────────────
+    train_ds = instantiate(cfg.data.train_dataset, seed=seed)
+    ok(f"Train dataset instantiated: {len(train_ds)} samples")
+
+    eval_ds = None
+    if cfg.data.get("eval_dataset") is not None:
+        eval_ds = instantiate(cfg.data.eval_dataset, seed=seed)
+        ok(f"Eval dataset instantiated: {len(eval_ds)} samples")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # DataLoader construction
+    # ─────────────────────────────────────────────────────────────────────────
+    dl_cfg = OmegaConf.to_container(cfg.data.train_dataloader, resolve=True)
+    num_workers = int(dl_cfg.get("num_workers", 8))
+    
+    train_dl = DataLoader(
+        train_ds,
+        batch_size=int(dl_cfg.get("batch_size", 8)),
+        num_workers=num_workers,
+        pin_memory=bool(dl_cfg.get("pin_memory", False)),
+        shuffle=bool(dl_cfg.get("shuffle", True)),
+        drop_last=bool(dl_cfg.get("drop_last", True)),
+        persistent_workers=(dl_cfg.get("persistent_workers", False) if num_workers > 0 else False),
+        prefetch_factor=int(dl_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
+        collate_fn=collate_stft,
+    )
+
+    eval_dl = None
+    if eval_ds is not None:
+        dl_eval_cfg = OmegaConf.to_container(cfg.data.eval_dataloader, resolve=True)
+        eval_dl = DataLoader(
+            eval_ds,
+            batch_size=int(dl_eval_cfg.get("batch_size", dl_cfg.get("batch_size", 8))),
+            num_workers=num_workers,
+            pin_memory=bool(dl_eval_cfg.get("pin_memory", False)),
+            shuffle=bool(dl_eval_cfg.get("shuffle", False)),
+            drop_last=bool(dl_eval_cfg.get("drop_last", False)),
+            persistent_workers=(dl_eval_cfg.get("persistent_workers", False) if num_workers > 0 else False),
+            prefetch_factor=int(dl_eval_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
+            collate_fn=collate_stft,
+        )
+    ok("DataLoaders created")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Model instantiation via Hydra
+    # ─────────────────────────────────────────────────────────────────────────
+    model_cfg = OmegaConf.to_container(cfg.model.model, resolve=True)
+    autoencoder = AutoEncoder.from_config(model_cfg)
+    ok("AutoEncoder instantiated via Hydra")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Channel configuration (from data config - must be set manually)
+    # ─────────────────────────────────────────────────────────────────────────
+    audio_channels = int(cfg.data.audio_channels)
+    model_channels = int(cfg.data.model_channels)
+    sample_rate = int(cfg.data.train_dataset.sample_rate)
+    
+    # Build STFT params dict for the engine
+    stft_params = {
+        "sample_rate": sample_rate,
+        "n_fft": int(cfg.data.train_dataset.n_fft),
+        "hop_length": int(cfg.data.train_dataset.hop_length),
+        "win_length": int(cfg.data.train_dataset.win_length),
+        "center": bool(cfg.data.train_dataset.center),
+        "normalized": bool(cfg.data.train_dataset.normalized),
+    }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Training wrapper instantiation
+    # ─────────────────────────────────────────────────────────────────────────
+    trainer_cfg = cfg.trainer
+    pre_transform_spec = model_cfg.get("autoencoder", {}).get("pre_transform")
+    
+    wrapper = AutoencoderTrainingWrapper(
+        autoencoder=autoencoder,
+        sample_rate=sample_rate,
+        audio_channels=audio_channels,
+        model_channels=model_channels,
+        loss_config=OmegaConf.to_container(trainer_cfg.get("loss_config", {}), resolve=True) or None,
+        eval_loss_config=OmegaConf.to_container(trainer_cfg.get("eval_loss_config", {}), resolve=True) or None,
+        optimizer_configs=None,
+        warmup_steps=int(trainer_cfg.trainer.get("warmup_steps", 0)),
+        warmup_mode=str(trainer_cfg.trainer.get("warmup_mode", "adv")),
+        encoder_freeze_on_warmup=bool(trainer_cfg.trainer.get("encoder_freeze_on_warmup", False)),
+        force_input_mono=bool(model_cfg.get("autoencoder", {}).get("force_input_mono", False)),
+        latent_mask_ratio=float(model_cfg.get("autoencoder", {}).get("latent_mask_ratio", 0.0)),
+        teacher_model=None,
+        stft_params=stft_params,
+        optimizer_spec=OmegaConf.to_container(trainer_cfg.get("optimizer", {}), resolve=True) or None,
+        scheduler_spec=OmegaConf.to_container(trainer_cfg.get("scheduler", {}), resolve=True) or None,
+        pre_transform_spec=pre_transform_spec,
+    )
+    ok("Training wrapper created")
 
     # Provide eval STFT params to engine for validation phase
-    eval_stft_params = (cfg.get("eval_dataset", {}) or {}).get("kwargs", {}) or {}
-    wrapper.engine.val_stft_params = eval_stft_params
+    if eval_ds is not None:
+        eval_stft_params = {
+            "sample_rate": int(cfg.data.eval_dataset.sample_rate),
+            "n_fft": int(cfg.data.eval_dataset.n_fft),
+            "hop_length": int(cfg.data.eval_dataset.hop_length),
+            "win_length": int(cfg.data.eval_dataset.win_length),
+            "center": bool(cfg.data.eval_dataset.center),
+            "normalized": bool(cfg.data.eval_dataset.normalized),
+        }
+        wrapper.engine.val_stft_params = eval_stft_params
 
-    # W&B logger 
-    wandb_cfg = (cfg.get("wandb", {}) or {})
+    # ─────────────────────────────────────────────────────────────────────────
+    # Logger setup (W&B or TensorBoard)
+    # ─────────────────────────────────────────────────────────────────────────
+    wandb_cfg = trainer_cfg.get("wandb", {}) or {}
     use_wandb = bool(wandb_cfg.get("use_wandb", False))
-    # Logger (W&B o TensorBoard) 
+    
     logger = None
     if use_wandb:
-        # NB: sezione W&B omessa; assicurarsi che WandbLogger usi save_dir=runs_dir
         logger = WandbLogger(
             project=wandb_cfg.get("project", "ICML_2026"),
             name=wandb_cfg.get("name", "default_name"),
             save_dir=str(runs_dir),
-            log_model=wandb_cfg.get("log_model", "all"),  # log checkpoints to W&B with same cadence as local saves
+            log_model=wandb_cfg.get("log_model", "all"),
             settings=wandb.Settings(_service_wait=7),
         )
-        # Upload immediato dell'intera cartella di configurazione Hydra su W&B (senza copie locali)
         try:
             run = logger.experiment
             conf_root = Path(get_original_cwd()) / "conf"
@@ -441,52 +342,24 @@ def main(cfg: DictConfig):
             warn(f"Upload dir conf on W&B failed ({type(e).__name__}: {e})")
     else:
         logger = TensorBoardLogger(save_dir=str(runs_dir), name="lightning_logs", version=None)
-        try:
-            run = logger.experiment
-            # Update run config with parsed configuration
-            run.config.update({"parsed_config": cfg}, allow_val_change=True)
-            if is_json_mode:
-                # Legacy JSON mode: save original experiment JSON + parsed unified config
-                cfg_path = Path("wandb_parsed_config.json")
-                cfg_path.write_text(json.dumps(cfg, indent=2))
-                run.save(str(cfg_path), base_path=str(cfg_path.parent))
-                legacy_path_obj = Path(legacy_path)
-                if legacy_path_obj.exists():
-                    # Copy original JSON into run directory
-                    legacy_copy = Path(f"wandb_legacy_experiment.json")
-                    legacy_copy.write_text(legacy_path_obj.read_text())
-                    run.save(str(legacy_copy), base_path=str(legacy_copy.parent))
-            else:
-                # Hydra mode: save core YAML configuration files
-                original_cwd = Path(get_original_cwd())
-                hydra_files = [
-                    original_cwd / "conf" / "config.yaml",
-                    original_cwd / "conf" / "data" / "data.yaml",
-                    original_cwd / "conf" / "model" / "model.yaml",
-                    original_cwd / "conf" / "trainer" / "trainer.yaml",
-                ]
-                for f in hydra_files:
-                    if f.exists():
-                        # Copy YAML into run directory
-                        dst = Path(f"wandb_{f.name}")
-                        dst.write_text(f.read_text())
-                        run.save(str(dst), base_path=str(dst.parent))
-        except Exception as e:
-            warn(f"W&B config upload skipped ({type(e).__name__}: {e})")
 
-    # Callbacks
+    # ─────────────────────────────────────────────────────────────────────────
+    # Callbacks setup
+    # ─────────────────────────────────────────────────────────────────────────
+    pl_trainer_cfg = trainer_cfg.trainer
+    
     callbacks = [
         ModelInfoLogger(
             filename="model_info.json",
             max_module_lines=768,
-            log_structure=cfg.get("trainer", {}).get("log_model_structure", False)
+            log_structure=bool(pl_trainer_cfg.get("log_model_structure", False))
         ),
         ModelCheckpoint(
             dirpath=str(ckpt_dir),
             filename="epoch_{epoch:03d}",
             save_top_k=-1,
             save_last=True,
-            every_n_epochs=int(cfg.get("trainer", {}).get("save_every_n_epochs", 3)),
+            every_n_epochs=int(pl_trainer_cfg.get("save_every_n_epochs", 3)),
             auto_insert_metric_name=False,
         ),
         LearningRateMonitor(logging_interval="step"),
@@ -495,61 +368,24 @@ def main(cfg: DictConfig):
         DatasetEpochSetter(train_ds),
     ]
 
-    lnlog_cfg = (cfg.get("trainer", {}) or {}).get("LayerNormLogging", {}) or {}
-    if lnlog_cfg.get("enable", False):
-        callbacks.append(
-            LayerNormStatsCallback(
-                every_n_steps=int(lnlog_cfg.get("every_n_steps", 200)),
-                max_modules=int(lnlog_cfg.get("max_modules", 8)),
-                prefix=str(lnlog_cfg.get("prefix", "ln")),
-            )
-        )
-
-    gm_cfg = (cfg.get("trainer", {}) or {}).get("GradNormMonitor", {}) or {}
-    if gm_cfg.get("enable", True):
-        callbacks.append(
-            GradNormMonitor(
-                every_n_steps=gm_cfg.get("every_n_steps", 1),
-                warn_low=gm_cfg.get("warn_low", 1e-11),
-                warn_high=gm_cfg.get("warn_high", 1e2),
-                log_norm=gm_cfg.get("log_norm", True),
-                log_max=gm_cfg.get("log_max", True),
-                log_ratio=gm_cfg.get("log_ratio", False),
-                log_rms=gm_cfg.get("log_rms", False),
-                ratio_eps=gm_cfg.get("ratio_eps", 1e-12),
-            )
-        )
-
-    nan_cfg = (cfg.get("trainer", {}) or {}).get("NaNDetector", {}) or {}
-    if bool(nan_cfg.get("enable", False)):
-        callbacks.append(
-            NaNDetector(
-                check_inputs=nan_cfg.get("check_inputs", False),
-                check_outputs=nan_cfg.get("check_outputs", True),
-                check_gradients=nan_cfg.get("check_gradients", True),
-                check_parameters=nan_cfg.get("check_parameters", False),
-                every_n_steps=int(nan_cfg.get("every_n_steps", 1) or 1),
-            )
-        )
-
-    # Optional validation demo callback
-    demo_cfg = cfg.get("demo", {}) or {}
+    # Validation demo callback
+    demo_cfg = OmegaConf.to_container(cfg.data.get("demo", {}), resolve=True) or {}
     if eval_dl is not None:
-        # Passa direttamente i parametri del dataset di training
         callbacks.append(
             AutoencoderValDemoCallback(
                 every_n_epochs=int(demo_cfg.get("every_n_epochs", 1)),
                 max_demos=int(demo_cfg.get("max_demos", 8)),
-                sample_rate=int(cfg["train_dataset"]["kwargs"].get("sample_rate", 44100)),
+                sample_rate=sample_rate,
                 istft_params=demo_cfg.get("istft_params", {}),
                 target_seconds=float(demo_cfg.get("target_seconds", 1.0)),
                 save_basename=str(demo_cfg.get("save_basename", "recon_val")),
             )
         )
 
-    
-    # Profiler
-    use_profiler = bool(cfg.get("trainer", {}).get("profile", False))
+    # ─────────────────────────────────────────────────────────────────────────
+    # Profiler (optional)
+    # ─────────────────────────────────────────────────────────────────────────
+    use_profiler = bool(pl_trainer_cfg.get("profile", False))
     profiler = None
     if use_profiler:
         profiler = PyTorchProfiler(
@@ -564,41 +400,44 @@ def main(cfg: DictConfig):
             profile_dataloader=True,
         )
 
-    # Warning for  bf16 precision with complex model: we will force conv to complex64
-    try:
-        requested_precision = str(cfg.get("trainer", {}).get("trainer", {}).get("precision", "32-true")).lower()
-    except Exception:
-        requested_precision = "32-true"
+    # ─────────────────────────────────────────────────────────────────────────
+    # Precision warning for complex models
+    # ─────────────────────────────────────────────────────────────────────────
+    requested_precision = str(pl_trainer_cfg.get("precision", "32-true")).lower()
     is_bf16 = ("bf16" in requested_precision)
     try:
         has_complex_params = any(p.is_complex() for p in wrapper.autoencoder.parameters())
     except Exception:
         has_complex_params = False
     if is_bf16 and has_complex_params:
-        warn("bf16 + complex rilevato: la convoluzione userà torch.complex64 (complex-bfloat16 non supportato).")
+        warn("bf16 + complex detected: convolutions will use torch.complex64 (complex-bfloat16 not supported).")
 
-    # Trainer (sets default_root_dir -> runs_dir)
+    # ─────────────────────────────────────────────────────────────────────────
+    # PyTorch Lightning Trainer
+    # ─────────────────────────────────────────────────────────────────────────
     trainer = Trainer(
         default_root_dir=str(runs_dir),
         accelerator=("gpu" if torch.cuda.is_available() else "cpu"),
-        devices=int(cfg.get("trainer", {}).get("num_gpus", 1)),
-        strategy=cfg.get("trainer", {}).get("strategy", "auto"),
-        max_epochs=int(cfg.get("trainer", {}).get("epochs", 50)),
+        devices=int(pl_trainer_cfg.get("num_gpus", 1)),
+        strategy=pl_trainer_cfg.get("strategy", "auto"),
+        max_epochs=int(pl_trainer_cfg.get("epochs", 50)),
         precision="32-true",
         logger=logger,
         callbacks=callbacks,
         enable_model_summary=True,
-        log_every_n_steps=int(cfg.get("trainer", {}).get("log_interval", 1)),
-        num_sanity_val_steps=int(cfg.get("trainer", {}).get("num_sanity_val_steps", 0)),
-        gradient_clip_val=0.0,
-        detect_anomaly=False,
+        log_every_n_steps=int(pl_trainer_cfg.get("log_interval", 1)),
+        num_sanity_val_steps=int(pl_trainer_cfg.get("num_sanity_val_steps", 0)),
+        gradient_clip_val=float(pl_trainer_cfg.get("gradient_clip_val", 0.0)),
+        detect_anomaly=bool(pl_trainer_cfg.get("detect_anomaly", False)),
         profiler=profiler,
-        check_val_every_n_epoch=int(cfg.get("trainer", {}).get("check_val_every_n_epoch", 1500)),
-        val_check_interval=cfg.get("trainer", {}).get("val_check_interval", None),
+        check_val_every_n_epoch=int(pl_trainer_cfg.get("check_val_every_n_epoch", 1)),
+        val_check_interval=pl_trainer_cfg.get("val_check_interval", None),
         deterministic=deterministic_flag,
     )
 
-    trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl if eval_dl is not None else None)
+    ok("Starting training...")
+    trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl)
+
 
 if __name__ == "__main__":
     main()

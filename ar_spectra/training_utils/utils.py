@@ -58,48 +58,6 @@ class InverseLR(torch.optim.lr_scheduler._LRScheduler):
         return [warmup * max(self.final_lr, base_lr * lr_mult)
                 for base_lr in self.base_lrs]
 
-def create_optimizer_from_config(optimizer_config, parameters):
-    """Create optimizer from config.
-
-    Args:
-        parameters (iterable): parameters to optimize.
-        optimizer_config (dict): optimizer config.
-
-    Returns:
-        torch.optim.Optimizer: optimizer.
-    """
-
-    optimizer_type = optimizer_config["type"]
-
-    if optimizer_type == "FusedAdam":
-        from deepspeed.ops.adam import FusedAdam
-        optimizer = FusedAdam(parameters, **optimizer_config["config"])
-        
-    elif optimizer_type == "Lion":
-        from lion_pytorch import Lion
-        optimizer = Lion(parameters, **optimizer_config["config"])
-    else:
-        optimizer_fn = getattr(torch.optim, optimizer_type)
-        optimizer = optimizer_fn(parameters, **optimizer_config["config"])
-    return optimizer
-
-def create_scheduler_from_config(scheduler_config, optimizer):
-    """Create scheduler from config.
-
-    Args:
-        scheduler_config (dict): scheduler config.
-        optimizer (torch.optim.Optimizer): optimizer.
-
-    Returns:
-        torch.optim.lr_scheduler._LRScheduler: scheduler.
-    """
-    if scheduler_config["type"] == "InverseLR":
-        scheduler_fn = InverseLR
-    else:
-        scheduler_fn = getattr(torch.optim.lr_scheduler, scheduler_config["type"])
-    scheduler = scheduler_fn(optimizer, **scheduler_config["config"])
-    return scheduler
-
 def logger_project_name(logger) -> str:
     if isinstance(logger, WandbLogger):
         return logger.experiment.project
