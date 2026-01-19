@@ -6,8 +6,8 @@ model:
     return_latent: false
     pre_transform:
       type: none     # none | log_mag | power_norm
-      apply_target: false
-      apply_inverse: false
+      apply_target: true
+      apply_inverse: true
       config:
         eps: 1.0e-8
         alpha: 0.65
@@ -16,9 +16,9 @@ model:
   encoder:
     _target_: ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d
     # input_size MUST match data.model_channels
-    input_size: 2
+    input_size: 4
     dimension: 128
-    n_filters: 8
+    n_filters: 12
     n_residual_layers: 1
     ratios: [[4,2],[1,2],[4,2]]
     activation: ELU
@@ -33,9 +33,9 @@ model:
   decoder:
     _target_: ar_spectra.models.autoencoders.SeaNET_AE.SEANetDecoder2d
     # channels MUST match data.model_channels
-    channels: 2
-    input_size: 128
-    n_filters: 8
+    channels: 4
+    input_size: 64
+    n_filters: 12
     n_residual_layers: 1
     ratios: [[4,2],[1,2],[4,2]]
     activation: ELU
@@ -49,4 +49,3 @@ model:
 
   bottleneck:
     _target_: ar_spectra.models.bottlenecks.VAEBottleneck
-    skip_bottleneck: true

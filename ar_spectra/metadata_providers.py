@@ -1,53 +1,45 @@
 """
-Metadata providers for custom dataset configurations.
+File providers for custom dataset configurations.
 
 Each provider module should implement:
-    get_custom_metadata(info: dict, audio: torch.Tensor) -> dict
+    get_audio_files(audio_dir: str, **kwargs) -> list[str]
 
-Where `info` contains at minimum:
-    - "path": absolute path to the audio file
-    - "relpath": relative path from audio_dir
+Where kwargs can include dataset-specific parameters like:
+    - split: "training", "validation", "test"
+    - subset: "small", "medium", "large"
+    - metadata_csv: path to metadata file
 
 Example provider:
-    def get_custom_metadata(info, audio):
-        return {"prompt": info["relpath"]}
+    def get_audio_files(audio_dir, split="training", subset="small", **kwargs):
+        # Load metadata, filter by split/subset, return file paths
+        return ["/path/to/file1.mp3", "/path/to/file2.mp3"]
 """
 
 import importlib
 from typing import Callable, Optional
 
 
-def load_metadata_fn(module_path: Optional[str]) -> Optional[Callable]:
+def load_file_provider_fn(module_path: Optional[str]) -> Optional[Callable]:
     """
-    Dynamically load a get_custom_metadata function from a module path.
+    Dynamically load a get_audio_files function from a module path.
     
     Args:
-        module_path: Dotted module path, e.g. "my_project.metadata.jamendo"
-                    The module must have a `get_custom_metadata(info, audio)` function.
+        module_path: Dotted module path, e.g. "ar_spectra.fma_metadata"
+                    The module must have a `get_audio_files(audio_dir, **kwargs)` function.
     
     Returns:
-        The get_custom_metadata function, or None if module_path is None.
+        The get_audio_files function, or None if module_path is None.
     """
     if module_path is None:
         return None
     
     module = importlib.import_module(module_path)
-    if not hasattr(module, "get_custom_metadata"):
+    if not hasattr(module, "get_audio_files"):
         raise AttributeError(
-            f"Module '{module_path}' must define a 'get_custom_metadata(info, audio)' function."
+            f"Module '{module_path}' must define a 'get_audio_files(audio_dir, **kwargs)' function."
         )
-    return module.get_custom_metadata
+    return module.get_audio_files
 
 
-# --- Built-in metadata providers ---
-
-def get_relpath_metadata(info: dict, audio) -> dict:
-    """Default: use relative path as prompt."""
-    return {"prompt": info.get("relpath", info.get("path", ""))}
-
-
-def get_filename_metadata(info: dict, audio) -> dict:
-    """Use filename (without extension) as prompt."""
-    import os
-    path = info.get("path", "")
-    return {"prompt": os.path.splitext(os.path.basename(path))[0]}
+# Legacy alias for backwards compatibility
+load_metadata_fn = load_file_provider_fn

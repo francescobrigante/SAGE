@@ -3,27 +3,28 @@ seed: 94
 device: cuda
 
 optimizer:
-  _target_: torch.optim.RAdam
-  lr: 3e-4
-  weight_decay: 1e-5
+  _target_: torch.optim.AdamW
+  lr: 1e-4
+  weight_decay: 1e-4
+  betas: [0.9, 0.98]
 
 scheduler:
   _target_: ar_spectra.training_utils.utils.InverseLR
   inv_gamma: 30000
   power: 0.5
-  warmup: 0
+  warmup: 0.997
 
 trainer:
   precision: 32-true
-  epochs: 100
+  epochs: 400
   amp: false
   log_interval: 1
   deterministic: false
   strict_deterministic: false
   ckpt_dir: checkpoints/seanet_stft
   profile: false
-  check_val_every_n_epoch: 1
-  save_every_n_epochs: 5
+  check_val_every_n_epoch: 4
+  save_every_n_epochs: 8
   num_sanity_val_steps: 0
   log_model_structure: true
   warmup_steps: 0
@@ -32,15 +33,15 @@ trainer:
   profiler_dir: lightning_profiler
   val_check_interval: null
   strategy: auto
-  num_gpus: 1
+  num_gpus: 3
   terminate_on_nan: true
-  detect_anomaly: true
-  gradient_clip_val: 1.0
-  gradient_clip_algorithm: norm
+  detect_anomaly: false
+  # gradient_clip_val/algorithm rimossi: non supportati con manual optimization
+  # Il gradient clipping viene gestito manualmente in engine.py se necessario
 
 wandb:
-  project: ICML_2026
-  name: ViT_trial_error
+  project: harmonai_train
+  name: FMA_SEANet_real
   use_wandb: true
 
 eval_loss_config:
@@ -64,5 +65,7 @@ loss_config:
     stft_mse:
       config:
         reduction: mean
-
     weights: {stft_mse: 1.0}
+  bottleneck:
+    weights:
+      kl: 1e-5
