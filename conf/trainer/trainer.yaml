@@ -10,7 +10,7 @@ optimizer:
 
 scheduler:
   _target_: ar_spectra.training_utils.utils.InverseLR
-  inv_gamma: 30000
+  inv_gamma: 15000
   power: 0.5
   warmup: 0.997
 
@@ -33,7 +33,7 @@ trainer:
   profiler_dir: lightning_profiler
   val_check_interval: null
   strategy: auto
-  num_gpus: 1
+  num_gpus: 2
   terminate_on_nan: true
   detect_anomaly: false
   # gradient_clip_val/algorithm rimossi: non supportati con manual optimization
@@ -65,7 +65,21 @@ loss_config:
     stft_mse:
       config:
         reduction: mean
-    weights: {stft_mse: 1.0}
+    mrstft:
+      config:
+        fft_sizes: [2048, 1024, 512, 256, 128, 64, 32]
+        # hop_sizes defaults to n_fft//4 when omitted; add here for clarity/stability
+        hop_sizes: [512, 256, 128, 64, 32, 16, 8]
+        win_lengths: [2048, 1024, 512, 256, 128, 64, 32]
+        factor_mag: 1.0
+        factor_sc: 0.0
+        linear_mag: true
+    cosine_phase_loss:
+      config:
+        energy_weighted: false
+        energy_power: 1.0
+        reduction: mean
+    weights: {stft_mse: 1.0, mrstft: 4.0, cosine_phase_loss: 2.0}
   bottleneck:
     weights:
-      kl: 1e-5
+      kl: 1e-4

@@ -240,7 +240,7 @@ class PhaseCosineDistance(nn.Module):
 
 class ComplexSpectralConvergence(nn.Module):
     
-    def __init__(self, *, reduction: str = "mean", eps : float = 1e-7):
+    def __init__(self, *, reduction: str = "mean", eps : float = 1e-6):
         super().__init__()
         if reduction not in {"none", "mean", "sum"}:
             raise ValueError(f"reduction must be 'mean', 'sum', or 'none', but got {reduction}.")
@@ -305,7 +305,7 @@ class MultiResSpectralConvergence(nn.Module):
         fft_sizes: Sequence[int] = (512, 1024, 2048),
         hop_sizes: Sequence[int] = (128, 256, 512),
         win_lengths: Optional[Sequence[int]] = (512, 1024, 2048),
-        eps: float = 1e-7,
+        eps: float = 1e-6,
         window = torch.hann_window,
         *,
         apply_pre_transform: bool = False,
@@ -457,8 +457,8 @@ class MultiResolutionSpectrogramLoss(nn.Module):
         log_mag: bool = False,
         factor_linear_mag: float = 1.0,
         factor_log_mag: float = 1.0,
-        eps: float = 1e-8,
-        eps_mag: float = 1e-8,
+        eps: float = 1e-6,
+        eps_mag: float = 1e-6,
         reduction: str = "mean",
         return_details: bool = False,
         apply_pre_transform: bool = False,
