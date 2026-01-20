@@ -352,6 +352,38 @@ class AutoencoderEngine(nn.Module):
             "Controlla n_fft/hop oppure normalizza l'output del decoder."
         )
 
+    def _align_time_frames(self, s_hat: torch.Tensor, s_ref: torch.Tensor) -> torch.Tensor:
+        """
+        Aligns the temporal dimension (last axis) of decoded spectrogram to reference.
+        
+        The encoder-decoder may produce more frames than the input due to
+        non-integer downsampling ratios. This function trims the decoded
+        spectrogram to match the reference, preventing misalignment in
+        waveform reconstruction that would cause waveform losses to fail.
+        
+        Args:
+            s_hat: Decoded spectrogram (B, C, F, T) or (B, C, T)
+            s_ref: Reference spectrogram with target time dimension
+            
+        Returns:
+            s_hat trimmed to match s_ref's time dimension
+            
+        Raises:
+            ValueError: If decoder produced fewer frames than expected (indicates a bug).
+        """
+        Th = s_hat.shape[-1]
+        Tr = s_ref.shape[-1]
+        if Th == Tr:
+            return s_hat
+        if Th > Tr:
+            # Decoder produced more frames - trim to match reference
+            return s_hat[..., :Tr]
+        # Decoder produced fewer frames - this is a bug, should never happen
+        raise ValueError(
+            f"Decoder produced fewer time frames than expected: got {Th}, expected {Tr}. "
+            "This indicates a bug in the encoder-decoder architecture."
+        )
+
     def compute(self, batch: Tuple[torch.Tensor, torch.Tensor], global_step: int) -> Dict[str, Any]:
         """Compute forward and loss breakdown for a training batch.
 
@@ -446,17 +478,22 @@ class AutoencoderEngine(nn.Module):
         else:
             sp_decoded_for_losses = sp_decoded
 
-        # Allinea la dimensione in frequenza per le loss spettrali
+        # Allinea la dimensione in frequenza E tempo per le loss spettrali
+        # FIX: Also align time dimension to prevent misalignment in spectral losses
         try:
             sp_decoded_aligned = self._align_freq_bins(sp_decoded_for_losses, spectral_target)
+            sp_decoded_aligned = self._align_time_frames(sp_decoded_aligned, spectral_target)
         except Exception as e:
             # conservative fallback: maintain the original but clearly report
             err(f"Failed to align spectrogram F dimension ({e}).")
             sp_decoded_aligned = sp_decoded_for_losses
 
         # we prepare the aligned spectrogram for waveform reconstruction
+        # FIX: Align BOTH frequency AND time dimensions to prevent waveform loss misalignment
+        # The decoder may produce more time frames due to non-integer downsampling ratios
         try:
             sp_decoded_linear_aligned = self._align_freq_bins(sp_decoded_linear, encoder_input)
+            sp_decoded_linear_aligned = self._align_time_frames(sp_decoded_linear_aligned, encoder_input)
         except Exception as e:
             err(f"Failed to align spectrogram for waveform losses ({e}).")
             sp_decoded_linear_aligned = sp_decoded_linear
@@ -559,6 +596,7 @@ class AutoencoderEngine(nn.Module):
 
         try:
             sp_decoded_linear = self._align_freq_bins(sp_decoded_linear, encoder_input)
+            sp_decoded_linear = self._align_time_frames(sp_decoded_linear, encoder_input)
         except Exception as exc:
             err(f"Validation spectrogram alignment failed ({type(exc).__name__}: {exc}).")
 
