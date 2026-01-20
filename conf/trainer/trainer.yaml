@@ -4,7 +4,7 @@ device: cuda
 
 optimizer:
   _target_: torch.optim.AdamW
-  lr: 1e-4
+  lr: 5e-3
   weight_decay: 1e-4
   betas: [0.9, 0.98]
 
@@ -16,7 +16,7 @@ scheduler:
 
 trainer:
   precision: 32-true
-  epochs: 400
+  epochs: 500
   amp: false
   log_interval: 1
   deterministic: false
@@ -33,7 +33,7 @@ trainer:
   profiler_dir: lightning_profiler
   val_check_interval: null
   strategy: auto
-  num_gpus: 3
+  num_gpus: 1
   terminate_on_nan: true
   detect_anomaly: false
   # gradient_clip_val/algorithm rimossi: non supportati con manual optimization
