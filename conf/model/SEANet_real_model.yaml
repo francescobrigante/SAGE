@@ -17,8 +17,8 @@ model:
     _target_: ar_spectra.models.autoencoders.SeaNET_AE.SEANetEncoder2d
     # input_size MUST match data.model_channels
     input_size: 4
-    dimension: 128
-    n_filters: 12
+    dimension: 256
+    n_filters: 8
     n_residual_layers: 1
     ratios: [[4,2],[1,2],[4,2]]
     activation: ELU
@@ -34,8 +34,8 @@ model:
     _target_: ar_spectra.models.autoencoders.SeaNET_AE.SEANetDecoder2d
     # channels MUST match data.model_channels
     channels: 4
-    input_size: 64
-    n_filters: 12
+    input_size: 128
+    n_filters: 8
     n_residual_layers: 1
     ratios: [[4,2],[1,2],[4,2]]
     activation: ELU
