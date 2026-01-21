@@ -41,6 +41,7 @@ from ar_spectra.modules.subsampling import check_short_utt
 from ar_spectra.modules.subsampling import Conv2dSubsamplingPad
 from ar_spectra.modules.subsampling import Conv1dSubsampling2
 from torch.nn import functional as F
+from ar_spectra.modules.layer_norm import LayerNorm
 from ar_spectra.modules.cplx_dropout import ComplexDropout
 from ar_spectra.modules.normed_modules.norm import ComplexLayerNorm, ComplexBatchNorm1d
 from ar_spectra.modules.normed_modules.conv import NormConv1d, NormLinear
@@ -70,24 +71,21 @@ class ConvolutionModule(nn.Module):
 
     """
 
-    def __init__(self, channels, kernel_size, activation: str | None =None, 
-                 bias=True, is_complex=True):
+    def __init__(self, channels, kernel_size, activation=nn.ReLU(), bias=True):
         """Construct an ConvolutionModule object."""
         super(ConvolutionModule, self).__init__()
         # kernerl_size should be a odd number for 'SAME' padding
         assert (kernel_size - 1) % 2 == 0
-        activation = get_activation(activation, is_complex=is_complex, channels=channels) 
-        self.pointwise_conv1 = NormConv1d(
+
+        self.pointwise_conv1 = nn.Conv1d(
             channels,
             2 * channels,
             kernel_size=1,
             stride=1,
             padding=0,
             bias=bias,
-            norm='none',
-            is_complex=True,
         )
-        self.depthwise_conv = NormConv1d(
+        self.depthwise_conv = nn.Conv1d(
             channels,
             channels,
             kernel_size,
@@ -95,24 +93,19 @@ class ConvolutionModule(nn.Module):
             padding=(kernel_size - 1) // 2,
             groups=channels,
             bias=bias,
-            norm='none',
-            is_complex=True,
         )
-        self.norm = ComplexBatchNorm1d(channels)
-        self.pointwise_conv2 = NormConv1d(
+        self.norm = nn.BatchNorm1d(channels)
+        self.pointwise_conv2 = nn.Conv1d(
             channels,
             channels,
             kernel_size=1,
             stride=1,
             padding=0,
             bias=bias,
-            norm='none',
-            is_complex=True,
         )
-        self.activation = activation if activation is not None else nn.Identity()
-        self.glu = get_activation("CGLU", is_complex=True, channels=channels)
+        self.activation = activation
 
-    def forward(self, x, debug: bool = False):
+    def forward(self, x):
         """Compute convolution module.
 
         Args:
@@ -122,28 +115,18 @@ class ConvolutionModule(nn.Module):
             torch.Tensor: Output tensor (#batch, time, channels).
 
         """
-        if debug:
-            ok("_______ _________")
         # exchange the temporal dimension and the feature dimension
         x = x.transpose(1, 2)
-        if debug:
-            ok("ConvolutionModule input shape: " + str(x.shape))
 
         # GLU mechanism
-        x = self.glu(self.pointwise_conv1(x))
-        if debug:
-            ok("After GLU shape: " + str(x.shape))
+        x = self.pointwise_conv1(x)  # (batch, 2*channel, dim)
+        x = nn.functional.glu(x, dim=1)  # (batch, channel, dim)
+
         # 1D Depthwise Conv
         x = self.depthwise_conv(x)
-        if debug:
-            ok("After depthwise conv shape: " + str(x.shape))
         x = self.activation(self.norm(x))
-        if debug:
-            ok("After activation & norm shape: " + str(x.shape))
 
         x = self.pointwise_conv2(x)
-        if debug:
-            ok("ConvolutionModule output shape: " + str(x.shape))
 
         return x.transpose(1, 2)
 
@@ -177,12 +160,12 @@ class EncoderLayer(nn.Module):
 
     def __init__(
             self,
-            size: int,
-            self_attn : torch.nn.Module,
-            feed_forward: torch.nn.Module,
-            feed_forward_macaron : Optional[torch.nn.Module] | None,
-            conv_module: torch.nn.Module,
-            dropout_rate: float,
+            size,
+            self_attn,
+            feed_forward,
+            feed_forward_macaron,
+            conv_module,
+            dropout_rate,
             normalize_before=True,
             concat_after=False,
             stochastic_depth_rate=0.0,
@@ -193,22 +176,22 @@ class EncoderLayer(nn.Module):
         self.feed_forward = feed_forward
         self.feed_forward_macaron = feed_forward_macaron
         self.conv_module = conv_module
-        self.norm_ff = ComplexLayerNorm(size)  # for the FNN module
-        self.norm_mha = ComplexLayerNorm(size)  # for the MHA module
+        self.norm_ff = LayerNorm(size)  # for the FNN module
+        self.norm_mha = LayerNorm(size)  # for the MHA module
         if feed_forward_macaron is not None:
-            self.norm_ff_macaron = ComplexLayerNorm(size)
+            self.norm_ff_macaron = LayerNorm(size)
             self.ff_scale = 0.5
         else:
             self.ff_scale = 1.0
         if self.conv_module is not None:
-            self.norm_conv = ComplexLayerNorm(size)  # for the CNN module
-            self.norm_final = ComplexLayerNorm(size)  # for the final output of the block
-        self.dropout = ComplexDropout(dropout_rate)
+            self.norm_conv = LayerNorm(size)  # for the CNN module
+            self.norm_final = LayerNorm(size)  # for the final output of the block
+        self.dropout = nn.Dropout(dropout_rate)
         self.size = size
         self.normalize_before = normalize_before
         self.concat_after = concat_after
         if self.concat_after:
-            self.concat_linear = NormLinear(size + size, size, norm='none', is_complex=True)
+            self.concat_linear = nn.Linear(size + size, size)
         self.stochastic_depth_rate = stochastic_depth_rate
 
     def forward(self, x_input, mask, cache=None):
@@ -388,14 +371,10 @@ class ConformerEncoder(AbsEncoder):
         elif rel_pos_type == "latest":
             assert selfattention_layer_type != "legacy_rel_selfattn"
             assert pos_enc_layer_type != "legacy_rel_pos"
-            
         else:
-             pos_enc_class = IdentityPositionalEncoding
-             warn("Using IdentityPositionalEncoding as rel_pos_type is either unknown or none.") 
+            raise ValueError("unknown rel_pos_type: " + rel_pos_type)
 
-        if not isinstance(activation_type, str):
-            raise ValueError(warn("`activation_type` must be str. Maybe you passed a class?"))
-        activation = activation_type
+        activation = get_activation(activation_type)
         if pos_enc_layer_type == "abs_pos":
             pos_enc_class = PositionalEncoding
         elif pos_enc_layer_type == "scaled_abs_pos":
@@ -410,14 +389,13 @@ class ConformerEncoder(AbsEncoder):
                 "Using legacy_rel_pos and it will be deprecated in the future."
             )
         else:
-            pos_enc_class = IdentityPositionalEncoding
-            warn("Using IdentityPositionalEncoding as pos_enc_layer_type is either unknown or none.")
-            
+            raise ValueError("unknown pos_enc_layer: " + pos_enc_layer_type)
+
         if input_layer == "linear":
             self.embed = torch.nn.Sequential(
-                NormLinear(input_size, output_size, norm='none', is_complex=True),
-                ComplexLayerNorm(output_size),
-                ComplexDropout(dropout_rate),
+                torch.nn.Linear(input_size, output_size),
+                torch.nn.LayerNorm(output_size),
+                torch.nn.Dropout(dropout_rate),
                 pos_enc_class(output_size, positional_dropout_rate),
             )
         elif input_layer == "conv1d2":
@@ -507,7 +485,7 @@ class ConformerEncoder(AbsEncoder):
             raise NotImplementedError("Support only linear or conv1d.")
 
         if selfattention_layer_type == "selfattn":
-            encoder_selfattn_layer = CMultiHeadedAttention
+            encoder_selfattn_layer = MultiHeadedAttention
             encoder_selfattn_layer_args = (
                 attention_heads,
                 output_size,
@@ -563,7 +541,7 @@ class ConformerEncoder(AbsEncoder):
             ),
         )
         if self.normalize_before:
-            self.after_norm = ComplexLayerNorm(output_size)
+            self.after_norm = LayerNorm(output_size)
 
         self.interctc_layer_idx = interctc_layer_idx
         if len(interctc_layer_idx) > 0:
@@ -653,66 +631,3 @@ class ConformerEncoder(AbsEncoder):
         if len(intermediate_outs) > 0:
             return (xs_pad, intermediate_outs), olens, None
         return xs_pad, olens, None
-
-if __name__ == "__main__":
-    
-    batch, channels, frequency, time = 16, 64, 16, 64
-    
-    x = torch.randn(batch, time, channels * frequency, dtype=torch.cfloat)
-    ok(f"Input shape: {x.shape}")
-    conv = ConvolutionModule(channels*frequency, kernel_size=5, activation=None, bias=True)
-    y = conv(x, debug=True)
-    ok(f"Convolution Module Output shape: {y.shape}")
-    
-    enc_layer = EncoderLayer(
-        size=channels*frequency,
-        self_attn=CMultiHeadedAttention(
-            n_head=4,
-            n_feat=channels*frequency,
-            dropout_rate=0.1,
-        ),
-        feed_forward=PositionwiseFeedForward(
-            idim=channels*frequency,
-            hidden_units=channels*frequency*4,
-            dropout_rate=0.1,
-            activation="CReLU",
-        ),
-        conv_module=ConvolutionModule(
-            channels=channels*frequency,
-            kernel_size=5,
-            activation=None,
-            bias=True,
-        ),
-        feed_forward_macaron=None,
-        dropout_rate=0.1,
-        normalize_before=True,
-        concat_after=False,
-        
-    )
-    y2, _ = enc_layer(y, mask=None, cache=None)
-    ok(f"Encoder Layer Output shape: {y2.shape}")
-    encoder = ConformerEncoder(
-        input_size=channels*frequency,
-        output_size=channels*frequency,
-        attention_heads=4,
-        linear_units=channels*frequency*4,
-        num_blocks=2,
-        dropout_rate=0.1,
-        positional_dropout_rate=0.1,
-        attention_dropout_rate=0.1,
-        input_layer="linear",
-        normalize_before=True,
-        concat_after=False,
-        positionwise_layer_type="linear",
-        positionwise_conv_kernel_size=3,
-        macaron_style=False,
-        rel_pos_type="none",
-        pos_enc_layer_type="none",
-        selfattention_layer_type="selfattn",
-        activation_type="CReLU",
-        use_cnn_module=True,
-        zero_triu=False,
-        cnn_module_kernel=5,
-    )
-    y3, olens, _ = encoder(x, ilens=torch.full((batch,), time, dtype=torch.long), prev_states=None, ctc=None)
-    ok(f"Conformer Encoder Output shape: {y3.shape}")

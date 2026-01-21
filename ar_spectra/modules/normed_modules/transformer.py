@@ -2,7 +2,7 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 import torch
-from ar_spectra.models.autoencoders.AbsEncoder import AbsDecoder, AbsEncoder
+from ar_spectra.models.autoencoders.AbsEncoder import AbsEncoder
 from ar_spectra.modules.attention import MultiHeadedAttention
 from ar_spectra.models.autoencoders.conformer_base import EncoderLayer
 from ar_spectra.modules.embedding import PositionalEncoding
@@ -108,6 +108,8 @@ class TransformerEncoder(torch.nn.Module):
                 output_size,
                 linear_units,
                 dropout_rate,
+                "relu",
+                False,
             )
         elif positionwise_layer_type == "conv1d":
             positionwise_layer = MultiLayeredConv1d
@@ -135,6 +137,8 @@ class TransformerEncoder(torch.nn.Module):
                     attention_heads, output_size, attention_dropout_rate
                 ),
                 positionwise_layer(*positionwise_layer_args),
+                None,  # feed_forward_macaron (not used in TransformerEncoder)
+                None,  # conv_module (not used in TransformerEncoder)
                 dropout_rate,
                 normalize_before,
                 concat_after,

@@ -27,8 +27,11 @@ model:
     causal: false
     latent_fbins: 64
     dilation_base: 2
-    seq_model: none
+    seq_model: transformer
     is_complex: false
+    latent_seq_model: true
+    seq_layer_num: 2
+
 
   decoder:
     _target_: ar_spectra.models.autoencoders.SeaNET_AE.SEANetDecoder2d
@@ -44,8 +47,10 @@ model:
     causal: false
     latent_fbins: 64
     dilation_base: 2
-    seq_model: none
+    seq_model: transformer
     is_complex: false
+    latent_seq_model: true
+    seq_layer_num: 2
 
   bottleneck:
     _target_: ar_spectra.models.bottlenecks.VAEBottleneck

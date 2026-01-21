@@ -132,14 +132,16 @@ class SEANetEncoder2d(nn.Module):
         compress (int): Reduced dimensionality in residual branches (from Demucs v3).
         lstm (int): Number of LSTM layers at the end of the encoder.
         latent_fbins (int): Number of frequency bins to pack into channels at the bottleneck.
+        latent_seq_model (bool): If True, apply seq_model on latent channels (dimension) instead of pre-projection.
     """
     def __init__(self, input_size: int = 1, dimension: int = 128, n_filters: int = 32, n_residual_layers: int = 1,
                  ratios: tp.List[tp.Tuple[int, int]] = [(4, 1), (4, 1), (4, 2), (4, 1)],
                  activation: str = 'ELU', activation_params: dict = {'alpha': 1.0},
                  norm: str = 'weight_norm', norm_params: tp.Dict[str, tp.Any] = {}, kernel_size: int = 7,
                  last_kernel_size: int = 7, residual_kernel_size: int = 3, dilation_base: int = 2, causal: bool = False,
-                 pad_mode: str = 'reflect', true_skip: bool = False, compress: int = 2, seq_model: str = "lstm", 
-                 seq_layer_num: int = 2, res_seq=True, conv_group_ratio: int = -1, latent_fbins: int = 1, 
+                 pad_mode: str = 'reflect', true_skip: bool = False, compress: int = 2, seq_model: str = "lstm",
+                 seq_layer_num: int = 2, res_seq=True, conv_group_ratio: int = -1, latent_fbins: int = 1,
+                 latent_seq_model: bool = False,
                  double_final_conv: bool = False, is_complex: bool = False):
         super().__init__()
         self.channels = input_size
@@ -150,6 +152,7 @@ class SEANetEncoder2d(nn.Module):
         self.n_residual_layers = n_residual_layers
         self.hop_length = np.prod([x[1] for x in self.ratios])
         self.latent_fbins = latent_fbins
+        self.latent_seq_model = bool(latent_seq_model)
         self.double_final_conv = double_final_conv
         self.is_complex = is_complex
         
@@ -188,18 +191,19 @@ class SEANetEncoder2d(nn.Module):
         # squeeze shape for subsequent models
         model += [PackFreqIntoChannels(latent_fbins)]  
         if not self.is_complex:
-            if seq_model == 'lstm':
-                model += [SLSTM(mult * n_filters * latent_fbins, num_layers=seq_layer_num, skip=res_seq)]
-            elif seq_model == "transformer":
-                from ar_spectra.modules.normed_modules.transformer import TransformerEncoder
-                model += [TransformerEncoder(mult * n_filters * latent_fbins,
-                                            output_size=mult * n_filters * latent_fbins,
-                                            num_blocks=seq_layer_num,
-                                            input_layer=None,
-                                            causal_mode="causal" if causal else "None",
-                                            skip=res_seq)]
-            else:
-                pass
+            if not self.latent_seq_model:
+                if seq_model == 'lstm':
+                    model += [SLSTM(mult * n_filters * latent_fbins, num_layers=seq_layer_num, skip=res_seq)]
+                elif seq_model == "transformer":
+                    from ar_spectra.modules.normed_modules.transformer import TransformerEncoder
+                    model += [TransformerEncoder(
+                        mult * n_filters * latent_fbins,
+                        output_size=mult * n_filters * latent_fbins,
+                        num_blocks=seq_layer_num,
+                        input_layer=None,
+                        causal_mode="causal" if causal else "None",
+                        skip=res_seq,
+                    )]
         
         else:
             # For complex data, we do not use any sequential model at the bottleneck
@@ -226,6 +230,20 @@ class SEANetEncoder2d(nn.Module):
                         norm=norm, norm_kwargs=norm_params,
                         causal=causal, pad_mode=pad_mode, is_complex=is_complex)
             ]
+
+        if not self.is_complex and self.latent_seq_model:
+            if seq_model == 'lstm':
+                model += [SLSTM(dimension, num_layers=seq_layer_num, skip=res_seq)]
+            elif seq_model == "transformer":
+                from ar_spectra.modules.normed_modules.transformer import TransformerEncoder
+                model += [TransformerEncoder(
+                    dimension,
+                    output_size=dimension,
+                    num_blocks=seq_layer_num,
+                    input_layer=None,
+                    causal_mode="causal" if causal else "None",
+                    skip=res_seq,
+                )]
 
         self.model = nn.Sequential(*model)
 
@@ -286,6 +304,7 @@ class SEANetDecoder2d(nn.Module):
         trim_right_ratio (float): Ratio for trimming at the right of the transposed convolution under the causal setup.
             If equal to 1.0, it means that all the trimming is done at the right.
         latent_fbins (int): Number of frequency bins packed into channels at the bottleneck.
+        latent_seq_model (bool): If True, apply seq_model on latent channels (input_size) before upsampling.
     """
     def __init__(self, input_size: int = 128, channels: int = 1, n_filters: int = 32, n_residual_layers: int = 1,
                  ratios: tp.List[tp.Tuple[int, int]] = [(4, 1), (4, 1), (4, 2), (4, 1)],
@@ -296,7 +315,8 @@ class SEANetDecoder2d(nn.Module):
                  pad_mode: str = 'reflect', true_skip: bool = False, compress: int = 2,
                  seq_model: str = 'lstm', seq_layer_num: int = 2, trim_right_ratio: float = 1.0, res_seq=True,
                  last_out_padding: tp.List[tp.Union[int, int]] = [(0, 1), (0, 0)],
-                 tr_conv_group_ratio: int = -1, conv_group_ratio: int = -1, latent_fbins: int = 1, 
+                 tr_conv_group_ratio: int = -1, conv_group_ratio: int = -1, latent_fbins: int = 1,
+                 latent_seq_model: bool = False,
                  double_final_conv: bool = False, is_complex: bool = False):
         super().__init__()
         self.dimension = input_size
@@ -307,13 +327,29 @@ class SEANetDecoder2d(nn.Module):
         self.n_residual_layers = n_residual_layers
         self.hop_length = np.prod([x[1] for x in self.ratios])
         self.latent_fbins = latent_fbins
+        self.latent_seq_model = bool(latent_seq_model)
         self.double_final_conv = double_final_conv
         self.is_complex = is_complex
 
         # act = getattr(nn, activation)
         mult = int(2 ** len(self.ratios))
+        model: tp.List[nn.Module] = []
+        if not self.is_complex and self.latent_seq_model:
+            if seq_model == "lstm":
+                model += [SLSTM(input_size, num_layers=seq_layer_num, skip=res_seq)]
+            elif seq_model == "transformer":
+                from ar_spectra.modules.normed_modules.transformer import TransformerEncoder
+                model += [TransformerEncoder(
+                    input_size,
+                    output_size=input_size,
+                    num_blocks=seq_layer_num,
+                    input_layer=None,
+                    causal_mode="causal" if causal else "None",
+                    skip=res_seq,
+                )]
+
         if mult * n_filters * latent_fbins > 2*input_size and self.double_final_conv:
-            model: tp.List[nn.Module] = [
+            model += [
                 SConv1d(input_size, 2*input_size, kernel_size, norm=norm, norm_kwargs=norm_params,
                         causal=causal, pad_mode=pad_mode, is_complex=is_complex),
                 SConv1d(2*input_size, mult * n_filters * latent_fbins, kernel_size, norm=norm, norm_kwargs=norm_params,
@@ -321,24 +357,25 @@ class SEANetDecoder2d(nn.Module):
             ]
             
         else:
-            model: tp.List[nn.Module] = [
+            model += [
                 SConv1d(input_size, mult * n_filters * latent_fbins, kernel_size, norm=norm, norm_kwargs=norm_params,
                         causal=causal, pad_mode=pad_mode, is_complex=is_complex),
             ]
         
         if not self.is_complex:
-            if seq_model == "lstm":
-                model += [SLSTM(mult * n_filters * latent_fbins, num_layers=seq_layer_num, skip=res_seq)]
-            elif seq_model == "transformer":
-                from ar_spectra.modules.normed_modules.transformer import TransformerEncoder
-                model += [TransformerEncoder(mult * n_filters * latent_fbins,
-                                            output_size=mult * n_filters * latent_fbins,
-                                            num_blocks=seq_layer_num,
-                                            input_layer=None,
-                                            causal_mode="causal" if causal else "None",
-                                            skip=res_seq)]
-            else:
-                pass
+            if not self.latent_seq_model:
+                if seq_model == "lstm":
+                    model += [SLSTM(mult * n_filters * latent_fbins, num_layers=seq_layer_num, skip=res_seq)]
+                elif seq_model == "transformer":
+                    from ar_spectra.modules.normed_modules.transformer import TransformerEncoder
+                    model += [TransformerEncoder(
+                        mult * n_filters * latent_fbins,
+                        output_size=mult * n_filters * latent_fbins,
+                        num_blocks=seq_layer_num,
+                        input_layer=None,
+                        causal_mode="causal" if causal else "None",
+                        skip=res_seq,
+                    )]
         else:
             # For complex data, we do not use any sequential model at the bottleneck
             pass
