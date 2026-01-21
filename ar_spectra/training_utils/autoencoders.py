@@ -420,24 +420,15 @@ class AutoencoderValDemoCallback(pl.Callback):
             stereo_flag = not force_mono
 
             try:
-                latents, encode_info = inference_encode_audio(
+                latents = inference_encode_audio(
                     pl_module.autoencoder,
                     waveform_input,
-                    stereo=stereo_flag,
-                    chunked=False,
-                    overlap_size=0,
-                    pack_complex=pack_complex,
                     debug=False,
                 )
                 decoded = inference_decode_audio(
                     pl_module.autoencoder,
                     latents,
-                    encode_info,
-                    stereo=stereo_flag,
-                    chunked=False,
-                    pack_complex=pack_complex,
                     debug=False,
-                    remove_padding=True,
                 )
             except Exception as exc:
                 warn(
