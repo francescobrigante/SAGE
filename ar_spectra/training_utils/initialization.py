@@ -25,6 +25,11 @@ def collate_stft(batch):
     if not batch:
         raise ValueError("collate_stft received an empty batch")
 
+    # Drop None samples silently (e.g., if dataset signals unusable item)
+    batch = [b for b in batch if b is not None]
+    if not batch:
+        raise ValueError("collate_stft received only invalid/None samples")
+
     first = batch[0]
     if not isinstance(first, tuple):
         raise TypeError(f"collate_stft expects tuples, got {type(first).__name__}")
@@ -125,4 +130,3 @@ def resolve_chunk_sizes(
     chunk_size_samples = chunk_size_latent * samples_per_latent
     overlap_samples = max(0, int(overlap_latent)) * samples_per_latent
     return chunk_size_samples, overlap_samples, chunk_size_latent
-

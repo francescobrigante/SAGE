@@ -28,6 +28,7 @@ from ar_spectra.training_utils.autoencoders import AutoencoderTrainingWrapper, A
 from ar_spectra.training_utils.initialization import collate_stft
 from ar_spectra.training_utils.reproducibility import configure_reproducibility
 from ar_spectra.training_utils.get_model_config import extract_model_config
+from ar_spectra.training_utils.utils import _is_rank0
 
 from rich.console import Console
 console = Console()
@@ -68,6 +69,8 @@ class WandbConfigLogger:
         return out
 
     def log_to_wandb(self, run):
+        if not _is_rank0():
+            return
         data = self.load_contents()
         if not data:
             warn("Nessun file di configurazione trovato da loggare su W&B.")
@@ -327,19 +330,23 @@ def main(cfg: DictConfig):
     
     logger = None
     if use_wandb:
-        logger = WandbLogger(
-            project=wandb_cfg.get("project", "ICML_2026"),
-            name=wandb_cfg.get("name", "default_name"),
-            save_dir=str(runs_dir),
-            log_model=wandb_cfg.get("log_model", "all"),
-            settings=wandb.Settings(_service_wait=7),
-        )
-        try:
-            run = logger.experiment
-            conf_root = Path(get_original_cwd()) / "conf"
-            WandbConfigLogger(conf_root, use_artifact=True, log_text=False).log_to_wandb(run)
-        except Exception as e:
-            warn(f"Upload dir conf on W&B failed ({type(e).__name__}: {e})")
+        if _is_rank0():
+            logger = WandbLogger(
+                project=wandb_cfg.get("project", "ICML_2026"),
+                name=wandb_cfg.get("name", "default_name"),
+                save_dir=str(runs_dir),
+                log_model=wandb_cfg.get("log_model", "all"),
+                settings=wandb.Settings(_service_wait=7),
+            )
+            try:
+                run = logger.experiment
+                conf_root = Path(get_original_cwd()) / "conf"
+                WandbConfigLogger(conf_root, use_artifact=True, log_text=False).log_to_wandb(run)
+            except Exception as e:
+                warn(f"Upload dir conf on W&B failed ({type(e).__name__}: {e})")
+        else:
+            # Evita l'inizializzazione di run W&B sugli altri rank, ma mantieni un logger compatibile
+            logger = TensorBoardLogger(save_dir=str(runs_dir), name="lightning_logs", version=None)
     else:
         logger = TensorBoardLogger(save_dir=str(runs_dir), name="lightning_logs", version=None)
 

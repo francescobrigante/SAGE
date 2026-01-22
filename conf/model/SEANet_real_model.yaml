@@ -19,7 +19,7 @@ model:
     input_size: 4
     dimension: 256
     n_filters: 8
-    n_residual_layers: 1
+    n_residual_layers: 2
     ratios: [[4,2],[1,2],[4,2]]
     activation: ELU
     norm: weight_norm
@@ -39,7 +39,7 @@ model:
     channels: 4
     input_size: 128
     n_filters: 8
-    n_residual_layers: 1
+    n_residual_layers: 2
     ratios: [[4,2],[1,2],[4,2]]
     activation: ELU
     norm: weight_norm

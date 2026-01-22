@@ -8,9 +8,6 @@ import warnings
 
 def get_rank():
     """Get rank of current process."""
-
-    print(os.environ.keys())
-
     if "SLURM_PROCID" in os.environ:
         return int(os.environ["SLURM_PROCID"])
 
@@ -18,6 +15,9 @@ def get_rank():
         return 0
 
     return torch.distributed.get_rank()
+
+def _is_rank0() -> bool:
+    return get_rank() == 0
 
 class InverseLR(torch.optim.lr_scheduler._LRScheduler):
     """Implements an inverse decay learning rate schedule with an optional exponential
@@ -66,24 +66,32 @@ def logger_project_name(logger) -> str:
 
 def log_metric(logger, key, value, step=None):
     from pytorch_lightning.loggers import WandbLogger, CometLogger
+    if not _is_rank0():
+        return
     if isinstance(logger, WandbLogger):
         logger.experiment.log({key: value})
     elif isinstance(logger, CometLogger):
         logger.experiment.log_metrics({key: value}, step=step)
 
 def log_audio(logger, key, audio_path, sample_rate, caption=None):
+    if not _is_rank0():
+        return
     if isinstance(logger, WandbLogger):
         logger.experiment.log({key: wandb.Audio(audio_path, sample_rate=sample_rate, caption=caption)})
     elif isinstance(logger, CometLogger):
         logger.experiment.log_audio(audio_path, file_name=key, sample_rate=sample_rate)
 
 def log_image(logger, key, img_data):
+    if not _is_rank0():
+        return
     if isinstance(logger, WandbLogger):
         logger.experiment.log({key: wandb.Image(img_data)})
     elif isinstance(logger, CometLogger):
         logger.experiment.log_image(img_data, name=key)
 
 def log_point_cloud(logger, key, tokens, caption=None):
+    if not _is_rank0():
+        return
     try:
         if isinstance(logger, WandbLogger):
             point_cloud = pca_point_cloud(tokens)  

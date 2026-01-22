@@ -4,7 +4,7 @@ device: cuda
 
 optimizer:
   _target_: torch.optim.AdamW
-  lr: 5e-3
+  lr: 2e-4
   weight_decay: 1e-4
   betas: [0.9, 0.98]
 
@@ -23,7 +23,7 @@ trainer:
   strict_deterministic: false
   ckpt_dir: checkpoints/seanet_stft
   profile: false
-  check_val_every_n_epoch: 4
+  check_val_every_n_epoch: 2
   save_every_n_epochs: 8
   num_sanity_val_steps: 0
   log_model_structure: true
@@ -32,6 +32,7 @@ trainer:
   encoder_freeze_on_warmup: false
   profiler_dir: lightning_profiler
   val_check_interval: null
+  accumulate_grad_batches: 16
   strategy: auto
   num_gpus: 2
   terminate_on_nan: true
@@ -65,21 +66,8 @@ loss_config:
     stft_mse:
       config:
         reduction: mean
-    mrstft:
-      config:
-        fft_sizes: [2048, 1024, 512, 256, 128, 64, 32]
-        # hop_sizes defaults to n_fft//4 when omitted; add here for clarity/stability
-        hop_sizes: [512, 256, 128, 64, 32, 16, 8]
-        win_lengths: [2048, 1024, 512, 256, 128, 64, 32]
-        factor_mag: 1.0
-        factor_sc: 0.0
-        linear_mag: true
-    cosine_phase_loss:
-      config:
-        energy_weighted: false
-        energy_power: 1.0
-        reduction: mean
-    weights: {stft_mse: 1.0, mrstft: 4.0, cosine_phase_loss: 2.0}
+
+    weights: {stft_mse: 1.0}
   bottleneck:
     weights:
       kl: 1e-4
