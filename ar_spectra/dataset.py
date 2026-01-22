@@ -169,6 +169,7 @@ class OnTheFlySTFTDataset(Dataset):
         return_paths: bool = False,
         custom_metadata_module: Optional[str] = None,
         custom_metadata_kwargs: Optional[dict] = None,
+        max_retries_per_sample: int = 8,
     ):
         super().__init__()
         self.audio_dir = Path(audio_dir).expanduser().resolve()
@@ -189,6 +190,7 @@ class OnTheFlySTFTDataset(Dataset):
         self.cac = bool(cac)
         self.full_waveform = bool(full_waveform)
         self.return_paths = bool(return_paths)
+        self.max_retries_per_sample = int(max_retries_per_sample)
         
         # Custom file provider (for datasets like FMA with splits)
         self._file_provider = load_file_provider_fn(custom_metadata_module)
@@ -337,7 +339,7 @@ class OnTheFlySTFTDataset(Dataset):
         if file_channels != expected:
             if not self._warned_channel_mismatch and self._epoch == 0:
                 want = "stereo" if self.stereo else "mono"
-                warn(f"Some files have different channels than expected ({want}). Converting automatically.")
+                #warn(f"Some files have different channels than expected ({want}). Converting automatically.")
                 self._warned_channel_mismatch = True
             
             if expected == 1 and file_channels > 1:
@@ -348,7 +350,7 @@ class OnTheFlySTFTDataset(Dataset):
         # Resample if needed
         if sr != self.sample_rate:
             if not self._warned_sr_mismatch and self._epoch == 0:
-                warn(f"Some files have different sample rate. Resampling to {self.sample_rate} Hz.")
+                #warn(f"Some files have different sample rate. Resampling to {self.sample_rate} Hz.")
                 self._warned_sr_mismatch = True
             wav = torchaudio.functional.resample(wav, sr, self.sample_rate)
             sr = self.sample_rate
@@ -380,67 +382,64 @@ class OnTheFlySTFTDataset(Dataset):
         return torch.float32
 
     def __getitem__(self, index: int):
-        path = self.files[index]
-        
-        # Load waveform - skip on failure
-        try:
-            wav, _ = self._load_waveform(path)
-        except Exception as e:
-            warn(f"Failed to load {path}: {e}")
-            new_idx = (index + 1) % len(self)
-            if new_idx == index:
-                raise RuntimeError(f"Cannot load any file. Last error: {e}")
-            return self[new_idx]
-        
-        # Full waveform mode
-        if self.full_waveform:
-            wav = wav.contiguous()
-            if self.return_paths:
-                return None, wav, str(path)
-            return None, wav
-        
-        # Crop/pad segment - skip on failure
-        try:
-            seg = self._random_crop_or_pad(wav)
-        except Exception:
-            new_idx = (index + 1) % len(self)
-            if new_idx == index:
-                raise RuntimeError("Cannot process any file")
-            return self[new_idx]
-        
-        # Skip silence
-        if is_silence(seg) and len(self) > 1:
-            new_idx = (index + 1) % len(self)
-            if new_idx != index:
-                return self[new_idx]
-        
-        # Compute STFT
-        S = self._stft(seg)
-        
-        # Ensure complex dtype
-        if not torch.is_complex(S):
-            if S.dim() >= 4 and S.size(-1) == 2:
-                S = torch.view_as_complex(S.contiguous())
+        """
+        Robust getter with bounded retries to avoid worker hangs on corrupted files.
+        """
+        n = len(self)
+        last_error: Exception | None = None
+
+        for attempt in range(self.max_retries_per_sample):
+            idx = (index + attempt) % n
+            path = self.files[idx]
+
+            try:
+                wav, _ = self._load_waveform(path)
+            except Exception as e:
+                last_error = e
+                continue
+
+            if self.full_waveform:
+                wav = wav.contiguous()
+                if self.return_paths:
+                    return None, wav, str(path)
+                return None, wav
+
+            try:
+                seg = self._random_crop_or_pad(wav)
+            except Exception as e:
+                last_error = e
+                continue
+
+            if is_silence(seg) and n > 1:
+                last_error = RuntimeError("Silence segment")
+                continue
+
+            try:
+                S = self._stft(seg)
+            except Exception as e:
+                last_error = e
+                continue
+
+            if not torch.is_complex(S):
+                if S.dim() >= 4 and S.size(-1) == 2:
+                    S = torch.view_as_complex(S.contiguous())
+                else:
+                    S = S.to(torch.complex64)
+            S = S.to(self.dtype)
+
+            if self.cac:
+                S = torch.cat([S.real, S.imag], dim=0).contiguous()
+                S = S.to(self._real_dtype_for(self.dtype))
             else:
-                S = S.to(torch.complex64)
-        S = S.to(self.dtype)
-        
-        # Format output
-        if self.cac:
-            # CAC format: concat real parts then imag parts along channel axis
-            # This matches AutoEncoder._pack_complex which does cat([S.real, S.imag], dim=1)
-            # Input S shape: [C, F, T] complex -> Output: [2C, F, T] real
-            # Order: [real_ch0, real_ch1, ..., imag_ch0, imag_ch1, ...]
-            S = torch.cat([S.real, S.imag], dim=0).contiguous()
-            S = S.to(self._real_dtype_for(self.dtype))
-        else:
-            S = S.contiguous()
-        
-        seg = seg.contiguous()
-        
-        if self.return_paths:
-            return S, seg, str(path)
-        return S, seg
+                S = S.contiguous()
+
+            seg = seg.contiguous()
+
+            if self.return_paths:
+                return S, seg, str(path)
+            return S, seg
+
+        raise RuntimeError(f"Failed to fetch item after {self.max_retries_per_sample} attempts. Last error: {last_error}")
 
     def _pick_probe_fn(self):
         """Pick the best available probe function for file metadata."""

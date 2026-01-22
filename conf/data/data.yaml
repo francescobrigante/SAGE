@@ -22,10 +22,10 @@ train_dataset:
     subset: medium
 
 train_dataloader:
-  batch_size: 64
-  num_workers: 12
-  prefetch_factor: 4
-  pin_memory: false
+  batch_size: 4
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: true
   persistent_workers: false
   shuffle: true
   drop_last: true
@@ -51,10 +51,10 @@ eval_dataset:
     subset: medium
 
 eval_dataloader:
-  batch_size: 64
-  num_workers: 12
-  prefetch_factor: 4
-  pin_memory: false
+  batch_size: 4
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: true
   persistent_workers: false
   shuffle: false
   drop_last: false
