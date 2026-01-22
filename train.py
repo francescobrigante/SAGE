@@ -307,6 +307,7 @@ def main(cfg: DictConfig):
         optimizer_spec=OmegaConf.to_container(trainer_cfg.get("optimizer", {}), resolve=True) or None,
         scheduler_spec=OmegaConf.to_container(trainer_cfg.get("scheduler", {}), resolve=True) or None,
         pre_transform_spec=pre_transform_spec,
+        accumulate_grad_batches=int(trainer_cfg.trainer.get("accumulate_grad_batches", 1)),
     )
     ok("Training wrapper created")
 
