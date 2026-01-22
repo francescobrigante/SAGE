@@ -117,9 +117,11 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         optimizer_spec: Optional[dict] = None,
         scheduler_spec: Optional[dict] = None,
         pre_transform_spec: Optional[dict] = None,
+        accumulate_grad_batches: int = 1,
     ):
         super().__init__()
         self.automatic_optimization = False
+        self.accumulate_grad_batches = max(1, int(accumulate_grad_batches))
         self.clip_grad_norm = clip_grad_norm
         self.lr = lr
         self.audio_channels = audio_channels
@@ -161,6 +163,9 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
 
         # Buffer intermedio per valid
         self.validation_step_outputs = []
+        # Track separate accumulation windows for gen/disc manual optimization.
+        self._accum_steps_gen = 0
+        self._accum_steps_disc = 0
 
     # Accessori utili in callback esistenti
     @property
@@ -254,6 +259,9 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         stats = out["stats"]
 
         log_dict = {}
+        accum_batches = self.accumulate_grad_batches
+        num_train_batches = int(getattr(self.trainer, "num_training_batches", 0) or 0)
+        is_last_batch = (num_train_batches > 0 and (batch_idx + 1) >= num_train_batches)
 
         # Prendi optimizer e scheduler da Lightning (gestione robusta lista/singolo)
         if self.use_disc:
@@ -278,13 +286,18 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             disc_loss = out["disc_total"]
             log_dict['train/disc_lr'] = opt_disc.param_groups[0]['lr']
 
-            opt_disc.zero_grad()
-            self.manual_backward(disc_loss)
-            if self.clip_grad_norm > 0.0:
-                torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), self.clip_grad_norm)
-            opt_disc.step()
-            if sched_disc is not None:
-                sched_disc.step()
+            if self._accum_steps_disc == 0:
+                opt_disc.zero_grad()
+            self.manual_backward(disc_loss / accum_batches)
+            self._accum_steps_disc += 1
+            if (self._accum_steps_disc % accum_batches == 0) or is_last_batch:
+                if self.clip_grad_norm > 0.0:
+                    torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), self.clip_grad_norm)
+                opt_disc.step()
+                if sched_disc is not None:
+                    sched_disc.step()
+                opt_disc.zero_grad()
+                self._accum_steps_disc = 0
 
             # breakdown disc
             for name, value in out["disc_breakdown"].items():
@@ -296,13 +309,18 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             if self.use_ema:
                 self.autoencoder_ema.update()
 
-            opt_gen.zero_grad()
-            self.manual_backward(gen_loss)
-            if self.clip_grad_norm > 0.0:
-                torch.nn.utils.clip_grad_norm_(self.autoencoder.parameters(), self.clip_grad_norm)
-            opt_gen.step()
-            if sched_gen is not None:
-                sched_gen.step()
+            if self._accum_steps_gen == 0:
+                opt_gen.zero_grad()
+            self.manual_backward(gen_loss / accum_batches)
+            self._accum_steps_gen += 1
+            if (self._accum_steps_gen % accum_batches == 0) or is_last_batch:
+                if self.clip_grad_norm > 0.0:
+                    torch.nn.utils.clip_grad_norm_(self.autoencoder.parameters(), self.clip_grad_norm)
+                opt_gen.step()
+                if sched_gen is not None:
+                    sched_gen.step()
+                opt_gen.zero_grad()
+                self._accum_steps_gen = 0
 
             # logging richiesto: loss, latent_std, data_std, gen_lr
             log_dict['train/loss'] = gen_loss.detach().item()
@@ -514,4 +532,3 @@ class AutoencoderValDemoCallback(pl.Callback):
             log_point_cloud(trainer.logger, 'val/embeddings_3dpca', lat_to_log)
             log_image(trainer.logger, 'val/embeddings_spec', tokens_spectrogram_image(lat_to_log))
             log_image(trainer.logger, 'val/recon_melspec_left', audio_spectrogram_image(reals_fakes))
-
