@@ -3,7 +3,7 @@
 
 train_dataset:
   _target_: ar_spectra.dataset.OnTheFlySTFTDataset
-  audio_dir: /home/ec2-user/cerovaz/data/fma_medium
+  audio_dir: /home/ec2-user/cerovaz/data/fma_large/data/fma_large
   target_frames: 128
   sample_rate: 44100
   n_fft: 2048
@@ -14,15 +14,16 @@ train_dataset:
   extensions: [".mp3"]
   stereo: true
   cac: true
+  skip_failed_samples: true
   skip_mismatched_sr: false
   skip_mismatched_channels: false
   custom_metadata_module: ar_spectra.fma_metadata
   custom_metadata_kwargs:
     split: training
-    subset: medium
+    subset: large
 
 train_dataloader:
-  batch_size: 4
+  batch_size: 8
   num_workers: 4
   prefetch_factor: 2
   pin_memory: true
@@ -32,7 +33,7 @@ train_dataloader:
 
 eval_dataset:
   _target_: ar_spectra.dataset.OnTheFlySTFTDataset
-  audio_dir: /home/ec2-user/cerovaz/data/fma_medium
+  audio_dir: /home/ec2-user/cerovaz/data/fma_large/data/fma_large
   target_frames: 128
   sample_rate: 44100
   n_fft: 2048
@@ -45,13 +46,14 @@ eval_dataset:
   cac: true
   skip_mismatched_sr: false
   skip_mismatched_channels: false
+  skip_failed_samples: true
   custom_metadata_module: ar_spectra.fma_metadata
   custom_metadata_kwargs:
     split: validation
-    subset: medium
+    subset: large
 
 eval_dataloader:
-  batch_size: 4
+  batch_size: 8
   num_workers: 4
   prefetch_factor: 2
   pin_memory: true

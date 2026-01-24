@@ -170,6 +170,7 @@ class OnTheFlySTFTDataset(Dataset):
         custom_metadata_module: Optional[str] = None,
         custom_metadata_kwargs: Optional[dict] = None,
         max_retries_per_sample: int = 8,
+        skip_failed_samples: bool = False,
     ):
         super().__init__()
         self.audio_dir = Path(audio_dir).expanduser().resolve()
@@ -191,6 +192,7 @@ class OnTheFlySTFTDataset(Dataset):
         self.full_waveform = bool(full_waveform)
         self.return_paths = bool(return_paths)
         self.max_retries_per_sample = int(max_retries_per_sample)
+        self.skip_failed_samples = bool(skip_failed_samples)
         
         # Custom file provider (for datasets like FMA with splits)
         self._file_provider = load_file_provider_fn(custom_metadata_module)
@@ -253,6 +255,7 @@ class OnTheFlySTFTDataset(Dataset):
         # Warning flags (show once)
         self._warned_channel_mismatch = False
         self._warned_sr_mismatch = False
+        self._warned_failed_samples = False
 
     def _scan_and_filter_files(self) -> list[Path]:
         """Scan audio directory and filter files based on criteria."""
@@ -319,6 +322,7 @@ class OnTheFlySTFTDataset(Dataset):
         """Call at the start of each epoch to vary sampling reproducibly."""
         self._epoch = int(epoch)
         self._reset_rng()
+        self._warned_failed_samples = False
 
     def enable_return_paths(self):
         """Enable returning source file paths alongside samples."""
@@ -387,10 +391,12 @@ class OnTheFlySTFTDataset(Dataset):
         """
         n = len(self)
         last_error: Exception | None = None
+        last_path: Path | None = None
 
         for attempt in range(self.max_retries_per_sample):
             idx = (index + attempt) % n
             path = self.files[idx]
+            last_path = path
 
             try:
                 wav, _ = self._load_waveform(path)
@@ -439,7 +445,20 @@ class OnTheFlySTFTDataset(Dataset):
                 return S, seg, str(path)
             return S, seg
 
-        raise RuntimeError(f"Failed to fetch item after {self.max_retries_per_sample} attempts. Last error: {last_error}")
+        if self.skip_failed_samples:
+            if not self._warned_failed_samples:
+                warn(
+                    "Skipping failed sample after "
+                    f"{self.max_retries_per_sample} attempts. Last error: {last_error} "
+                    f"(path: {last_path})"
+                )
+                self._warned_failed_samples = True
+            return None
+
+        raise RuntimeError(
+            f"Failed to fetch item after {self.max_retries_per_sample} attempts. "
+            f"Last error: {last_error} (path: {last_path})"
+        )
 
     def _pick_probe_fn(self):
         """Pick the best available probe function for file metadata."""

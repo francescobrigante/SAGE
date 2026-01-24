@@ -581,8 +581,9 @@ class AutoencoderEngine(nn.Module):
             encoder_input = encoder_input.mean(dim=1, keepdim=True)
 
         enc_out = self.autoencoder.encode(encoder_input, return_info=True)
+        bottleneck_info: Dict[str, Any] = {}
         if isinstance(enc_out, tuple) and len(enc_out) == 3:
-            latents, _enc_info, _bn_info = enc_out
+            latents, _enc_info, bottleneck_info = enc_out
         elif isinstance(enc_out, tuple):
             latents, _enc_info = enc_out
         else:
@@ -611,6 +612,11 @@ class AutoencoderEngine(nn.Module):
             if isinstance(value, torch.Tensor):
                 value = value.item()
             val_loss_dict[eval_key] = value
+        if "kl" in bottleneck_info:
+            kl_val = bottleneck_info["kl"]
+            if isinstance(kl_val, torch.Tensor):
+                kl_val = kl_val.item()
+            val_loss_dict["kl"] = kl_val
         return val_loss_dict
 
     def _extract_hparams(self, module: nn.Module) -> dict:

@@ -28,7 +28,7 @@ from ar_spectra.training_utils.autoencoders import AutoencoderTrainingWrapper, A
 from ar_spectra.training_utils.initialization import collate_stft
 from ar_spectra.training_utils.reproducibility import configure_reproducibility
 from ar_spectra.training_utils.get_model_config import extract_model_config
-from ar_spectra.training_utils.utils import _is_rank0
+from ar_spectra.training_utils.utils import _is_rank0, get_checkpoint_dir, resolve_run_name
 
 from rich.console import Console
 console = Console()
@@ -209,8 +209,10 @@ def main(cfg: DictConfig):
     # ─────────────────────────────────────────────────────────────────────────
     runs_dir = Path(get_original_cwd()) / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_dir = Path(get_original_cwd()) / "checkpoints"
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    run_name = resolve_run_name(cfg)
+    ok(f"Resolved run name: {run_name}")
+    base_ckpt_dir = Path(get_original_cwd()) / str(cfg.trainer.trainer.get("ckpt_dir", "checkpoints"))
+    ckpt_dir = get_checkpoint_dir(base_ckpt_dir, run_name)
     profiler_dir = runs_dir / "profiler"
     profiler_dir.mkdir(parents=True, exist_ok=True)
 

@@ -1,10 +1,16 @@
-from pytorch_lightning.loggers import WandbLogger, CometLogger
-from ..interface.aeiou import pca_point_cloud
-
-import wandb
-import torch
+from pathlib import Path
+from typing import Mapping, Optional, Tuple
 import os
+import re
 import warnings
+
+import torch
+import wandb
+from hydra.core.hydra_config import HydraConfig
+from omegaconf import OmegaConf
+from pytorch_lightning.loggers import WandbLogger, CometLogger
+
+from ..interface.aeiou import pca_point_cloud
 
 def get_rank():
     """Get rank of current process."""
@@ -18,6 +24,141 @@ def get_rank():
 
 def _is_rank0() -> bool:
     return get_rank() == 0
+
+def get_checkpoint_dir(base_dir: str | Path, run_name: str) -> Path:
+    """
+    Get the checkpoint directory based on an explicit run name.
+
+    Args:
+        base_dir: Base directory for checkpoints.
+        run_name: The resolved run name (same across all ranks).
+
+    Returns:
+        Path to the checkpoint directory named after the run.
+    """
+    checkpoint_path = Path(base_dir) / run_name
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+    return checkpoint_path
+
+def parse_run_name(run_name: str) -> tuple[float | None, float | None]:
+    """Extract beta and lambda from run name.
+
+    Supports two formats:
+    - 'beta0.5-lambda0.25' -> (0.5, 0.25)
+    - 'rate60-lambda0.5-b1' -> (None, 0.5)  # beta is None for rate-based runs
+
+    Returns:
+        Tuple of (beta, lambda). Beta may be None for rate-based runs.
+        Returns (None, None) if the format is not recognized.
+    """
+    # Try beta-lambda format first
+    match = re.match(r"beta([\d.]+)-lambda([\d.]+)", run_name)
+    if match:
+        return float(match.group(1)), float(match.group(2))
+
+    # Try rate-lambda-b format (GECO runs)
+    match = re.match(r"rate[\d.]+-lambda([\d.]+)-b[\d.]+", run_name)
+    if match:
+        return None, float(match.group(1))
+
+    return None, None
+
+def get_run_names(basedir: Path, pattern: str) -> list[str]:
+    """Get run names matching pattern, or default grid if None.
+
+    Args:
+        pattern: Regex pattern to filter run names. If None, uses default grid.
+
+    Returns:
+        List of run names.
+    """
+    assert pattern is not None
+    # if pattern is None:
+    #     # Default: all beta/lambda combinations
+    #     betas = [0.1, 0.5, 1, 2, 5]
+    #     lambdas = [0, 0.25, 0.5, 0.75, 1]
+    #     return [f"beta{b}-lambda{l}" for b in betas for l in lambdas]
+
+    # Find all run directories matching the pattern
+    regex = re.compile(pattern)
+    runs = []
+    for run_dir in basedir.iterdir():
+        if run_dir.is_dir() and regex.search(run_dir.name):
+            runs.append(run_dir.name)
+
+    if len(runs) == 0:
+        print(f"No runs found matching pattern: {pattern}")
+        return []
+
+    return sorted(runs)
+
+def _sanitize_token(token: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(token)).strip("_")
+    return cleaned or "run"
+
+def _extract_loss_weights(loss_config: Mapping) -> list[tuple[str, float]]:
+    weights: list[tuple[str, float]] = []
+
+    def visit(node: Mapping, prefix: str) -> None:
+        for key, value in node.items():
+            if key == "weights" and isinstance(value, Mapping):
+                for w_key, w_val in value.items():
+                    if isinstance(w_val, (int, float)):
+                        name = f"{prefix}.{w_key}" if prefix else str(w_key)
+                        weights.append((name, float(w_val)))
+            elif isinstance(value, Mapping):
+                next_prefix = f"{prefix}.{key}" if prefix else str(key)
+                visit(value, next_prefix)
+
+    visit(loss_config, "")
+    return weights
+
+def build_run_name(model_name: str, loss_config: Optional[Mapping] = None) -> str:
+    """
+    Build a deterministic run name from the model config name and loss weights.
+    """
+    model_part = _sanitize_token(model_name)
+    if not loss_config:
+        return model_part
+
+    weights = _extract_loss_weights(loss_config)
+    if not weights:
+        return model_part
+
+    weights = sorted(weights, key=lambda item: item[0])
+    weight_tokens = []
+    for name, value in weights:
+        safe_name = _sanitize_token(name)
+        value_str = f"{value:g}"
+        weight_tokens.append(f"{safe_name}{value_str}")
+
+    return "-".join([model_part] + weight_tokens)
+
+def resolve_run_name(cfg) -> str:
+    """
+    Resolve run name using Hydra choices + loss_config in cfg.
+    """
+    model_name = None
+    try:
+        model_name = HydraConfig.get().runtime.choices.get("model")
+    except Exception:
+        model_name = None
+
+    if not model_name:
+        model_name = "model"
+
+    loss_config = None
+    try:
+        trainer_cfg = cfg.get("trainer") if hasattr(cfg, "get") else None
+        if trainer_cfg is not None and hasattr(trainer_cfg, "get"):
+            loss_config = trainer_cfg.get("loss_config")
+    except Exception:
+        loss_config = None
+
+    if loss_config is not None:
+        loss_config = OmegaConf.to_container(loss_config, resolve=True)
+
+    return build_run_name(model_name, loss_config)
 
 class InverseLR(torch.optim.lr_scheduler._LRScheduler):
     """Implements an inverse decay learning rate schedule with an optional exponential
