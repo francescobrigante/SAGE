@@ -166,6 +166,11 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         # Track separate accumulation windows for gen/disc manual optimization.
         self._accum_steps_gen = 0
         self._accum_steps_disc = 0
+        # Accumulate metrics to log once per optimizer step.
+        self._log_accum_gen: Dict[str, float] = {}
+        self._log_accum_disc: Dict[str, float] = {}
+        self._log_accum_gen_count = 0
+        self._log_accum_disc_count = 0
 
     # Accessori utili in callback esistenti
     @property
@@ -258,7 +263,6 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         loss_info = out["loss_info"]
         stats = out["stats"]
 
-        log_dict = {}
         accum_batches = self.accumulate_grad_batches
         num_train_batches = int(getattr(self.trainer, "num_training_batches", 0) or 0)
         is_last_batch = (num_train_batches > 0 and (batch_idx + 1) >= num_train_batches)
@@ -284,7 +288,6 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         # DISC step
         if phase == "disc" and self.use_disc:
             disc_loss = out["disc_total"]
-            log_dict['train/disc_lr'] = opt_disc.param_groups[0]['lr']
 
             if self._accum_steps_disc == 0:
                 opt_disc.zero_grad()
@@ -298,10 +301,21 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                     sched_disc.step()
                 opt_disc.zero_grad()
                 self._accum_steps_disc = 0
+                # Log once per optimizer step.
+                log_dict = {}
+                log_dict["train/disc_lr"] = opt_disc.param_groups[0]["lr"]
+                if self._log_accum_disc_count > 0:
+                    for key, value in self._log_accum_disc.items():
+                        log_dict[key] = value / self._log_accum_disc_count
+                self.log_dict(log_dict, prog_bar=True, on_step=True)
+                self._log_accum_disc = {}
+                self._log_accum_disc_count = 0
 
             # breakdown disc
             for name, value in out["disc_breakdown"].items():
-                log_dict[f"train/{name}"] = value.detach().item()
+                key = f"train/{name}"
+                self._log_accum_disc[key] = self._log_accum_disc.get(key, 0.0) + value.detach().item()
+            self._log_accum_disc_count += 1
 
         # GEN step
         else:
@@ -321,18 +335,26 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                     sched_gen.step()
                 opt_gen.zero_grad()
                 self._accum_steps_gen = 0
+                # Log once per optimizer step.
+                log_dict = {}
+                log_dict["train/gen_lr"] = opt_gen.param_groups[0]["lr"]
+                if self._log_accum_gen_count > 0:
+                    for key, value in self._log_accum_gen.items():
+                        log_dict[key] = value / self._log_accum_gen_count
+                self.log_dict(log_dict, prog_bar=True, on_step=True)
+                self._log_accum_gen = {}
+                self._log_accum_gen_count = 0
 
-            # logging richiesto: loss, latent_std, data_std, gen_lr
-            log_dict['train/loss'] = gen_loss.detach().item()
-            log_dict['train/latent_std'] = stats["latent_std"].detach().item()
-            log_dict['train/data_std'] = stats["data_std"].detach().item()
-            log_dict['train/gen_lr'] = opt_gen.param_groups[0]['lr']
+            # logging richiesto: loss, latent_std, data_std
+            self._log_accum_gen["train/loss"] = self._log_accum_gen.get("train/loss", 0.0) + gen_loss.detach().item()
+            self._log_accum_gen["train/latent_std"] = self._log_accum_gen.get("train/latent_std", 0.0) + stats["latent_std"].detach().item()
+            self._log_accum_gen["train/data_std"] = self._log_accum_gen.get("train/data_std", 0.0) + stats["data_std"].detach().item()
 
             # breakdown gen
             for name, value in out["gen_breakdown"].items():
-                log_dict[f"train/{name}"] = value.detach().item()
-
-        self.log_dict(log_dict, prog_bar=True, on_step=True)
+                key = f"train/{name}"
+                self._log_accum_gen[key] = self._log_accum_gen.get(key, 0.0) + value.detach().item()
+            self._log_accum_gen_count += 1
         # Ritorna sempre la loss gen per compatibilità
         return out["gen_total"]
 
