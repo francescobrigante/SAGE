@@ -879,7 +879,6 @@ dependencies = [
     { name = "safetensors" },
     { name = "torch" },
     { name = "torchaudio" },
-    { name = "torchvision" },
     { name = "tqdm" },
     { name = "typeguard" },
     { name = "wandb" },
@@ -897,7 +896,7 @@ requires-dist = [
     { name = "encodec", specifier = ">=0.1.1" },
     { name = "frechet-audio-distance", specifier = ">=0.1.2" },
     { name = "hydra-core", specifier = ">=1.3.2" },
-    { name = "lightning", specifier = ">=2.5.6" },
+    { name = "lightning", specifier = "==2.6.0" },
     { name = "lion-pytorch", specifier = ">=0.2.3" },
     { name = "mutagen", specifier = ">=1.47.0" },
     { name = "pandas", specifier = ">=2.3.3" },
@@ -906,9 +905,8 @@ requires-dist = [
     { name = "resampy", specifier = ">=0.4.3" },
     { name = "rich", specifier = ">=14.2.0" },
     { name = "safetensors", specifier = ">=0.6.2" },
-    { name = "torch", specifier = "==2.7.0", index = "https://download.pytorch.org/whl/cu126" },
-    { name = "torchaudio", specifier = "==2.7.0", index = "https://download.pytorch.org/whl/cu126" },
-    { name = "torchvision", specifier = "==0.22.0", index = "https://download.pytorch.org/whl/cu126" },
+    { name = "torch", specifier = "==2.7.1", index = "https://download.pytorch.org/whl/cu126" },
+    { name = "torchaudio", specifier = "==2.7.1", index = "https://download.pytorch.org/whl/cu126" },
     { name = "tqdm", specifier = ">=4.66.5" },
     { name = "typeguard", specifier = ">=4.4.4" },
     { name = "wandb", specifier = ">=0.23.0" },
@@ -1695,7 +1693,7 @@ wheels = [
 
 [[package]]
 name = "lightning"
-version = "2.6.0.dev20251116"
+version = "2.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fsspec", extra = ["http"] },
@@ -1708,9 +1706,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1b/42/528f526c0ca68057744670d9e7891615a7476047bdc92c4c36572a06064b/lightning-2.6.0.dev20251116.tar.gz", hash = "sha256:daff30756c348896f284bc3ef99c7aa0c03ce024be2ed21be0f48961b64eda34", size = 654162, upload-time = "2025-11-16T00:30:49.3Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1a/d5/892ea38816925b3511493e87b0b32494122bf8a20e66f4f2cd2667f95625/lightning-2.6.0.tar.gz", hash = "sha256:881841716b59c1837ae0c562c2e64fea9bcf49ef9de3867bd1f868557ec23d04", size = 656539, upload-time = "2025-11-28T09:34:25.069Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8b/51/7161d398b2ecb7e9e353a4540108c77f0307cf2b7b3f095eb29085956ffb/lightning-2.6.0.dev20251116-py3-none-any.whl", hash = "sha256:676b550f6f45abd31b70e3e2b619987b53fd15ddf47f6c80d0bacf1e6196ace3", size = 843425, upload-time = "2025-11-16T00:30:46.863Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/e9/36b340c7ec01dad6f034481e98fc9fc0133307beb05c714c0542af98bbde/lightning-2.6.0-py3-none-any.whl", hash = "sha256:f1a13a48909960a3454518486f113fae4fadb2db0e28e9c50d8d38d46c9dc3d6", size = 845956, upload-time = "2025-11-28T09:34:23.273Z" },
 ]
 
 [[package]]
@@ -4030,7 +4028,7 @@ wheels = [
 
 [[package]]
 name = "torch"
-version = "2.7.0+cu126"
+version = "2.7.1+cu126"
 source = { registry = "https://download.pytorch.org/whl/cu126" }
 dependencies = [
     { name = "filelock" },
@@ -4058,16 +4056,16 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.0%2Bcu126-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:9dcf77ddf385412a1eea276e9b812de11c3092f7ed29508a5abef064984da3a0" },
-    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.0%2Bcu126-cp310-cp310-win_amd64.whl", hash = "sha256:587dec2f6c9e3316faea05f22434a386d402cf02d6faeb97a8978f73b3a0ed7a" },
-    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.0%2Bcu126-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:f809911c9a3b2933ac3acc3a446a208292758dba0412a92dff953d03df415137" },
-    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.0%2Bcu126-cp311-cp311-win_amd64.whl", hash = "sha256:3fadb116d605e22ea95682f3efe7747989ac8f22a3d4c9ea3cc90c44050708e0" },
-    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.0%2Bcu126-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:4933a51bfb906f34b44c23c6ea28fdfef5bf14a3c79a43d5d798285e29eba295" },
-    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.0%2Bcu126-cp312-cp312-win_amd64.whl", hash = "sha256:30bd9e92038c391b3b08b541c9bc803cb54e45fda63b61f7469bba6de372b065" },
-    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.0%2Bcu126-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:3c9e354de8db56ffc2e27f87b8a9a88c72794559579d464bf7f52800d1c35d00" },
-    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.0%2Bcu126-cp313-cp313-win_amd64.whl", hash = "sha256:1f98f55295bba3834bfaabb0e4f06fc076ec7d76a825ce0f96ec57ba86bba584" },
-    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.0%2Bcu126-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:6a0c8235501280d8215225700cb7b7e05c90b8f01efddc0fbdb72edb34230146" },
-    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.0%2Bcu126-cp313-cp313t-win_amd64.whl", hash = "sha256:c364aac3c4e18289d6779b00d5972d05d6908a79a0c8c1ea51305823da09928d" },
+    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.1%2Bcu126-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:03b83a0f2c1e90afafd7a5728b956e211bb3e6c56ea3d7d8c7638a659e448d5f" },
+    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.1%2Bcu126-cp310-cp310-win_amd64.whl", hash = "sha256:30119a54e1b4ccefe20dfe5d4b13f6aef76c17ec605b40e26d39789db00906f2" },
+    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.1%2Bcu126-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:e1a8465165708c2e2e90786ade8a3e1b1d01eca1f022792cd397caad9d8c21bc" },
+    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.1%2Bcu126-cp311-cp311-win_amd64.whl", hash = "sha256:f3af23387ac106b5b01dbef0eb021883e0c00ff4073477b7ce1cbade5ef5038d" },
+    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.1%2Bcu126-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:63bce0590bc540fc16139e2be0177847585182b8c5e68d7f9213789d1d96c978" },
+    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.1%2Bcu126-cp312-cp312-win_amd64.whl", hash = "sha256:7d897b5ff67e778de4a2a05d4528377003105e29854fd73ecbe965287533f08b" },
+    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.1%2Bcu126-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:a05c0001fd1d0ceae9cda8c8c1b8a16ed5def858fe996c9237a28016559dad52" },
+    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.1%2Bcu126-cp313-cp313-win_amd64.whl", hash = "sha256:a38a903c9b55cea1217100e0851b25659765b6bb8cd75e6de6bbf0063a2cd51e" },
+    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.1%2Bcu126-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:27d396231f33dc6103ba26ec6ec2ec5939d9850b599e32da711b038af272954e" },
+    { url = "https://download.pytorch.org/whl/cu126/torch-2.7.1%2Bcu126-cp313-cp313t-win_amd64.whl", hash = "sha256:d4e68a1aeb2a6272d0234b7575089fc70757a93d24dccde8e962a3b18aef77d1" },
 ]
 
 [[package]]
@@ -4088,22 +4086,22 @@ wheels = [
 
 [[package]]
 name = "torchaudio"
-version = "2.7.0+cu126"
+version = "2.7.1+cu126"
 source = { registry = "https://download.pytorch.org/whl/cu126" }
 dependencies = [
     { name = "torch" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.0%2Bcu126-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:75e218fa383cca07dcb6fd031f87f3f85da2078e7c84df6ceb542b6ada3ff6b8" },
-    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.0%2Bcu126-cp310-cp310-win_amd64.whl", hash = "sha256:5e860908eaf6364d26d7844b7af9ad2d26c3dfe1cc2281f94cadddae8f6d0328" },
-    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.0%2Bcu126-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:eb39b716d905ef23c0c3199d1266d7d711197c1d6275bd2cd034584169d20cd0" },
-    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.0%2Bcu126-cp311-cp311-win_amd64.whl", hash = "sha256:7a6833ad9fdf78c04f84c6f260b677511a044b40326ff3a708e44f8add72e492" },
-    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.0%2Bcu126-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:f1faae90380110260fc65c129770f8415f4bc9c7e190bb88c3ac8a7277c409ac" },
-    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.0%2Bcu126-cp312-cp312-win_amd64.whl", hash = "sha256:b2d18f410e69cdc4440b3e2dbe30f43120a5ea6fb70678a07a065001196dea27" },
-    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.0%2Bcu126-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:2075afdce884293b36468e70d1c486aa884182c84bcff8db40477de8e5df8d40" },
-    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.0%2Bcu126-cp313-cp313-win_amd64.whl", hash = "sha256:2e9d8a75fde59d954c22f848045caece82673b545828c1f8d9b984fa4817a303" },
-    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.0%2Bcu126-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:a083713b99cb33ec4a93607ff240d19a554b33483fb9eda7753f788a527f001f" },
-    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.0%2Bcu126-cp313-cp313t-win_amd64.whl", hash = "sha256:dc422f68c1aff9fc5c32a9524b8c316faea726171af52449eeff7f8ed15f2ff9" },
+    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.1%2Bcu126-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:d9a65c7f7100748802030257efd22535decd74eba310d2b2b9c41489c77cbe1d" },
+    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.1%2Bcu126-cp310-cp310-win_amd64.whl", hash = "sha256:9c6e00c79c09572a65eb54652d12f00fa79df63847552f61f10b7705fd0aca0b" },
+    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.1%2Bcu126-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:1e9231eb156400a53d8041688f7567ac92c8758332225e364c35d68603cae2da" },
+    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.1%2Bcu126-cp311-cp311-win_amd64.whl", hash = "sha256:fb9d04a635ab9856bf70c47926e3d47976c36aeb60779e6c4639ac2a630f9b0f" },
+    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.1%2Bcu126-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:560692b35b4c0325b4b11e793574e04565769f462a9146ad254d6d0411b8c7f4" },
+    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.1%2Bcu126-cp312-cp312-win_amd64.whl", hash = "sha256:33e67c2da5da68c075a065062cc39115b7af29890120c4773cfd24a9ea05a428" },
+    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.1%2Bcu126-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:759de378d1fe4f4a5a56d58f51b4a05a9aa9681ae7b9469e638d9ed321a73e95" },
+    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.1%2Bcu126-cp313-cp313-win_amd64.whl", hash = "sha256:d3a5f160336aa7ec262f1361755c5da4e451571ed69f3cb8435b09bd7a2a0227" },
+    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.1%2Bcu126-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:38484cd84566b96a12e7371ea0f5a91ce35708c8c2aaa223342da833e094ee6d" },
+    { url = "https://download.pytorch.org/whl/cu126/torchaudio-2.7.1%2Bcu126-cp313-cp313t-win_amd64.whl", hash = "sha256:c293d7e8d5d86d855313a940862c8d1506536a80ea44eca1ab020579b4f8bb0b" },
 ]
 
 [[package]]
@@ -4137,29 +4135,6 @@ wheels = [
 ]
 
 [[package]]
-name = "torchvision"
-version = "0.22.0+cu126"
-source = { registry = "https://download.pytorch.org/whl/cu126" }
-dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "pillow" },
-    { name = "torch" },
-]
-wheels = [
-    { url = "https://download.pytorch.org/whl/cu126/torchvision-0.22.0%2Bcu126-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:684bafe72536cbe776ac11ba6bc0f1b12aeb1edd57896b46ca3926a63c13cc2d" },
-    { url = "https://download.pytorch.org/whl/cu126/torchvision-0.22.0%2Bcu126-cp310-cp310-win_amd64.whl", hash = "sha256:9fdbf4377d62b39389fc577cd91cfe3750fa5e2d4663176317478c1a10bf1636" },
-    { url = "https://download.pytorch.org/whl/cu126/torchvision-0.22.0%2Bcu126-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:57ce909127bdb5643e15da9433527f61bce82cf722ae721d2f7726f89f70e2b7" },
-    { url = "https://download.pytorch.org/whl/cu126/torchvision-0.22.0%2Bcu126-cp311-cp311-win_amd64.whl", hash = "sha256:1edebb7a98cab080ff37dd7e197f7171570f0c7f26d799e7e59590b5808c4492" },
-    { url = "https://download.pytorch.org/whl/cu126/torchvision-0.22.0%2Bcu126-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:d155ffb659357747ef6697aca41dffd6fc8831d73f7b1b91d142ce2cd6e490c9" },
-    { url = "https://download.pytorch.org/whl/cu126/torchvision-0.22.0%2Bcu126-cp312-cp312-win_amd64.whl", hash = "sha256:62ecdbdd53a467f17923a8237d0396a930a4c65c2377f9afc56872d74d99522f" },
-    { url = "https://download.pytorch.org/whl/cu126/torchvision-0.22.0%2Bcu126-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:c05a19944f9cf4aedbea5323d08738982e975986079377c8f07bc4765b558889" },
-    { url = "https://download.pytorch.org/whl/cu126/torchvision-0.22.0%2Bcu126-cp313-cp313-win_amd64.whl", hash = "sha256:4976d5b9893e9973934a765da27b0f1f6a00ac533c28fea8db1636de90036998" },
-    { url = "https://download.pytorch.org/whl/cu126/torchvision-0.22.0%2Bcu126-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:c2554420daf759d4bb0a8c0ced1de6fc69ce37a02c0da9d67f0c74bd0bf30310" },
-    { url = "https://download.pytorch.org/whl/cu126/torchvision-0.22.0%2Bcu126-cp313-cp313t-win_amd64.whl", hash = "sha256:95af25cd5390fe7480371e63686a05cdb6f5ff4d005218b09b2faaa833f60030" },
-]
-
-[[package]]
 name = "tqdm"
 version = "4.67.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4182,17 +4157,17 @@ wheels = [
 
 [[package]]
 name = "triton"
-version = "3.3.0"
+version = "3.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "setuptools", marker = "(python_full_version >= '3.15' and sys_platform == 'linux') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux')" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/76/04/d54d3a6d077c646624dc9461b0059e23fd5d30e0dbe67471e3654aec81f9/triton-3.3.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:fad99beafc860501d7fcc1fb7045d9496cbe2c882b1674640304949165a916e7", size = 156441993, upload-time = "2025-04-09T20:27:25.107Z" },
-    { url = "https://files.pythonhosted.org/packages/3c/c5/4874a81131cc9e934d88377fbc9d24319ae1fb540f3333b4e9c696ebc607/triton-3.3.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3161a2bf073d6b22c4e2f33f951f3e5e3001462b2570e6df9cd57565bdec2984", size = 156528461, upload-time = "2025-04-09T20:27:32.599Z" },
-    { url = "https://files.pythonhosted.org/packages/11/53/ce18470914ab6cfbec9384ee565d23c4d1c55f0548160b1c7b33000b11fd/triton-3.3.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b68c778f6c4218403a6bd01be7484f6dc9e20fe2083d22dd8aef33e3b87a10a3", size = 156504509, upload-time = "2025-04-09T20:27:40.413Z" },
-    { url = "https://files.pythonhosted.org/packages/7d/74/4bf2702b65e93accaa20397b74da46fb7a0356452c1bb94dbabaf0582930/triton-3.3.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:47bc87ad66fa4ef17968299acacecaab71ce40a238890acc6ad197c3abe2b8f1", size = 156516468, upload-time = "2025-04-09T20:27:48.196Z" },
-    { url = "https://files.pythonhosted.org/packages/0a/93/f28a696fa750b9b608baa236f8225dd3290e5aff27433b06143adc025961/triton-3.3.0-cp313-cp313t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ce4700fc14032af1e049005ae94ba908e71cd6c2df682239aed08e49bc71b742", size = 156580729, upload-time = "2025-04-09T20:27:55.424Z" },
+    { url = "https://files.pythonhosted.org/packages/8d/a9/549e51e9b1b2c9b854fd761a1d23df0ba2fbc60bd0c13b489ffa518cfcb7/triton-3.3.1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b74db445b1c562844d3cfad6e9679c72e93fdfb1a90a24052b03bb5c49d1242e", size = 155600257, upload-time = "2025-05-29T23:39:36.085Z" },
+    { url = "https://files.pythonhosted.org/packages/21/2f/3e56ea7b58f80ff68899b1dbe810ff257c9d177d288c6b0f55bf2fe4eb50/triton-3.3.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b31e3aa26f8cb3cc5bf4e187bf737cbacf17311e1112b781d4a059353dfd731b", size = 155689937, upload-time = "2025-05-29T23:39:44.182Z" },
+    { url = "https://files.pythonhosted.org/packages/24/5f/950fb373bf9c01ad4eb5a8cd5eaf32cdf9e238c02f9293557a2129b9c4ac/triton-3.3.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9999e83aba21e1a78c1f36f21bce621b77bcaa530277a50484a7cb4a822f6e43", size = 155669138, upload-time = "2025-05-29T23:39:51.771Z" },
+    { url = "https://files.pythonhosted.org/packages/74/1f/dfb531f90a2d367d914adfee771babbd3f1a5b26c3f5fbc458dee21daa78/triton-3.3.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b89d846b5a4198317fec27a5d3a609ea96b6d557ff44b56c23176546023c4240", size = 155673035, upload-time = "2025-05-29T23:40:02.468Z" },
+    { url = "https://files.pythonhosted.org/packages/28/71/bd20ffcb7a64c753dc2463489a61bf69d531f308e390ad06390268c4ea04/triton-3.3.1-cp313-cp313t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a3198adb9d78b77818a5388bff89fa72ff36f9da0bc689db2f0a651a67ce6a42", size = 155735832, upload-time = "2025-05-29T23:40:10.522Z" },
 ]
 
 [[package]]
