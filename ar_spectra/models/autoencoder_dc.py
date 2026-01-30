@@ -14,6 +14,10 @@ class HFAutoencoderDCEncoder(AbstractEncoder):
 
     We add a lightweight ``1x1`` projection to generate ``[mu | logvar]`` so
     that the existing :class:`VAEBottleneck` can be used during training.
+    
+    Handles odd frequency dimensions (e.g., 1025 from STFT) by stripping the
+    Nyquist bin (last bin) before encoding. The Nyquist bin typically contains
+    negligible energy and can be safely zero-padded in the decoder.
     """
 
     def __init__(
@@ -59,12 +63,28 @@ class HFAutoencoderDCEncoder(AbstractEncoder):
     def forward(
         self, x: torch.Tensor
     ) -> Tuple[torch.Tensor, Dict[str, Optional[Tuple[int, int]]]]:
+        # x shape: [B, C, F, T] where F is frequency bins
+        original_freq_bins = x.shape[-2]
+        stripped_nyquist = False
+        
+        # If frequency dimension is odd, strip Nyquist bin (last bin) to make it even
+        # This is needed for pixel_unshuffle downsampling
+        # Nyquist bin typically contains ~0 energy due to anti-aliasing filters
+        if original_freq_bins % 2 == 1:
+            x = x[..., :-1, :]  # Remove Nyquist bin (last index)
+            stripped_nyquist = True
+        
         h = self.encoder(x)
         stats = self.moments(h)
         mean, logvar = torch.chunk(stats, 2, dim=1)
 
         self.last_feature_shape = mean.shape[-2:]
-        info = {"feature_shape": self.last_feature_shape, "scaling_factor": self.scaling_factor}
+        info = {
+            "feature_shape": self.last_feature_shape,
+            "scaling_factor": self.scaling_factor,
+            "original_freq_bins": original_freq_bins,
+            "stripped_nyquist": stripped_nyquist,
+        }
         return torch.cat([mean, logvar], dim=1), info
 
 
@@ -73,6 +93,10 @@ class HFAutoencoderDCDecoder(AbastractDecoder):
 
     Mirrors the original DCAE decoder; latents are optionally rescaled to
     preserve HF's variance convention.
+    
+    Handles restoration of Nyquist bin when the encoder stripped it due to odd
+    frequency dimensions. The Nyquist bin is zero-padded since it typically
+    contains negligible energy.
     """
 
     def __init__(
@@ -111,7 +135,20 @@ class HFAutoencoderDCDecoder(AbastractDecoder):
             in_shortcut=decoder_in_shortcut,
             conv_act_fn=decoder_conv_act_fn,
         )
+        # Note: Nyquist bin restoration uses simple zero-padding (no learned params)
+        # since the Nyquist bin typically contains negligible energy
 
     def forward(self, latents: torch.Tensor, encoder_info: Optional[Dict] = None) -> torch.Tensor:
         z = latents / self.scaling_factor if self.scaling_factor != 0 else latents
-        return self.decoder(z)
+        decoded = self.decoder(z)
+        
+        # Restore Nyquist bin if it was stripped during encoding
+        # Zero-padding is appropriate since Nyquist typically has ~0 energy
+        if encoder_info is not None and encoder_info.get("stripped_nyquist", False):
+            original_freq_bins = encoder_info.get("original_freq_bins")
+            if original_freq_bins is not None and decoded.shape[-2] == original_freq_bins - 1:
+                # Append zero-valued Nyquist bin at the end
+                nyquist_bin = torch.zeros_like(decoded[..., :1, :])
+                decoded = torch.cat([decoded, nyquist_bin], dim=-2)
+        
+        return decoded

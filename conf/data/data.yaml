@@ -23,8 +23,8 @@ train_dataset:
     subset: large
 
 train_dataloader:
-  batch_size: 8
-  num_workers: 4
+  batch_size: 32
+  num_workers: 6
   prefetch_factor: 2
   pin_memory: true
   persistent_workers: false
@@ -53,8 +53,8 @@ eval_dataset:
     subset: large
 
 eval_dataloader:
-  batch_size: 8
-  num_workers: 4
+  batch_size: 32
+  num_workers: 6
   prefetch_factor: 2
   pin_memory: true
   persistent_workers: false

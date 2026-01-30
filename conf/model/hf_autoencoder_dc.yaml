@@ -16,12 +16,12 @@ model:
     _target_: ar_spectra.models.autoencoder_dc.HFAutoencoderDCEncoder
     # input_size MUST match data.model_channels (complex-as-channels stereo => 4)
     input_size: 4
-    is_complex: true
+    is_complex: false
     latent_channels: 32
     attention_head_dim: 32
     encoder_block_types: ResBlock
     encoder_block_out_channels: [128, 256, 512, 512, 1024, 1024]
-    encoder_layers_per_block: [2, 2, 2, 3, 3, 3]
+    encoder_layers_per_block: [2, 2, 2, 2, 2, 2]
     encoder_qkv_multiscales:
       - []
       - []
@@ -37,12 +37,12 @@ model:
     _target_: ar_spectra.models.autoencoder_dc.HFAutoencoderDCDecoder
     # channels MUST match data.model_channels (complex-as-channels stereo => 4)
     channels: 4
-    is_complex: true
+    is_complex: false
     latent_channels: 32
     attention_head_dim: 32
     decoder_block_types: ResBlock
     decoder_block_out_channels: [128, 256, 512, 512, 1024, 1024]
-    decoder_layers_per_block: [3, 3, 3, 3, 3, 3]
+    decoder_layers_per_block: [2, 2, 2, 2, 2, 2]
     decoder_qkv_multiscales:
       - []
       - []

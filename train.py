@@ -8,6 +8,7 @@ from typing import Dict, List
 
 import torch
 import torch.profiler as torch_profiler
+import torch.multiprocessing as mp
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import (
@@ -188,6 +189,7 @@ def main(cfg: DictConfig):
     All datasets, models, and components are instantiated via hydra.utils.instantiate
     with _target_ configuration format.
     """
+
     # ─────────────────────────────────────────────────────────────────────────
     # Reproducibility setup
     # ─────────────────────────────────────────────────────────────────────────
@@ -233,6 +235,7 @@ def main(cfg: DictConfig):
     dl_cfg = OmegaConf.to_container(cfg.data.train_dataloader, resolve=True)
     num_workers = int(dl_cfg.get("num_workers", 8))
     
+
     train_dl = DataLoader(
         train_ds,
         batch_size=int(dl_cfg.get("batch_size", 8)),
@@ -243,6 +246,7 @@ def main(cfg: DictConfig):
         persistent_workers=(dl_cfg.get("persistent_workers", False) if num_workers > 0 else False),
         prefetch_factor=int(dl_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
         collate_fn=collate_stft,
+        timeout=60,  # 1 min timeout per batch to detect stuck workers
     )
 
     eval_dl = None

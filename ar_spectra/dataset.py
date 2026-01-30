@@ -226,6 +226,8 @@ class OnTheFlySTFTDataset(Dataset):
         
         # Scan and filter files
         self.files = self._scan_and_filter_files()
+        # Drop probe function reference to keep dataset picklable under spawn
+        self._probe_fn = None
         
         if not self.files:
             raise RuntimeError(

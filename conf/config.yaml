@@ -5,7 +5,7 @@
 
 defaults:
   - data: data
-  - model: hf_autoencoder_kl        # or seanet_real_model
+  - model: SEANet_real_model        # or seanet_real_model
   - trainer: trainer
   - _self_
 
