@@ -13,7 +13,7 @@ model:
         beta: 0.35
 
   encoder:
-    _target_: ar_spectra.models.autoencoder_dc.HFAutoencoderDCEncoder
+    _target_: ar_spectra.models.autoencoders.autoencoder_dc.HFAutoencoderDCEncoder
     # input_size MUST match data.model_channels (complex-as-channels stereo => 4)
     input_size: 4
     is_complex: false
@@ -34,7 +34,7 @@ model:
     scaling_factor: 1.0
 
   decoder:
-    _target_: ar_spectra.models.autoencoder_dc.HFAutoencoderDCDecoder
+    _target_: ar_spectra.models.autoencoders.autoencoder_dc.HFAutoencoderDCDecoder
     # channels MUST match data.model_channels (complex-as-channels stereo => 4)
     channels: 4
     is_complex: false

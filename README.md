@@ -114,15 +114,11 @@ so the constructor signatures remain aligned with the expected `input_size`,
 `channels`, and `is_complex` parameters, avoiding accidental mismatches at
 training time.
 
-- **Using `auto` (Recommended for Training)**: The trainer inspects the dataset
-  batch (checking for complex dtype or CAC layout) and automatically injects
-  the correct channel counts into the model configuration before instantiation.
-  This ensures the model matches the data representation (e.g., complex vs.
-  real-as-channels) and channel count (mono vs. stereo). 
+
 - **Using Explicit Values**: If you manually set these integers in the YAML,
   you must ensure they strictly match the dataset output. Mismatches (e.g.,
   configuring 2 channels for a mono dataset) will cause runtime errors.
-- **Example of `auto` working**: if the dataset has CAC activated and stereo there is going to be an `input_size` of 4. 
+
 
 > [!IMPORTANT]
 > **Note on Checkpoints**: Once trained, the resolved values are baked into the
