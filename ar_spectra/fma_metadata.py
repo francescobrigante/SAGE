@@ -18,7 +18,7 @@ from functools import lru_cache
 from typing import Optional, List
 
 # Default path - can be overridden via kwargs
-DEFAULT_METADATA_PATH = "/home/ec2-user/cerovaz/data/fma_metadata/tracks.csv"
+DEFAULT_METADATA_PATH = "/home/cerovaz/repos/data/data/fma_metadata/tracks.csv"
 
 
 @lru_cache(maxsize=1)

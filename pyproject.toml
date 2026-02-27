@@ -27,6 +27,7 @@ dependencies = [
     "mutagen>=1.47.0",
     "cdpam>=0.0.6",
     "diffusers>=0.36.0",
+    "nvitop>=1.6.2",
 ]
 
 [tool.uv.sources]

@@ -243,3 +243,11 @@ def log_point_cloud(logger, key, tokens, caption=None):
     except Exception as e:
         warnings.warn(f"Skipping point cloud logging: {type(e).__name__}: {e}")
         pass
+
+from rich.console import Console
+console = Console()  
+
+def ok(msg):     console.print(msg, style="bold green")
+def warn(msg):   console.print(msg, style="bold yellow")
+def err(msg):    console.print(msg, style="bold red")
+def info(msg):   console.print(msg, style="cyan")

@@ -2,7 +2,23 @@ from abc import ABC
 from abc import abstractmethod
 from typing import Optional
 from typing import Tuple
+from safetensors import torch
 import torch.nn as nn
+
+class AbsEncoder(torch.nn.Module, ABC):
+    @abstractmethod
+    def output_size(self) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    def forward(
+        self,
+        xs_pad: torch.Tensor,
+        ilens: torch.Tensor,
+        prev_states: torch.Tensor = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        raise NotImplementedError 
+    
 
 class AbstractEncoder(nn.Module, ABC):
     """Minimal encoder contract.
@@ -37,7 +53,3 @@ class AbastractDecoder(nn.Module, ABC):
         self.is_complex = is_complex
         # Decoders that need spatial shape can read this (populated by AutoEncoder.encode)
         self.feature_shape: Optional[Tuple[int, int]] = None
-
-    
-
-
