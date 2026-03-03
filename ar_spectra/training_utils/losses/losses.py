@@ -129,34 +129,3 @@ class MultiLoss(nn.Module):
             losses[loss_module.name] = module_loss
 
         return total_loss, losses
-
-class StereoImageLoss(LossModule):
-    def __init__(self, key_a: str, key_b: str, weight: float = 1.0, mask_key: str = None, name: str = 'stereo_image_loss', decay = 1.0):
-        super().__init__(name=name, weight=weight, decay=decay)
-
-        self.key_a = key_a
-        self.key_b = key_b
-
-        self.mask_key = mask_key
-
-    def forward(self, info):
-        loss = 0.5*(1 - F.cosine_similarity(info[self.key_a], info[self.key_b], dim=1))
-
-        if self.mask_key is not None and self.mask_key in info:
-            loss = loss[info[self.mask_key]]
-
-        loss = loss.mean()
-        self.decay_weight()
-        return self.weight * loss
-
-class TimeDomainMMDLoss(LossModule):
-    def __init__(self, key_a: str, key_b: str, weight: float = 1.0,  name: str = 'time_domain_mmd_loss', decay = 1.0):
-        super().__init__(name=name, weight=weight, decay=decay)
-
-        self.key_a = key_a
-        self.key_b = key_b
-
-    def forward(self, info):
-        loss = mmd(info[self.key_a], info[self.key_b], bandwidths=[0.0001,0.001,0.01,0.1,1], dim=-1)
-        self.decay_weight()
-        return self.weight * loss

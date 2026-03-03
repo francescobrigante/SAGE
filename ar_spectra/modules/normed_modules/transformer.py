@@ -1,9 +1,7 @@
-from typing import List
 from typing import Optional
 from typing import Tuple
 import torch
 import torch.nn as nn   
-from ar_spectra.models.autoencoders.abstract_ae import AbsEncoder
 from ar_spectra.modules.attention import MultiHeadedAttention
 from ar_spectra.modules.embedding import PositionalEncoding
 from ar_spectra.modules.layer_norm import LayerNorm

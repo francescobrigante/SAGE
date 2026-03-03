@@ -2,31 +2,17 @@ import torch
 import torch.nn as nn
 from typing import Optional, Literal, Dict, Any, Tuple
 
+from .autoencoders import trim_to_shortest
 from ..models.autoencoder import AutoEncoder
 from ..models.discriminators import EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, BigVGANDiscriminator
 from ..models.bottlenecks import VAEBottleneck
 from .losses import (
-    MelSpectrogramLoss, MultiLoss, AuralossLoss, ValueLoss, TargetValueLoss,
+    MelSpectrogramLoss, MultiLoss, ValueLoss,
     L1Loss, LossWithTarget, MSELoss, HubertLoss, 
 )
 from .losses import auraloss as auraloss
-from .losses.ar_spectra_losses import (ComplexSpectralConvergence, MultiResSpectralConvergence, 
-                                       ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance)
-from rich.console import Console
-console = Console()  
-
-def ok(msg):     console.print(msg, style="bold green")
-def warn(msg):   console.print(msg, style="bold yellow")
-def err(msg):    console.print(msg, style="bold red")
-def info(msg):   console.print(msg, style="cyan")
-
-
-def trim_to_shortest(a, b):
-    if a.shape[-1] > b.shape[-1]:
-        return a[..., :b.shape[-1]], b
-    elif b.shape[-1] > a.shape[-1]:
-        return a, b[..., :a.shape[-1]]
-    return a, b
+from .losses.ar_spectra_losses import (MultiResSpectralConvergence, ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance)
+from ar_spectra.utils import ok, warn, err, info
 
 def create_loss_modules_from_bottleneck(bottleneck, loss_config):
     losses = []

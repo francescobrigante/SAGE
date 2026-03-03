@@ -16,20 +16,13 @@ from safetensors.torch import save_model
 from ..interface.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 from .engine import AutoencoderEngine  
 from ..models.autoencoder import AutoEncoder
-from ..models.discriminators import EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, BigVGANDiscriminator
-from ..models.bottlenecks import VAEBottleneck
-from .losses import MelSpectrogramLoss, MultiLoss, AuralossLoss, ValueLoss, TargetValueLoss, L1Loss, LossWithTarget, MSELoss, HubertLoss
 from .losses import auraloss as auraloss
 from .utils import log_audio, log_image, log_metric, log_point_cloud, logger_project_name
 from hydra.utils import instantiate as hydra_instantiate
 import torch.nn.functional as F
 from ..models.eulero_inference import encode_audio as inference_encode_audio
 from ..models.eulero_inference import decode_audio as inference_decode_audio
-from rich.console import Console
-
-console = Console()
-def ok(msg):     console.print(msg, style="bold green")
-def warn(msg):   console.print(msg, style="bold yellow")
+from ar_spectra.utils import ok, warn
 
 def _save_audio_with_fallback(path: str, wav_chxn: torch.Tensor, sr: int) -> bool:
     """
@@ -481,7 +474,6 @@ class AutoencoderValDemoCallback(pl.Callback):
             reference_audio = waveform_input.detach()
 
             # allinea a reals e applica target length opzionale
-            from .autoencoders import trim_to_shortest  # reuse helper
             decoded, reference_audio = trim_to_shortest(decoded, reference_audio)
 
             sr = int(self.sample_rate or getattr(pl_module.engine, "sample_rate", 44100))

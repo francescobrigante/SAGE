@@ -15,20 +15,7 @@ from ar_spectra.modules.normed_modules.norm import ComplexLayerNorm, ComplexBatc
 from ar_spectra.modules.activations import get_activation
 from ar_spectra.models.autoencoders.abstract_ae import AbstractEncoder, AbastractDecoder
 from ar_spectra.models.autoencoders.SeaNET_AE import SEANetResnetBlock2d
-from rich.console import Console
-console = Console()
-
-def ok(msg: str) -> None:
-    console.print(msg, style="bold green")
-
-
-def warn(msg: str) -> None:
-    console.print(msg, style="bold yellow")
-
-
-def err(msg: str) -> None:
-    console.print(msg, style="bold red")
-    
+from ar_spectra.utils import ok, warn, err
 
 def pair(t):
     if isinstance(t, Sequence) and not isinstance(t, (str, bytes)):

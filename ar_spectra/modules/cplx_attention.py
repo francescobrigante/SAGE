@@ -1,27 +1,10 @@
 import torch
-from torch.nn.attention.flex_attention import flex_attention, create_block_mask, and_masks
+from torch.nn.attention.flex_attention import flex_attention
 import torch.nn as nn
-import torch.nn.functional as F
 import math
-from typing import Optional, Tuple
-from ar_spectra.modules.normed_modules.conv import SConv1d, SConv2d
-from ar_spectra.modules.normed_modules.conv import SConvTranspose1d, SConvTranspose2d, NormLinear
+from typing import Optional
 from ar_spectra.modules.cplx_dropout import ComplexDropout
-import numpy as np
-from rich.console import Console
-console = Console()
-
-def ok(msg: str) -> None:
-    console.print(msg, style="bold green")
-
-
-def warn(msg: str) -> None:
-    console.print(msg, style="bold yellow")
-
-
-def err(msg: str) -> None:
-    console.print(msg, style="bold red")
-    
+from ar_spectra.utils import ok, warn, err
     
 def _merge_heads(x: torch.Tensor, H: int):
     # x: (B*, H, L, D) -> (B*, L, H*D)

@@ -11,10 +11,7 @@ from torch import nn
 from einops import rearrange
 
 from torch.nn.utils import weight_norm
-
-def checkpoint(function, *args, **kwargs):
-    kwargs.setdefault("use_reentrant", False)
-    return torch.utils.checkpoint.checkpoint(function, *args, **kwargs)
+from ..training_utils.autoencoders import checkpoint
 
 class NormConv2d(nn.Module):
     """Wrapper around Conv2d and normalization applied to this conv

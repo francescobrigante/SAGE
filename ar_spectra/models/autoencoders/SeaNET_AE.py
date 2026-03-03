@@ -6,9 +6,9 @@ import numpy as np
 import torch.nn as nn
 import torch
 from ar_spectra.modules.normed_modules.conv import SConv1d, SConv2d
-from ar_spectra.modules.normed_modules.conv import SConvTranspose1d, SConvTranspose2d
+from ar_spectra.modules.normed_modules.conv import SConvTranspose2d
 from ar_spectra.modules.normed_modules.lstm import SLSTM
-from ar_spectra.modules.activations import get_activation, _build_activation
+from ar_spectra.modules.activations import get_activation
 
 
 # Frequency packing and unpacking modules (UNORIGINAL CLASSES)  

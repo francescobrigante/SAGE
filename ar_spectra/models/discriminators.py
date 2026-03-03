@@ -499,7 +499,7 @@ class MultiScaleSubbandCQTDiscriminator(nn.Module):
         self.cfg["cqtd_fmin"] = self.cfg.get("fmin", 32.7)
 
         n_discriminators = len(self.cfg["cqtd_hop_lengths"])
-        self.discriminators = nn.ModuleList([DiscriminatorCQT(    # type: ignore
+        self.discriminators = nn.ModuleList([CQTDiscriminator(    # type: ignore
             self.cfg,
             hop_length=self.cfg["cqtd_hop_lengths"][i],
             n_octaves=self.cfg["cqtd_n_octaves"][i],

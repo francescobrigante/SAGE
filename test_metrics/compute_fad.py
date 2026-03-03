@@ -2,19 +2,8 @@
 
 from frechet_audio_distance import FrechetAudioDistance
 from argparse import ArgumentParser
-from rich.console import Console
-console = Console()
 
-def ok(msg: str) -> None:
-    console.print(msg, style="bold green")
-
-
-def warn(msg: str) -> None:
-    console.print(msg, style="bold yellow")
-
-
-def err(msg: str) -> None:
-    console.print(msg, style="bold red")
+from ar_spectra.utils import ok, warn, err, info
     
 parser = ArgumentParser(description="Compute Frechet Audio Distance")
 parser.add_argument("--target-dir", type=str, default="/home/cerovaz/repos/data/jamendo_full/test_trimmed", required=False, help="Path to the target/reference audio directory")

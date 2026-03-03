@@ -40,58 +40,6 @@ def get_checkpoint_dir(base_dir: str | Path, run_name: str) -> Path:
     checkpoint_path.mkdir(parents=True, exist_ok=True)
     return checkpoint_path
 
-def parse_run_name(run_name: str) -> tuple[float | None, float | None]:
-    """Extract beta and lambda from run name.
-
-    Supports two formats:
-    - 'beta0.5-lambda0.25' -> (0.5, 0.25)
-    - 'rate60-lambda0.5-b1' -> (None, 0.5)  # beta is None for rate-based runs
-
-    Returns:
-        Tuple of (beta, lambda). Beta may be None for rate-based runs.
-        Returns (None, None) if the format is not recognized.
-    """
-    # Try beta-lambda format first
-    match = re.match(r"beta([\d.]+)-lambda([\d.]+)", run_name)
-    if match:
-        return float(match.group(1)), float(match.group(2))
-
-    # Try rate-lambda-b format (GECO runs)
-    match = re.match(r"rate[\d.]+-lambda([\d.]+)-b[\d.]+", run_name)
-    if match:
-        return None, float(match.group(1))
-
-    return None, None
-
-def get_run_names(basedir: Path, pattern: str) -> list[str]:
-    """Get run names matching pattern, or default grid if None.
-
-    Args:
-        pattern: Regex pattern to filter run names. If None, uses default grid.
-
-    Returns:
-        List of run names.
-    """
-    assert pattern is not None
-    # if pattern is None:
-    #     # Default: all beta/lambda combinations
-    #     betas = [0.1, 0.5, 1, 2, 5]
-    #     lambdas = [0, 0.25, 0.5, 0.75, 1]
-    #     return [f"beta{b}-lambda{l}" for b in betas for l in lambdas]
-
-    # Find all run directories matching the pattern
-    regex = re.compile(pattern)
-    runs = []
-    for run_dir in basedir.iterdir():
-        if run_dir.is_dir() and regex.search(run_dir.name):
-            runs.append(run_dir.name)
-
-    if len(runs) == 0:
-        print(f"No runs found matching pattern: {pattern}")
-        return []
-
-    return sorted(runs)
-
 def _sanitize_token(token: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(token)).strip("_")
     return cleaned or "run"
@@ -244,10 +192,4 @@ def log_point_cloud(logger, key, tokens, caption=None):
         warnings.warn(f"Skipping point cloud logging: {type(e).__name__}: {e}")
         pass
 
-from rich.console import Console
-console = Console()  
-
-def ok(msg):     console.print(msg, style="bold green")
-def warn(msg):   console.print(msg, style="bold yellow")
-def err(msg):    console.print(msg, style="bold red")
-def info(msg):   console.print(msg, style="cyan")
+from ar_spectra.utils import ok, warn, err, info

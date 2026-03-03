@@ -13,13 +13,7 @@ from hydra.utils import instantiate as hydra_instantiate
 
 from ar_spectra.models.bottlenecks import SkipBottleneck, VAEBottleneck
 from ar_spectra.training_utils.pre_transform import resolve_pre_transform
-from rich.console import Console
-console = Console()
-
-def ok(msg):     console.print(msg, style="bold green")
-def warn(msg):   console.print(msg, style="bold yellow")
-def err(msg):    console.print(msg, style="bold red")
-def info(msg):   console.print(msg, style="cyan")
+from ar_spectra.utils import ok, warn, err, info
 
 
 def checkpoint(function, *args, **kwargs):
