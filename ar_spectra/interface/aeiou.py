@@ -32,25 +32,6 @@ def _to_real_features(tokens: torch.Tensor) -> torch.Tensor:
         tokens = tokens.float()
     return tokens
 
-def embeddings_table(tokens):
-    from wandb import Table
-    from pandas import DataFrame
-
-    "make a table of embeddings for use with wandb"
-    tokens = _to_real_features(tokens)
-    embeddings = rearrange(tokens, 'b d n -> b n d') # each demo sample is n vectors in d-dim space
-    features, labels = [], []
-    for i in range(embeddings.size()[0]):  # nested for's are slow but sure ;-) 
-        for j in range(embeddings.size()[1]):
-            features.append(embeddings[i,j].detach().cpu().numpy())
-            labels.append([f'demo{i}'])    # labels does the grouping / color for each point
-    features = np.array(features)
-    labels = np.concatenate(labels, axis=0)
-    cols = [f"dim_{i}" for i in range(features.shape[1])]
-    df   = DataFrame(features, columns=cols)
-    df['LABEL'] = labels
-    return Table(columns=df.columns.to_list(), data=df.values)
-
 def project_down(tokens,     # batched high-dimensional data with dims (b,d,n)
             proj_dims=3,     # dimensions to project to
             method='pca',    # projection method: 'pca'|'umap'
@@ -276,7 +257,6 @@ def audio_spectrogram_image(waveform, power=2.0, sample_rate=44100, print=print,
     melspec = melspec[0] # TODO: only left channel for now
     return spectrogram_image(melspec, title="MelSpectrogram", ylabel='mel bins (log freq)', db_range=db_range, justimage=justimage, figsize=figsize)
 
-from matplotlib.ticker import AutoLocator 
 def tokens_spectrogram_image(
         tokens,                # the embeddings themselves (in some diffusion codes these are called 'tokens')
         aspect='auto',         # aspect ratio of plot

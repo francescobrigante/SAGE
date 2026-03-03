@@ -28,16 +28,9 @@ import torch.nn.functional as F
 from mutagen.mp3 import MP3
 from torch.utils.data import Dataset
 import numpy as np
-from rich.console import Console
-
 from .metadata_providers import load_file_provider_fn
 
-console = Console()
-
-def ok(msg):     console.print(msg, style="bold green")
-def warn(msg):   console.print(msg, style="bold yellow")
-def err(msg):    console.print(msg, style="bold red")
-def info(msg):   console.print(msg, style="cyan")
+from ar_spectra.utils import ok, warn, err, info
 
 
 # --- File scanning utilities ---

@@ -15,7 +15,7 @@ class AbsEncoder(torch.nn.Module, ABC):
         self,
         xs_pad: torch.Tensor,
         ilens: torch.Tensor,
-        prev_states: torch.Tensor = None,
+        # prev_states: torch.Tensor = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         raise NotImplementedError 
     

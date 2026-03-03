@@ -12,8 +12,8 @@ from ar_spectra.modules.embedding import IdentityPositionalEncoding
 import logging
 from ar_spectra.modules.streaming_utils.utils import sequence_mask
 from ar_spectra.modules.normed_modules.conv import SConv1d, SConv2d
-from ar_spectra.modules.normed_modules.conv import SConvTranspose1d, SConvTranspose2d, NormLinear
-from ar_spectra.modules.activations import get_activation, _build_activation
+from ar_spectra.modules.normed_modules.conv import NormLinear
+from ar_spectra.modules.activations import get_activation
 
 
 class TooShortUttError(Exception):

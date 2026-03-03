@@ -5,20 +5,8 @@ import torch
 import torchaudio
 
 from ar_spectra.models.eulero_inference import EuleroEncodeDecode
-from rich.console import Console
+from ar_spectra.utils import ok, warn, err, info
 from tqdm import tqdm
-console = Console()
-
-def ok(msg: str) -> None:
-    console.print(msg, style="bold green")
-
-
-def warn(msg: str) -> None:
-    console.print(msg, style="bold yellow")
-
-
-def err(msg: str) -> None:
-    console.print(msg, style="bold red")
     
    
 def collect_audio_files(root: Path, audio_exts) -> list[Path]:

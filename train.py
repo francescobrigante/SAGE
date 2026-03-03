@@ -31,13 +31,7 @@ from ar_spectra.training_utils.reproducibility import configure_reproducibility
 from ar_spectra.training_utils.get_model_config import extract_model_config
 from ar_spectra.training_utils.utils import _is_rank0, get_checkpoint_dir, resolve_run_name
 
-from rich.console import Console
-console = Console()
-
-def ok(msg):     console.print(msg, style="bold green")
-def warn(msg):   console.print(msg, style="bold yellow")
-def err(msg):    console.print(msg, style="bold red")
-def info(msg):   console.print(msg, style="cyan")
+from ar_spectra.utils import ok, warn, err, info
 
 
 class WandbConfigLogger:
@@ -435,7 +429,7 @@ def main(cfg: DictConfig):
         devices=int(pl_trainer_cfg.get("num_gpus", 1)),
         strategy=pl_trainer_cfg.get("strategy", "auto"),
         max_epochs=int(pl_trainer_cfg.get("epochs", 50)),
-        precision="32-true",
+        precision=requested_precision,
         logger=logger,
         callbacks=callbacks,
         enable_model_summary=True,

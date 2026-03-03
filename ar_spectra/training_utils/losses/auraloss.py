@@ -12,8 +12,8 @@ def normalized_complex_distance_loss(x, y, eps=1e-7):
     return numerator / denominator
 
 def apply_reduction(losses, reduction="none", retain_batch_dim=False):
-    dim = [-1, -2] if retain_batch_dim and len(losses.shape) == 3 else None
     """Apply reduction to collection of losses."""
+    dim = [-1, -2] if retain_batch_dim and len(losses.shape) == 3 else None
     if reduction == "mean":
         losses = losses.mean(dim = dim)
     elif reduction == "sum":
@@ -536,82 +536,6 @@ class MultiResolutionSTFTLoss(torch.nn.Module):
             return mrstft_loss, sc_mag_loss, log_mag_loss, lin_mag_loss, phs_loss
 
 
-class SumAndDifferenceSTFTLoss(torch.nn.Module):
-    """Sum and difference sttereo STFT loss module.
-
-    See [Steinmetz et al., 2020](https://arxiv.org/abs/2010.10291)
-
-    Args:
-        fft_sizes (List[int]): List of FFT sizes.
-        hop_sizes (List[int]): List of hop sizes.
-        win_lengths (List[int]): List of window lengths.
-        window (str, optional): Window function type.
-        w_sum (float, optional): Weight of the sum loss component. Default: 1.0
-        w_diff (float, optional): Weight of the difference loss component. Default: 1.0
-        perceptual_weighting (bool, optional): Apply perceptual A-weighting (Sample rate must be supplied). Default: False
-        mel_stft (bool, optional): Use Multi-resoltuion mel spectrograms. Default: False
-        n_mel_bins (int, optional): Number of mel bins to use when mel_stft = True. Default: 128
-        sample_rate (float, optional): Audio sample rate. Default: None
-        output (str, optional): Format of the loss returned.
-            'loss' : Return only the raw, aggregate loss term.
-            'full' : Return the raw loss, plus intermediate loss terms.
-            Default: 'loss'
-    """
-
-    def __init__(
-        self,
-        fft_sizes: List[int],
-        hop_sizes: List[int],
-        win_lengths: List[int],
-        window: str = "hann_window",
-        w_sum: float = 1.0,
-        w_diff: float = 1.0,
-        output: str = "loss",
-        **kwargs,
-    ):
-        super().__init__()
-        self.sd = SumAndDifference()
-        self.w_sum = w_sum
-        self.w_diff = w_diff
-        self.output = output
-        self.mrstft = MultiResolutionSTFTLoss(
-            fft_sizes,
-            hop_sizes,
-            win_lengths,
-            window,
-            **kwargs,
-        )
-
-    def forward(self, input: torch.Tensor, target: torch.Tensor):
-        """This loss function assumes batched input of stereo audio in the time domain.
-
-        Args:
-            input (torch.Tensor): Input tensor with shape (batch size, 2, seq_len).
-            target (torch.Tensor): Target tensor with shape (batch size, 2, seq_len).
-
-        Returns:
-            loss (torch.Tensor): Aggreate loss term. Only returned if output='loss'.
-            loss (torch.Tensor), sum_loss (torch.Tensor), diff_loss (torch.Tensor):
-                Aggregate and intermediate loss terms. Only returned if output='full'.
-        """
-        assert input.shape == target.shape  # must have same shape
-        bs, chs, seq_len = input.size()
-
-        # compute sum and difference signals for both
-        input_sum, input_diff = self.sd(input)
-        target_sum, target_diff = self.sd(target)
-
-        # compute error in STFT domain
-        sum_loss = self.mrstft(input_sum, target_sum)
-        diff_loss = self.mrstft(input_diff, target_diff)
-        loss = ((self.w_sum * sum_loss) + (self.w_diff * diff_loss)) / 2
-
-        if self.output == "loss":
-            return loss
-        elif self.output == "full":
-            return loss, sum_loss, diff_loss
-
-
 class SISDRLoss(torch.nn.Module):
     """Scale-invariant signal-to-distortion ratio loss module.
 
@@ -650,49 +574,6 @@ class SISDRLoss(torch.nn.Module):
 
         losses = 10 * torch.log10(
             (target ** 2).sum(-1) / ((res ** 2).sum(-1) + self.eps) + self.eps
-        )
-        losses = apply_reduction(losses, self.reduction)
-        return -losses
-
-
-class SDSDRLoss(torch.nn.Module):
-    """Scale-dependent signal-to-distortion ratio loss module.
-
-    Note that this returns the negative of the SD-SDR loss.
-
-    See [Le Roux et al., 2018](https://arxiv.org/abs/1811.02508)
-
-    Args:
-        zero_mean (bool, optional) Remove any DC offset in the inputs. Default: ``True``
-        eps (float, optional): Small epsilon value for stablity. Default: 1e-8
-        reduction (string, optional): Specifies the reduction to apply to the output:
-            'none': no reduction will be applied,
-            'mean': the sum of the output will be divided by the number of elements in the output,
-            'sum': the output will be summed. Default: 'mean'
-    Shape:
-        - input : :math:`(batch, nchs, ...)`.
-        - target: :math:`(batch, nchs, ...)`.
-    """
-
-    def __init__(self, zero_mean=True, eps=1e-8, reduction="mean"):
-        super(SDSDRLoss, self).__init__()
-        self.zero_mean = zero_mean
-        self.eps = eps
-        self.reduction = reduction
-
-    def forward(self, input, target):
-        if self.zero_mean:
-            input_mean = torch.mean(input, dim=-1, keepdim=True)
-            target_mean = torch.mean(target, dim=-1, keepdim=True)
-            input = input - input_mean
-            target = target - target_mean
-
-        alpha = (input * target).sum(-1) / (((target ** 2).sum(-1)) + self.eps)
-        scaled_target = target * alpha.unsqueeze(-1)
-        res = input - target
-
-        losses = 10 * torch.log10(
-            (scaled_target ** 2).sum(-1) / ((res ** 2).sum(-1) + self.eps) + self.eps
         )
         losses = apply_reduction(losses, self.reduction)
         return -losses

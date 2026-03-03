@@ -7,10 +7,7 @@ import torchaudio
 from einops import rearrange
 from torch.nn import functional as F
 from torch import nn
-
-def fold_channels_into_batch(x):
-    x = rearrange(x, 'b c ... -> (b c) ...')
-    return x
+from ..autoencoders import fold_channels_into_batch
 
 class HubertLoss(nn.Module):
     def __init__(self,

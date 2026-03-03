@@ -1,14 +1,6 @@
 import torch
 import math
 from torch import nn
-from einops import rearrange
-
-class DynamicLossWeighting(nn.Module):
-    def __init__(self, init_val = 1.0):
-        super().__init__()
-        self.loss_weight = nn.Parameter(torch.tensor(init_val))
-    def forward(self, loss):
-        return loss / torch.exp(self.loss_weight) + self.loss_weight
 
 def flat_pairwise_sq_distance(x, y):
     """
@@ -85,8 +77,3 @@ def mmd(x, y, bandwidths =[1], dim = None):
         x_flat = x_perm.reshape(new_shape)
         y_flat = y_perm.reshape(new_shape)
     return mmd_loss_flat(x_flat, y_flat, bandwidths)
-
-def grouped_mmd(x, y, bandwidths = [1], groups = 2):
-    grouped_x = rearrange(x, '... (g f) t -> ... g (f t)', g = groups)
-    grouped_y = rearrange(y, '... (g f) t -> ... g (f t)', g = groups)
-    return mmd(grouped_x, grouped_y, bandwidths, dim = None)

@@ -7,21 +7,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 import torch
 
 from ar_spectra.models.autoencoder import AutoEncoder
-from rich.console import Console
-
-console = Console()
-
-
-def ok(msg: str) -> None:
-    console.print(msg, style="bold green")
-
-
-def warn(msg: str) -> None:
-    console.print(msg, style="bold yellow")
-
-
-def err(msg: str) -> None:
-    console.print(msg, style="bold red")
+from ar_spectra.utils import ok, warn, err
 
 
 def _extract_autoencoder_state(state_dict: Dict[str, Any]) -> Dict[str, Any]:
