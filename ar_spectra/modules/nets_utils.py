@@ -557,21 +557,6 @@ class Swish(torch.nn.Module):
         """Return Swich activation function."""
         return x * torch.sigmoid(x)
 
-
-def get_activation(act):
-    """Return activation function."""
-
-    activation_funcs = {
-        "hardtanh": torch.nn.Hardtanh,
-        "tanh": torch.nn.Tanh,
-        "relu": torch.nn.ReLU,
-        "selu": torch.nn.SELU,
-        "swish": Swish,
-    }
-
-    return activation_funcs[act]()
-
-
 def subsequent_mask(size, device="cpu", dtype=torch.bool):
     """Create mask for subsequent steps (size, size).
 

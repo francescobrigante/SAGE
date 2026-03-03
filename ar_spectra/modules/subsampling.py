@@ -10,10 +10,19 @@ import torch
 import torch.nn.functional as F
 from ar_spectra.modules.embedding import IdentityPositionalEncoding
 import logging
-from ar_spectra.modules.streaming_utils.utils import sequence_mask
 from ar_spectra.modules.normed_modules.conv import SConv1d, SConv2d
 from ar_spectra.modules.normed_modules.conv import NormLinear
 from ar_spectra.modules.activations import get_activation
+
+def sequence_mask(lengths, maxlen=None, dtype=torch.float32, device=None):
+	if maxlen is None:
+		maxlen = lengths.max()
+	row_vector = torch.arange(0, maxlen, 1).to(lengths.device)
+	matrix = torch.unsqueeze(lengths, dim=-1)
+	mask = row_vector < matrix
+	mask = mask.detach()
+
+	return mask.type(dtype).to(device) if device is not None else mask.type(dtype)
 
 
 class TooShortUttError(Exception):

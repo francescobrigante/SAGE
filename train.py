@@ -8,7 +8,6 @@ from typing import Dict, List
 
 import torch
 import torch.profiler as torch_profiler
-import torch.multiprocessing as mp
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import (
@@ -28,7 +27,7 @@ from ar_spectra.models.autoencoder import AutoEncoder
 from ar_spectra.training_utils.autoencoders import AutoencoderTrainingWrapper, AutoencoderValDemoCallback
 from ar_spectra.training_utils.initialization import collate_stft
 from ar_spectra.training_utils.reproducibility import configure_reproducibility
-from ar_spectra.training_utils.get_model_config import extract_model_config
+from ar_spectra.utils import extract_model_config
 from ar_spectra.training_utils.utils import _is_rank0, get_checkpoint_dir, resolve_run_name
 
 from ar_spectra.utils import ok, warn, err, info

@@ -227,7 +227,7 @@ class NormConv1d(nn.Module):
         #print("outputNormConv1d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         return x
 
-
+# TODO duplicate in encodec
 class NormConv2d(nn.Module):
     """Wrapper around Conv2d and normalization applied to this conv
     to provide a uniform interface across normalization approaches.
