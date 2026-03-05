@@ -3,14 +3,11 @@ import argparse
 import csv
 from pathlib import Path
 import torch
-import numpy as np
-import soundfile as sf
-import torch
+import torchaudio
 from tqdm import tqdm
 from torchmetrics.audio.sdr import SignalDistortionRatio as SISDRMetric
+
 from ar_spectra.training_utils.losses.auraloss import STFTLoss
-import numpy as np
-from scipy.signal import correlate
 from ar_spectra.training_utils.reproducibility import configure_reproducibility
 
 configure_reproducibility(seed=42, deterministic=False, strict_deterministic=False)
@@ -21,20 +18,9 @@ def crop_to_min_length(a, b):
 
 def load_audio_tensor(path):
     """Load an audio file as a torch tensor of shape (1, channels, frames)."""
-    audio, sr = sf.read(path, always_2d=False)
-
-    if np.issubdtype(audio.dtype, np.integer):
-        max_val = np.iinfo(audio.dtype).max
-        audio = audio.astype(np.float32) / max_val
-    elif audio.dtype != np.float32:
-        audio = audio.astype(np.float32)
-
-    if audio.ndim == 1:
-        tensor = torch.from_numpy(audio)[None, None, :]
-    else:
-        tensor = torch.from_numpy(audio.T)[None, :, :]
-
-    return tensor.contiguous(), sr
+    waveform, sr = torchaudio.load(path)
+    # waveform shape: (channels, frames) -> (1, channels, frames)
+    return waveform.unsqueeze(0).contiguous(), sr
 
 
 
@@ -181,7 +167,7 @@ def match_pairs(target_dir, preds_dir, allowed_ext=None):
     preds_dir = Path(preds_dir)
 
     target_map = {}
-    for f in target_dir.iterdir():
+    for f in target_dir.rglob("*"):
         if f.is_file():
             stem = f.stem
             ext = f.suffix.lower().lstrip(".")
@@ -190,7 +176,7 @@ def match_pairs(target_dir, preds_dir, allowed_ext=None):
             target_map.setdefault(stem, []).append(f)
 
     pairs = []
-    for g in preds_dir.iterdir():
+    for g in preds_dir.rglob("*"):
         if g.is_file():
             stem = g.stem
             ext = g.suffix.lower().lstrip(".")
@@ -234,12 +220,21 @@ def main():
             wav_target, sr_target = load_audio_tensor(str(tpath))
             wav_pred, sr_pred = load_audio_tensor(str(ppath))
 
+            # Resample target to match prediction sample rate if needed
             if sr_target != sr_pred:
-                raise ValueError(f"Sample rate mismatch ({sr_target} vs {sr_pred}).")
-            if wav_target.shape[1] != wav_pred.shape[1]:
-                raise ValueError(
-                    f"Numero di canali differente ({wav_target.shape[1]} vs {wav_pred.shape[1]})."
-                )
+                print(f"[WARN] Sample rate mismatch for {tpath.name}: target={sr_target} vs pred={sr_pred}, resampling target.")
+                wav_target = torchaudio.transforms.Resample(sr_target, sr_pred)(wav_target)
+                sr_target = sr_pred
+
+            # Match channels: duplicate mono to stereo or mixdown as needed
+            ch_target = wav_target.shape[1]
+            ch_pred = wav_pred.shape[1]
+            if ch_target < ch_pred:
+                print(f"[WARN] Channel mismatch for {tpath.name}: target={ch_target}ch vs pred={ch_pred}ch, duplicating target to {ch_pred}ch.")
+                wav_target = wav_target.repeat(1, ch_pred, 1)
+            elif ch_target > ch_pred:
+                print(f"[WARN] Channel mismatch for {tpath.name}: target={ch_target}ch vs pred={ch_pred}ch, mixing down target to {ch_pred}ch.")
+                wav_target = wav_target.mean(dim=1, keepdim=True)
 
             wav_target = wav_target.to(device)
             wav_pred   = wav_pred.to(device)

@@ -20,18 +20,19 @@ def main() -> None:
     parser.add_argument(
         "--model-checkpoint",
         type=str,
-        default="/home/cerovaz/repos/ICML/Eulero_BackBone/checkpoints/norm_111_bis_epoch_024_rigenerated.ckpt",
+        default="checkpoints/eulerodec.ckpt",
         help="Path to the trained model checkpoint",
     )
     parser.add_argument(
         "--target-dir",
         type=str,
-        default="/home/cerovaz/repos/data/jamendo_full/test_trimmed",
+        default="C:/Users/franc/Desktop/fma_small",
         help="Path to the test audio directory",
     )
     parser.add_argument("--output-dir", type=str, required=True, help="Path to save the generated predictions")
     parser.add_argument("--device", type=str, default="cuda:0", help="Computation device (e.g., 'cuda:0' or 'cpu')")
     parser.add_argument("--extensions", type=str, default=".wav,.flac,.mp3,.ogg,.m4a", help="Comma-separated list of audio file extensions to process")
+    parser.add_argument("--max-files", type=int, default=0, help="Max number of files to process (0 = all)")
     args = parser.parse_args()
 
     target_dir = Path(args.target_dir).expanduser().resolve()
@@ -51,19 +52,42 @@ def main() -> None:
 
     ok(f"Found {len(audio_files)} files under {target_dir}")
 
+    if args.max_files > 0:
+        audio_files = audio_files[:args.max_files]
+        ok(f"Processing first {len(audio_files)} files")
+
+    skipped = 0
     for audio_path in tqdm(audio_files, desc="Processing audio files"):
         rel_path = audio_path.relative_to(target_dir)
         out_path = output_dir / rel_path.with_suffix(".wav")
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        waveform, sample_rate = torchaudio.load(audio_path)
-        waveform = waveform.to(device)
+        try:
+            waveform, sample_rate = torchaudio.load(audio_path)
 
-        latents, info = codec.encode_audio(waveform, pack_complex=False)
-        recons = codec.decode_audio(latents, info, pack_complex=False)
+            # Resample if needed
+            if codec.sample_rate and sample_rate != codec.sample_rate:
+                waveform = torchaudio.transforms.Resample(sample_rate, codec.sample_rate)(waveform)
+                sample_rate = codec.sample_rate
 
-        recons_to_save = recons.squeeze(0).cpu()
-        torchaudio.save(str(out_path), recons_to_save, sample_rate)
+            # Match channels (mono → stereo if model expects stereo)
+            if codec.audio_channels:
+                if waveform.shape[0] < codec.audio_channels:
+                    waveform = waveform.repeat(codec.audio_channels, 1)
+                elif waveform.shape[0] > codec.audio_channels:
+                    waveform = waveform.mean(dim=0, keepdim=True)
+
+            waveform = waveform.to(device)
+
+            latents = codec.encode(waveform)
+            recons = codec.decode(latents, target_length=waveform.shape[-1])
+
+            recons_to_save = recons.squeeze(0).cpu()
+            torchaudio.save(str(out_path), recons_to_save, sample_rate)
+        except Exception as e:
+            skipped += 1
+            warn(f"Skipped {audio_path.name}: {e}")
+            continue
 
     ok("Finished processing all files.")
 
