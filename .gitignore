@@ -16,7 +16,6 @@ __pycache__/
 .wandb/
 .lightning_logs/
 .lightning_profiler/
-checkpoints/
 ICML_2026/
 outputs/
 .outputs/
