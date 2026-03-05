@@ -18,7 +18,8 @@ def main():
     parser.add_argument(
         "--audio", 
         type=str, 
-        default="/Users/francesco/Desktop/fma_small/000/000002.mp3",
+        # default="/Users/francesco/Desktop/fma_small/000/000002.mp3",
+        default="C:/Users/franc/Desktop/fma_small/000/000002.mp3",
         help="Path to an input audio file to test"
     )
     parser.add_argument(
