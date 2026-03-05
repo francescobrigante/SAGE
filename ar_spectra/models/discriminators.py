@@ -89,7 +89,7 @@ class SharedDiscriminatorConvNet(nn.Module):
         kernel_size: int = 15,
         stride: int = 4,
         activation: tp.Callable[[], nn.Module] = lambda: nn.SiLU(),
-        normalization: tp.Callable[[nn.Module], nn.Module] = torch.nn.utils.weight_norm,
+        normalization: tp.Callable[[nn.Module], nn.Module] = torch.nn.utils.parametrizations.weight_norm,
     ) -> None:
         super().__init__()
         channels = [in_size]
