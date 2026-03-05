@@ -31,9 +31,15 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu126" }
-torchvision = { index = "pytorch-cu126" }
-torchaudio = { index = "pytorch-cu126" }
+torch = [
+  { index = "pytorch-cu126", marker = "sys_platform != 'darwin'" }
+]
+torchvision = [
+  { index = "pytorch-cu126", marker = "sys_platform != 'darwin'" }
+]
+torchaudio = [
+  { index = "pytorch-cu126", marker = "sys_platform != 'darwin'" }
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu126"

@@ -10,7 +10,7 @@ import torch
 from torch import nn
 from einops import rearrange
 
-from torch.nn.utils import weight_norm
+from torch.nn.utils.parametrizations import weight_norm
 from ..training_utils.autoencoders import checkpoint
 
 class NormConv2d(nn.Module):

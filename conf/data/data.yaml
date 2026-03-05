@@ -3,7 +3,7 @@
 
 train_dataset:
   _target_: ar_spectra.dataset.OnTheFlySTFTDataset
-  audio_dir: /home/cerovaz/repos/data/data/fma_large
+  audio_dir: /Users/francesco/Desktop/fma_small
   target_frames: 128
   sample_rate: 44100
   n_fft: 2048
@@ -20,7 +20,8 @@ train_dataset:
   custom_metadata_module: ar_spectra.fma_metadata
   custom_metadata_kwargs:
     split: training
-    subset: large
+    subset: small
+    metadata_csv: /Users/francesco/Desktop/fma_metadata/tracks.csv
 
 train_dataloader:
   batch_size: 32
@@ -33,7 +34,7 @@ train_dataloader:
 
 eval_dataset:
   _target_: ar_spectra.dataset.OnTheFlySTFTDataset
-  audio_dir: /home/cerovaz/repos/data/data/fma_large
+  audio_dir: /Users/francesco/Desktop/fma_small
   target_frames: 128
   sample_rate: 44100
   n_fft: 2048
@@ -50,7 +51,8 @@ eval_dataset:
   custom_metadata_module: ar_spectra.fma_metadata
   custom_metadata_kwargs:
     split: validation
-    subset: large
+    subset: small
+    metadata_csv: /Users/francesco/Desktop/fma_metadata/tracks.csv
 
 eval_dataloader:
   batch_size: 32
