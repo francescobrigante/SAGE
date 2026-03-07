@@ -2,17 +2,14 @@ import torch
 import torch.nn as nn
 from typing import Optional, Literal, Dict, Any, Tuple
 
-from .autoencoders import trim_to_shortest
 from ..models.autoencoder import AutoEncoder
 from ..models.discriminators import EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, BigVGANDiscriminator
 from ..models.bottlenecks import VAEBottleneck
-from .losses import (
-    MelSpectrogramLoss, MultiLoss, ValueLoss,
-    L1Loss, LossWithTarget, MSELoss, HubertLoss, 
-)
-from .losses import auraloss as auraloss
+from .losses.losses import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss
+from .losses.semantic import MelSpectrogramLoss, HubertLoss
+from .losses import auraloss
 from .losses.ar_spectra_losses import (MultiResSpectralConvergence, ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance)
-from ar_spectra.utils import ok, warn, err, info
+from ar_spectra.utils import ok, warn, err, info, trim_to_shortest
 
 def create_loss_modules_from_bottleneck(bottleneck, loss_config):
     losses = []

@@ -3,11 +3,10 @@ import typing as tp
 import audiotools
 import torch
 import torchaudio
-
-from einops import rearrange
 from torch.nn import functional as F
 from torch import nn
-from ..autoencoders import fold_channels_into_batch
+
+from ar_spectra.utils import fold_channels_into_batch
 
 class HubertLoss(nn.Module):
     def __init__(self,

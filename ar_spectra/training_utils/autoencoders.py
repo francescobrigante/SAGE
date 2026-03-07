@@ -16,13 +16,13 @@ from safetensors.torch import save_model
 from ..interface.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 from .engine import AutoencoderEngine  
 from ..models.autoencoder import AutoEncoder
-from .losses import auraloss as auraloss
+from .losses import auraloss
 from .utils import log_audio, log_image, log_metric, log_point_cloud, logger_project_name
 from hydra.utils import instantiate as hydra_instantiate
 import torch.nn.functional as F
 from ..models.eulero_inference import encode_audio as inference_encode_audio
 from ..models.eulero_inference import decode_audio as inference_decode_audio
-from ar_spectra.utils import ok, warn
+from ar_spectra.utils import ok, warn, trim_to_shortest, fold_channels_into_batch, unfold_channels_from_batch
 
 def _save_audio_with_fallback(path: str, wav_chxn: torch.Tensor, sr: int) -> bool:
     """
@@ -63,24 +63,6 @@ def _save_audio_with_fallback(path: str, wav_chxn: torch.Tensor, sr: int) -> boo
         return False
     
     
-def trim_to_shortest(a, b):
-    """Trim the longer of two tensors to the length of the shorter one."""
-    if a.shape[-1] > b.shape[-1]:
-        return a[:,:,:b.shape[-1]], b
-    elif b.shape[-1] > a.shape[-1]:
-        return a, b[:,:,:a.shape[-1]]
-    return a, b
-
-def fold_channels_into_batch(x):
-    x = rearrange(x, 'b c ... -> (b c) ...')
-    return x
-
-def unfold_channels_from_batch(x, channels):
-    if channels == 1:
-        return x.unsqueeze(1)
-    x = rearrange(x, '(b c) ... -> b c ...', c = channels)
-    return x
-
 class AutoencoderTrainingWrapper(pl.LightningModule):
     """
     Adapter Lightning che delega all'AutoencoderEngine:

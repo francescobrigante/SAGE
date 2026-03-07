@@ -2,7 +2,7 @@ from abc import ABC
 from abc import abstractmethod
 from typing import Optional
 from typing import Tuple
-from safetensors import torch
+import torch
 import torch.nn as nn
 
 class AbsEncoder(torch.nn.Module, ABC):
