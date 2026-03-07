@@ -1,5 +1,6 @@
 import torch
 from rich.console import Console
+from einops import rearrange
 
 _console = Console()
 
@@ -54,3 +55,20 @@ def extract_model_config(model: torch.nn.Module) -> dict:
         "repr": repr(model),
     }
 
+def trim_to_shortest(a: torch.Tensor, b: torch.Tensor):
+    """Trim the longer of two tensors to the length of the shorter one."""
+    if a.shape[-1] > b.shape[-1]:
+        return a[:,:,:b.shape[-1]], b
+    elif b.shape[-1] > a.shape[-1]:
+        return a, b[:,:,:a.shape[-1]]
+    return a, b
+
+def fold_channels_into_batch(x):
+    x = rearrange(x, 'b c ... -> (b c) ...')
+    return x
+
+def unfold_channels_from_batch(x, channels):
+    if channels == 1:
+        return x.unsqueeze(1)
+    x = rearrange(x, '(b c) ... -> b c ...', c = channels)
+    return x

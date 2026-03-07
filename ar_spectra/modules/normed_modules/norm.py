@@ -79,7 +79,7 @@ class ComplexWeightNorm(nn.Module):
 
         # Create v (complex) and g (real) parameters.
         v = nn.Parameter(w.data)
-        w_norm = torch.linalg.vector_norm(w.data, dim=dim, keepdim=True)
+        w_norm = torch.sqrt(torch.sum(w.data.real**2 + w.data.imag**2, dim=dim, keepdim=True))
         g = nn.Parameter(w_norm.real)  # real scaling, broadcastable shape
 
         # Replace original parameter with v/g pair.
@@ -93,7 +93,7 @@ class ComplexWeightNorm(nn.Module):
     def _recompute_weight(self, mod, *args, **kwargs):  # noqa: D401 - internal hook
         v = getattr(mod, f'{self.name}_v')
         g = getattr(mod, f'{self.name}_g')
-        denom = torch.linalg.vector_norm(v, dim=self.dim, keepdim=True).clamp_min(self.eps)
+        denom = torch.sqrt(torch.sum(v.real**2 + v.imag**2, dim=self.dim, keepdim=True)).clamp_min(self.eps)
         w = g.to(v.dtype) * (v / denom)
         setattr(mod, self.name, w)
 

@@ -42,7 +42,7 @@ trainer:
 wandb:
   project: harmonai_train
   name: FMA_autoencoder_KL
-  use_wandb: true
+  use_wandb: false
 
 eval_loss_config:
   sisdr:

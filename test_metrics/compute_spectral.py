@@ -1,7 +1,13 @@
 #!/usr/bin/env python
+import os
+import sys
 import argparse
-import csv
 from pathlib import Path
+
+# Add project root to path so we can import ar_spectra
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import csv
 import torch
 import torchaudio
 from tqdm import tqdm
@@ -188,7 +194,7 @@ def match_pairs(target_dir, preds_dir, allowed_ext=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Compare SI-SDR and STFTLoss between two directories (predictions vs. targets).")
-    parser.add_argument("--target-dir", default="/home/cerovaz/repos/data/jamendo_full/test_trimmed")
+    parser.add_argument("--target-dir", type=str, default="/Users/francesco/Desktop/fma_small")
     parser.add_argument("--preds-dir", default="/home/cerovaz/repos/ICML/Eulero_BackBone/runs/inference/all_losses_cplx_24.")
     parser.add_argument("--extensions", type=str, default="")
     parser.add_argument("--csv_out", type=str, default="")

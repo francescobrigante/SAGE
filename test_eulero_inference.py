@@ -12,14 +12,15 @@ def main():
     parser.add_argument(
         "--checkpoint", 
         type=str, 
+        # default="checkpoints/complex.ckpt",
         default="checkpoints/eulerodec.ckpt",
         help="Path to the model checkpoint"
     )
     parser.add_argument(
         "--audio", 
         type=str, 
-        # default="/Users/francesco/Desktop/fma_small/000/000002.mp3",
-        default="C:/Users/franc/Desktop/fma_small/000/000002.mp3",
+        default="/Users/francesco/Desktop/fma_small/000/000002.mp3",
+        # default="C:/Users/franc/Desktop/fma_small/000/000002.mp3",
         help="Path to an input audio file to test"
     )
     parser.add_argument(
@@ -85,6 +86,7 @@ def main():
     info("Estrazione dei latenti (Encoding)...")
     latents = codec.encode(waveform)
     info(f"Shape dei latenti: {latents.shape}")
+    info(f"Dtype dei latenti: {latents.dtype}")
 
     info("Ricostruzione dell'audio (Decoding)...")
     # Pass target_length to avoid padding frame mismatch

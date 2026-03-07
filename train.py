@@ -22,6 +22,9 @@ import hydra
 from hydra.utils import get_original_cwd, instantiate
 from omegaconf import DictConfig, OmegaConf
 import wandb
+from rich.console import Console
+
+console = Console()
 
 from ar_spectra.models.autoencoder import AutoEncoder
 from ar_spectra.training_utils.autoencoders import AutoencoderTrainingWrapper, AutoencoderValDemoCallback
@@ -422,9 +425,12 @@ def main(cfg: DictConfig):
     # ─────────────────────────────────────────────────────────────────────────
     # PyTorch Lightning Trainer
     # ─────────────────────────────────────────────────────────────────────────
+    req_device = str(trainer_cfg.get("device", "auto")).lower()
+    req_accelerator = "gpu" if req_device == "cuda" else req_device
+
     trainer = Trainer(
         default_root_dir=str(runs_dir),
-        accelerator=("gpu" if torch.cuda.is_available() else "cpu"),
+        accelerator=req_accelerator,
         devices=int(pl_trainer_cfg.get("num_gpus", 1)),
         strategy=pl_trainer_cfg.get("strategy", "auto"),
         max_epochs=int(pl_trainer_cfg.get("epochs", 50)),
@@ -439,12 +445,28 @@ def main(cfg: DictConfig):
         profiler=profiler,
         check_val_every_n_epoch=int(pl_trainer_cfg.get("check_val_every_n_epoch", 1)),
         val_check_interval=pl_trainer_cfg.get("val_check_interval", None),
+        limit_train_batches=pl_trainer_cfg.get("limit_train_batches", 1.0),
+        limit_val_batches=pl_trainer_cfg.get("limit_val_batches", 1.0),
         deterministic=deterministic_flag,
     )
 
     ok("Starting training...")
-    trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl)
-
+    try:
+        trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl)
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower() or "not enough memory" in str(e).lower():
+            err("\n" + "="*80)
+            err("🚨 OUT OF MEMORY ERROR DETECTED 🚨")
+            err("="*80)
+            err(f"Error details: {e}")
+            err("\nTo fix this, you can:")
+            err("1. Decrease batch size (e.g., `data.train_dataloader.batch_size=8` instead of 32)")
+            err("2. Decrease model size (e.g., lower `block_out_channels` in `conf/model/hf_autoencoder_kl.yaml`)")
+            err("3. Use a smaller dataset or shorter audio segments")
+            err("4. Disable profilers or decrease `accumulate_grad_batches`")
+            err("="*80 + "\n")
+        else:
+            raise e
 
 if __name__ == "__main__":
     main()

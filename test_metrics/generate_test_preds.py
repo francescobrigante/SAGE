@@ -1,5 +1,10 @@
+import os
 import argparse
 from pathlib import Path
+
+# Add project root to path so we can import ar_spectra
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import torchaudio
@@ -21,12 +26,14 @@ def main() -> None:
         "--model-checkpoint",
         type=str,
         default="checkpoints/eulerodec.ckpt",
+        # default="checkpoints/complex.ckpt",
         help="Path to the trained model checkpoint",
     )
     parser.add_argument(
         "--target-dir",
         type=str,
-        default="C:/Users/franc/Desktop/fma_small",
+        # default="C:/Users/franc/Desktop/fma_small",
+        default="/Users/francesco/Desktop/fma_small",
         help="Path to the test audio directory",
     )
     parser.add_argument("--output-dir", type=str, required=True, help="Path to save the generated predictions")
