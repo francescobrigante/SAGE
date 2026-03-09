@@ -1,6 +1,6 @@
 # Trainer + optimization + logging + losses + seed/device
 seed: 94
-device: cuda
+device: ${config:DEFAULT_DEVICE}
 
 optimizer:
   _target_: torch.optim.AdamW

@@ -1,13 +1,39 @@
 #!/usr/bin/env python
 import argparse
+import os
 import sys
 from pathlib import Path
 import torch
+
+# Add project root to path so we can import ar_spectra and config
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from config import DATA_PATH, RUNS_DIR, DEFAULT_DEVICE
+from ar_spectra.utils.console import ok, warn, err, info
 import numpy as np
-import cdpam
+
+_SKIP_DIRS = frozenset({"metrics", "convert", "embeddings"})
+
+# ── MONKEY-PATCH: cdpam compatibility fixes ───────────────────────────────────
+# PyTorch 2.6+ requires weights_only to be explicit in torch.load.
+# cdpam calls torch.load without it, so we intercept and supply the default.
+_real_torch_load = torch.load
+def _patched_torch_load(*args, **kwargs):
+    kwargs.setdefault("weights_only", False)
+    return _real_torch_load(*args, **kwargs)
+torch.load = _patched_torch_load
+
+import cdpam  # import after patch so cdpam.cdpam picks up the patched torch.load
+
+# NumPy 1.24+ removed np.float as an alias for float.
+# cdpam.__init__ calls inputData.astype(float) which is fine, but internally
+# it also uses np.float in some versions — patch it back if missing.
+if not hasattr(np, "float"):
+    np.float = float  # type: ignore[attr-defined]
+# ── END MONKEY-PATCH ──────────────────────────────────────────────────────────
 from tqdm import tqdm
 import csv
-from ar_spectra.training_utils.reproducibility import configure_reproducibility
+from ar_spectra.utils.reproducibility import configure_reproducibility
 
 configure_reproducibility(seed=42, deterministic=False, strict_deterministic=False)
 
@@ -64,20 +90,24 @@ def match_pairs(target_dir, preds_dir, allowed_ext=None):
     preds_dir = Path(preds_dir)
 
     target_map = {}
-    for f in target_dir.iterdir():
+    for f in target_dir.rglob("*"):
         if f.is_file():
             stem = f.stem
             ext = f.suffix.lower().lstrip(".")
             if allowed_ext and ext not in allowed_ext:
                 continue
+            if _SKIP_DIRS.intersection(f.relative_to(target_dir).parts[:-1]):
+                continue
             target_map.setdefault(stem, []).append(f)
 
     pairs = []
-    for g in preds_dir.iterdir():
+    for g in preds_dir.rglob("*"):
         if g.is_file():
             stem = g.stem
             ext = g.suffix.lower().lstrip(".")
             if allowed_ext and ext not in allowed_ext:
+                continue
+            if _SKIP_DIRS.intersection(g.relative_to(preds_dir).parts[:-1]):
                 continue
             if stem in target_map:
                 pairs.append((target_map[stem][0], g))
@@ -85,9 +115,9 @@ def match_pairs(target_dir, preds_dir, allowed_ext=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Confronto CDPAM tra due directory (preds vs target).")
-    parser.add_argument("--target-dir", default="/home/cerovaz/repos/data/jamendo_full/test_trimmed")
-    parser.add_argument("--preds-dir", default="/home/cerovaz/repos/ICML/Eulero_BackBone/runs/inference/all_losses_cplx_24.")
-    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--target-dir", default=str(DATA_PATH))
+    parser.add_argument("--preds-dir", default=str(RUNS_DIR / "inference"))
+    parser.add_argument("--device", default=DEFAULT_DEVICE)
     parser.add_argument("--extensions", type=str, default="")
     parser.add_argument("--chunk_size", type=int, default=0)
     parser.add_argument("--csv_out", type=str, default="")
@@ -95,7 +125,7 @@ def main():
 
     # Device
     if args.device.startswith("cuda") and not torch.cuda.is_available():
-        print("CUDA non disponibile, uso CPU.")
+        warn("CUDA non disponibile, uso CPU.")
         device = "cpu"
     else:
         device = args.device
@@ -109,7 +139,7 @@ def main():
 
     pairs = match_pairs(args.target_dir, args.preds_dir, allowed_ext=allowed_ext)
     if not pairs:
-        print("Nessuna coppia trovata.")
+        warn("Nessuna coppia trovata.")
         return
 
     # score_sum come scalare GPU
@@ -120,7 +150,8 @@ def main():
 
     pbar = tqdm(pairs, desc="Calcolo CDPAM", unit="pair")
 
-    for tpath, ppath in pbar:
+    try:
+     for tpath, ppath in pbar:
         try:
             # Carica audio (usa loader del package)
             wav_target = cdpam.load_audio(str(tpath))
@@ -134,7 +165,7 @@ def main():
             if score_tensor.ndim != 0:
                 score_tensor = score_tensor.flatten().mean()
         except Exception as e:
-            print(f"Errore su coppia {tpath.name}/{ppath.name}: {e}")
+            err(f"Errore su coppia {tpath.name}/{ppath.name}: {e}")
             continue
 
         score_sum = score_sum + score_tensor  # ora non è in-place += (evita alcuni edge case broadcast)
@@ -147,13 +178,16 @@ def main():
             "pred_file": ppath.name,
             "score": score_tensor.item()
         })
+    except KeyboardInterrupt:
+        pbar.close()
+        warn("[Interrupted] Printing partial results...")
 
     if count == 0:
-        print("Nessun punteggio calcolato.")
+        warn("Nessun punteggio calcolato.")
         return
 
     final_mean = (score_sum / count).item()
-    print(f"\nScore medio CDPAM: {final_mean:.6f} su {count} coppie.")
+    ok(f"Score medio CDPAM: {final_mean:.6f} su {count} coppie.")
 
     if args.csv_out:
         out_path = Path(args.csv_out)
@@ -162,7 +196,7 @@ def main():
             writer = csv.DictWriter(f, fieldnames=["target_file", "pred_file", "score"])
             writer.writeheader()
             writer.writerows(per_file)
-        print(f"Salvato CSV: {out_path}")
+        info(f"Salvato CSV: {out_path}")
 
 if __name__ == "__main__":
     main()
