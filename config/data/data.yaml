@@ -28,7 +28,7 @@ train_dataloader:
   num_workers: 6
   prefetch_factor: 2
   pin_memory: true
-  persistent_workers: false
+  persistent_workers: true
   shuffle: true
   drop_last: true
 
@@ -59,7 +59,7 @@ eval_dataloader:
   num_workers: 6
   prefetch_factor: 2
   pin_memory: true
-  persistent_workers: false
+  persistent_workers: true
   shuffle: false
   drop_last: false
 

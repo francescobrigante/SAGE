@@ -1,6 +1,3 @@
-## NOTE: FAD is a distributional metric — results are only meaningful with a large number of samples (hundreds+).
-## With few samples (e.g. 10) the score is computed correctly but statistically unreliable.
-
 import os
 import sys
 from pathlib import Path

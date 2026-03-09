@@ -189,8 +189,10 @@ def print_stats(t, print=print, name="tensor"):
     except Exception:
         stats = dict(shape=getattr(t, "shape", None), type=type(t).__name__)
     print(f"{name} stats: {stats}")
-    
-def mel_spectrogram(waveform, power=2.0, sample_rate=44100, db=False, n_fft=1024, n_mels=256, debug=False):
+
+
+# def mel_spectrogram(waveform, power=2.0, sample_rate=44100, db=False, n_fft=1024, n_mels=256, debug=False):
+def mel_spectrogram(waveform, power=2.0, sample_rate=44100, db=False, n_fft=2048, n_mels=128, debug=False):
     "calculates data array for mel spectrogram (in however many channels)"
     win_length = None
     hop_length = n_fft//2 # 512
@@ -198,7 +200,7 @@ def mel_spectrogram(waveform, power=2.0, sample_rate=44100, db=False, n_fft=1024
     mel_spectrogram_op = T.MelSpectrogram(
         sample_rate=sample_rate, n_fft=n_fft, win_length=win_length, 
         hop_length=hop_length, center=True, pad_mode="reflect", power=power, 
-        norm='slaney', onesided=True, n_mels=n_mels, mel_scale="htk")
+        norm='slaney', n_mels=n_mels, mel_scale="htk")
     # Assicura che la window/buffer del transform sia sullo stesso device del waveform
     mel_spectrogram_op = mel_spectrogram_op.to(waveform.device)
 
