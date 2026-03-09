@@ -26,9 +26,9 @@ dependencies = [
     "deepspeed>=0.18.2; sys_platform == 'linux'",
     "mutagen>=1.47.0",
     "cdpam>=0.0.6",
-    "transformers>=5.3.0",
     "diffusers>=0.36.0",
     "nvitop>=1.6.2; sys_platform == 'linux'",
+    "huggingface-hub<1.0",
 ]
 
 [tool.uv.sources]

@@ -380,7 +380,7 @@ def main(cfg: DictConfig):
     # PyTorch Lightning Trainer
     # ─────────────────────────────────────────────────────────────────────────
     req_device = str(trainer_cfg.get("device", "auto")).lower()
-    req_accelerator = "gpu" if req_device == "cuda" else req_device
+    req_accelerator = req_device.split(":")[0]  # strip index, e.g. "cuda:0" -> "cuda"
 
     trainer = Trainer(
         default_root_dir=str(runs_dir),
