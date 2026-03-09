@@ -1,5 +1,5 @@
 # Trainer + optimization + logging + losses + seed/device
-seed: 94
+seed: ${config:DEFAULT_SEED}
 device: ${config:DEFAULT_DEVICE}
 
 optimizer:
@@ -42,7 +42,7 @@ trainer:
   # Il gradient clipping viene gestito manualmente in engine.py se necessario
 
 wandb:
-  project: harmonai_train
+  project: ${config:DEFAULT_WANDB_PROJECT}
   name: FMA_autoencoder_KL
   use_wandb: false
 

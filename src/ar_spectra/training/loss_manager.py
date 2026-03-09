@@ -7,10 +7,10 @@ from typing import Dict, Any, Optional
 
 from ..models.discriminators import EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, BigVGANDiscriminator
 from ..models.bottlenecks import VAEBottleneck
-from .losses.losses import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss
-from .losses.semantic import MelSpectrogramLoss, HubertLoss
-from .losses import auraloss
-from .losses.ar_spectra_losses import (MultiResSpectralConvergence, ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance)
+from .losses.base import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss
+from .losses.perceptual import MelSpectrogramLoss, HubertLoss
+from .losses import signal
+from .losses.spectral import (MultiResSpectralConvergence, ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance)
 from ar_spectra.utils.console import ok, warn, err, info
 
 def create_loss_modules_from_bottleneck(bottleneck, loss_config):
@@ -92,7 +92,7 @@ class LossManager(nn.Module):
                 if chosen == "mrstft_stable_audio":
                     if self.apply_pre_transform_to_wave_losses:
                         warn("apply_pre_transform_to_wave_losses is not supported with 'mrstft_stable_audio'.")
-                    self.mrstft = auraloss.MultiResolutionSTFTLoss(**configs_mrstft)
+                    self.mrstft = signal.MultiResolutionSTFTLoss(**configs_mrstft)
                 elif chosen == "mrstft_sc":
                     extra_kwargs = {}
                     if self.apply_pre_transform_to_wave_losses:
@@ -203,11 +203,11 @@ class LossManager(nn.Module):
         self.eval_losses = nn.ModuleDict()
         if eval_loss_config is not None:
             if "stft" in eval_loss_config:
-                self.eval_losses["stft"] = auraloss.STFTLoss(**eval_loss_config["stft"])
+                self.eval_losses["stft"] = signal.STFTLoss(**eval_loss_config["stft"])
             if "sisdr" in eval_loss_config:
-                self.eval_losses["sisdr"] = auraloss.SISDRLoss(**eval_loss_config["sisdr"])
+                self.eval_losses["sisdr"] = signal.SISDRLoss(**eval_loss_config["sisdr"])
             if "mel" in eval_loss_config:
-                self.eval_losses["mel"] = auraloss.MelSTFTLoss(self.sample_rate, **eval_loss_config["mel"])
+                self.eval_losses["mel"] = signal.MelSTFTLoss(self.sample_rate, **eval_loss_config["mel"])
                 
         ok("initialized with train losses: " +
            f"gen: {[type(l).__name__ for l in gen_loss_modules]}, " +

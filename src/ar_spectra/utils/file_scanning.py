@@ -6,8 +6,7 @@
 
 import os
 from typing import Union, List
-
-AUDIO_EXTENSIONS = (".flac", ".wav", ".mp3", ".m4a", ".ogg", ".opus")
+from config import DEFAULT_AUDIO_EXTENSIONS
 
 def fast_scandir(dir: str, ext: list) -> tuple[list[str], list[str]]:
     """
@@ -45,7 +44,7 @@ def get_audio_filenames(
 ) -> list[str]:
     """Recursively get a list of audio filenames from directories."""
     if exts is None:
-        exts = list(AUDIO_EXTENSIONS)
+        exts = list(DEFAULT_AUDIO_EXTENSIONS)
     
     filenames = []
     if isinstance(paths, str):

@@ -1,6 +1,5 @@
 import torch
 import math
-from torch import nn
 
 def flat_pairwise_sq_distance(x, y):
     """

@@ -14,11 +14,17 @@ import pytorch_lightning as pl
 # ─────────────────────────────────────────────────────────────────────────
 # Imports from phase 2 refactoring
 # ─────────────────────────────────────────────────────────────────────────
-from src.ar_spectra.utils.console import ok, warn, err, info
-from src.ar_spectra.utils.audio import is_silence, load_waveform, random_crop_or_pad
-from src.ar_spectra.utils.file_scanning import fast_scandir, AUDIO_EXTENSIONS
-from src.ar_spectra.utils.metadata.providers import load_file_provider_fn
-from src.ar_spectra.utils.audio_probe import pick_probe_fn
+from ar_spectra.utils.console import warn
+from ar_spectra.utils.audio import is_silence, load_waveform, random_crop_or_pad
+from ar_spectra.utils.file_scanning import fast_scandir
+from ar_spectra.utils.metadata.providers import load_file_provider_fn
+from ar_spectra.utils.audio_probe import pick_probe_fn
+
+from config import (
+    DEFAULT_SEED,
+    DEFAULT_MAX_RETRIES_PER_SAMPLE,
+    DEFAULT_MAX_PAD_RATIO
+)
 
 # ─────────────────────────────────────────────────────────────────────────
 # Datasets and Epoch Setters
@@ -50,11 +56,11 @@ class OnTheFlySTFTDataset(Dataset):
         center: bool = True,
         pad_mode: str = "reflect",
         normalized: bool = False,
-        max_pad_ratio: float = 0.05,
+        max_pad_ratio: float = DEFAULT_MAX_PAD_RATIO,
         extensions: Optional[Sequence[str]] = None,
         stereo: bool = True,
         cac: bool = False,
-        seed: int = 42,
+        seed: int = DEFAULT_SEED,
         dtype: torch.dtype = torch.complex64,
         skip_mismatched_sr: bool = False,
         skip_mismatched_channels: bool = False,
@@ -64,7 +70,7 @@ class OnTheFlySTFTDataset(Dataset):
         return_paths: bool = False,
         custom_metadata_module: Optional[str] = None,
         custom_metadata_kwargs: Optional[dict] = None,
-        max_retries_per_sample: int = 8,
+        max_retries_per_sample: int = DEFAULT_MAX_RETRIES_PER_SAMPLE,
         skip_failed_samples: bool = False,
     ):
         super().__init__()

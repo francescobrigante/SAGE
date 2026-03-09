@@ -1,90 +1,12 @@
-# =============================================================================
-# Custom complex-valued spectral losses, including Phase and Multi-Res approaches.
-# =============================================================================
 import warnings
 from typing import Any, Optional, Sequence, Tuple
-
 import torch
 import torch.nn as nn
-import torchaudio
 from typing_extensions import Literal
 
-def to_complex_spectrogram(X: torch.Tensor) -> torch.Tensor:
-    """
-    Convert a spectrogram tensor to complex dtype handling multiple layouts:
-      - complex tensor (..., C, F, T) -> returned as-is
-      - real tensor with RI on last dim (..., C, F, T, 2) -> view_as_complex
-      - complex-as-channels (cac=True) from dataset:
-            (B, 2C, F, T) or (2C, F, T) with order [c0_r, c0_i, c1_r, c1_i, ...]
-        -> returns (B, C, F, T) or (C, F, T) complex
-    """
-    if torch.is_complex(X):
-        return X
-    if not X.is_floating_point():
-        raise TypeError("Expected floating or complex tensor for spectrogram input.")
-
-    # Case: real/imag in last dimension
-    if X.ndim >= 1 and X.size(-1) == 2:
-        return torch.view_as_complex(X.contiguous())
-
-    # Case: complex-as-channels, shape (B?, 2C, F, T)
-    if X.ndim == 4:
-        B, C2, F, T = X.shape
-        if C2 % 2 != 0:
-            raise ValueError(f"Channel dimension must be even for complex-as-channels. Got {C2}.")
-        C = C2 // 2
-        Xv = X.reshape(B, C, 2, F, T)
-        real = Xv[:, :, 0, :, :]
-        imag = Xv[:, :, 1, :, :]
-        return torch.complex(real, imag)
-    elif X.ndim == 3:
-        C2, F, T = X.shape
-        if C2 % 2 != 0:
-            raise ValueError(f"Channel dimension must be even for complex-as-channels. Got {C2}.")
-        C = C2 // 2
-        Xv = X.reshape(C, 2, F, T) 
-        real = Xv[:, 0, :, :]
-        imag = Xv[:, 1, :, :]
-        return torch.complex(real, imag)
-    raise ValueError("Unsupported spectrogram shape. Expected (..., C, F, T), (..., C, F, T, 2) or (B, 2C, F, T)/(2C, F, T).")
-
-
+from ar_spectra.utils.spectral import to_complex_spectrogram
 
 class ComplexMSE(nn.Module):
-    """
-    Compute a generalized L^p magnitude error on complex spectrograms without
-    normalization or perceptual weighting.
-
-    The loss is defined per element as |S_hat - S|^p and then reduced according
-    to the selected reduction strategy.
-
-    Parameters:
-        p (float): Exponent applied to the absolute complex difference.
-            p = 2.0 yields a mean squared magnitude error (MSE);
-            p = 1.0 yields a mean absolute magnitude error (MAE).
-        eps (float): Currently unused; retained for forward compatibility and
-            interface consistency.
-        reduction (str): Reduction mode: one of {'none', 'mean', 'sum'}.
-        dim (Optional[Sequence[int]]): Dimensions over which to apply the
-            reduction. If None, all dimensions are reduced.
-        keepdim (bool): If True, retains reduced dimensions with length 1.
-
-    Forward Parameters:
-        S_hat (torch.Tensor): Predicted complex spectrogram or a real tensor
-            encodable as complex (RI or complex-as-channels).
-        S (torch.Tensor): Reference complex spectrogram with the same shape
-            or layout as S_hat.
-        weight (Optional[torch.Tensor]): Optional multiplicative weight
-            broadcastable to the loss tensor shape.
-
-    Returns:
-        torch.Tensor: The reduced loss value if reduction != 'none',
-        otherwise the per-element loss tensor.
-
-    Raises:
-        ValueError: If input shapes differ.
-        ValueError: If an invalid reduction is specified.
-    """
     def __init__(
         self,
         *,
@@ -128,47 +50,6 @@ class ComplexMSE(nn.Module):
             return loss_tensor.sum(dim=reduce_dims, keepdim=self.keepdim)
 
 class PhaseCosineDistance(nn.Module):
-    r"""
-    Computes a phase distance metric based on the cosine of the phase difference,
-    designed for complex-valued spectrograms.
-
-    This function measures the dissimilarity between the phases of two complex tensors,
-    `S_hat` (prediction) and `S` (target). The core distance metric is `1 - cos(delta_angle)`,
-    which naturally handles the periodic nature of angles and is bounded between [0, 2].
-    A key feature is the energy-based weighting, which ensures that phase errors in
-    perceptually insignificant (low-energy) bins are penalized less severely than those
-    in high-energy bins.
-
-    The per-bin loss `L` is defined as:
-    $$
-    L = w \cdot (1 - \cos(\phi_{\hat{S}} - \phi_S))
-    $$
-    where:
-    - $\phi_{\hat{S}}$ and $\phi_S$ are the angles of `S_hat` and `S`, respectively.
-    - `w` is the perceptual weight, typically derived from the magnitude of the spectrograms.
-    If weighting is enabled, $w = E^{\text{energy\_power}}$, where `E` is the reference energy.
-
-    Args:
-        energy_weighted (bool, optional): If True, applies a perceptual weight based on the
-            magnitude of the spectrogram bins. This is highly recommended for phase losses.
-            Defaults to True.
-        energy_ref (str, optional): The reference for calculating the energy weight `w`.
-            Must be one of {'avg', 'ref'}.
-            - 'avg': Uses the arithmetic mean of the magnitudes, `E = 0.5 * (|\hat{S}| + |S|)`.
-            - 'ref': Uses the magnitude of the reference signal, `E = |S|`.
-            Defaults to "avg".
-        energy_power (float, optional): The exponent applied to the reference energy `E` to
-            create the weight `w`. `1.0` provides linear weighting by energy. Defaults to 1.0.
-        eps (float, optional): A small constant for numerical stability, primarily used if
-            the reference energy calculation involves division (not the case here, but
-            retained for consistency). Defaults to 1e-7.
-        reduction (str, optional): Specifies the reduction to apply to the output:
-            'none' | 'mean' | 'sum'. Defaults to 'mean'.
-        dim (Optional[Sequence[int]], optional): The dimensions over which to reduce the
-            loss. If None, reduces over all dimensions. Defaults to None.
-        keepdim (bool, optional): Whether the output tensor has `dim` retained or not.
-            Defaults to False.
-    """
     def __init__(
         self,
         *,
@@ -184,7 +65,7 @@ class PhaseCosineDistance(nn.Module):
         if energy_ref not in {"avg", "ref"}:
             raise ValueError(f"energy_ref must be 'avg' or 'ref', but got {energy_ref}.")
         if reduction not in {"none", "mean", "sum"}:
-            raise ValueError(f"reduction must be 'mean', 'sum', or 'none', but got {reduction}.")
+            raise ValueError(f"reduction must be 'mean', 'sum', or 'none', got {reduction}.")
 
         self.energy_weighted = energy_weighted
         self.energy_ref = energy_ref
@@ -199,50 +80,36 @@ class PhaseCosineDistance(nn.Module):
         S_hat: torch.Tensor,
         S: torch.Tensor,
     ) -> torch.Tensor:
-        # Convert to complex if inputs are RI or CAC from dataset
         S_hat = to_complex_spectrogram(S_hat)
         S = to_complex_spectrogram(S)
-        # --- Input Validation ---
         if S_hat.shape != S.shape:
             raise ValueError(f"Input shapes must match, but got {S_hat.shape} and {S.shape}.")
         if not (torch.is_complex(S_hat) and torch.is_complex(S)):
             raise TypeError("Input tensors S_hat and S must be complex-valued.")
 
-        # --- Core Phase Distance Calculation ---
         angle_hat = torch.angle(S_hat)
         angle_ref = torch.angle(S)
-
-        # The cosine of the difference correctly handles angle wrapping
         loss_tensor = 1.0 - torch.cos(angle_hat - angle_ref)
 
-        # --- Perceptual Energy Weighting ---
         if self.energy_weighted:
             abs_hat = S_hat.abs()
             abs_ref = S.abs()
-
-            # Reference energy for weighting
             if self.energy_ref == "avg":
                 E = 0.5 * (abs_hat + abs_ref)
-            else:  # "ref"
+            else:
                 E = abs_ref
-
-            # The weight is the energy raised to a power
             w = E.pow(self.energy_power)
             loss_tensor = loss_tensor * w
 
-        # --- Final Reduction ---
         if self.reduction == "none":
             return loss_tensor
-
         reduce_dims = tuple(range(loss_tensor.ndim)) if self.dim is None else tuple(self.dim)
         if self.reduction == "mean":
             return loss_tensor.mean(dim=reduce_dims, keepdim=self.keepdim)
-        else:  # "sum"
+        else:
             return loss_tensor.sum(dim=reduce_dims, keepdim=self.keepdim)
-        
 
 class ComplexSpectralConvergence(nn.Module):
-    
     def __init__(self, *, reduction: str = "mean", eps : float = 1e-6):
         super().__init__()
         if reduction not in {"none", "mean", "sum"}:
@@ -251,17 +118,13 @@ class ComplexSpectralConvergence(nn.Module):
         self.eps = eps
         
     def forward(self, S_hat: torch.Tensor, S_gt: torch.Tensor) -> torch.Tensor:
-        # Convert to complex if inputs are RI or CAC from dataset
         S_hat = to_complex_spectrogram(S_hat)
         S_gt = to_complex_spectrogram(S_gt)
-
-        # --- Input Validation ---
         if S_hat.shape != S_gt.shape:
             raise ValueError(f"Input shapes must match, but got {S_hat.shape} and {S_gt.shape}.")
         if not (torch.is_complex(S_hat) and torch.is_complex(S_gt)):
             raise TypeError("Input tensors S_hat and S_gt must be complex-valued.")
         
-        # (Batch, channels, frequency, time) -> (batch*channels, frequency, time)
         batch, channels, frequency, time = S_hat.shape
         S_hat = S_hat.reshape(batch*channels, frequency, time)
         S_gt = S_gt.reshape(batch*channels, frequency, time)
@@ -282,27 +145,8 @@ class ComplexSpectralConvergence(nn.Module):
             return sc.mean()
         else: 
             raise ValueError(f"Invalid reduction: {self.reduction}")
-        
+
 class MultiResSpectralConvergence(nn.Module):
-    """
-    Implements a multi-resolution spectral convergence loss for
-    complex spectrograms.
-
-    This class calculates the spectral convergence loss across
-    multiple FFT resolutions using specified window functions and
-    computations for multi-resolution analysis. It is designed
-    to operate on complex spectrograms derived from the input
-    waveforms, comparing predicted and ground truth waveforms.
-    The purpose is to provide a robust loss function for tasks
-    such as speech synthesis or enhancement.
-
-    :ivar n_ffts: Tuple of FFT sizes used for multi-resolution analysis.
-    :type n_ffts: Sequence[int]
-    :ivar hops: Tuple of hop sizes corresponding to each FFT size.
-    :type hops: Sequence[int]
-    :ivar eps: Small constant for numerical stability.
-    :type eps: float
-    """
     def __init__(
         self,
         fft_sizes: Sequence[int] = (512, 1024, 2048),
@@ -335,14 +179,14 @@ class MultiResSpectralConvergence(nn.Module):
     def _stft(self, x: torch.Tensor, n_fft: int, hop: int, win_length: int,
               window: torch.Tensor) -> torch.Tensor:
         B, C, T = x.shape
-        x = x.reshape(B * C, T)                      # merge canali
+        x = x.reshape(B * C, T)
         Z = torch.stft(
             x, n_fft=n_fft, hop_length=hop, win_length=win_length,
             window=window, center=True, return_complex=True,
             pad_mode="reflect"
-        )                                            # (B*C, F, T')
+        )
         F, TT = Z.shape[-2:]
-        return Z.view(B, C, F, TT)                   # (B, C, F, T')
+        return Z.view(B, C, F, TT)
         
     def forward(
             self,
@@ -350,31 +194,28 @@ class MultiResSpectralConvergence(nn.Module):
             wav_gt: torch.Tensor,
             reduction: Literal["mean", "sum", "none"] = "mean",
     ) -> torch.Tensor:
-        # shape -> (B, C, T)
         if wav_hat.dim() == 2:
             wav_hat = wav_hat.unsqueeze(1)
             wav_gt  = wav_gt.unsqueeze(1)
         assert wav_hat.shape == wav_gt.shape, "waveform shape mismatch"
-        B, C, _ = wav_gt.shape
 
         sc_vals = []
         for n_fft, hop, win_length in zip(self.fft_sizes, self.hop_sizes, self.win_lengths):
-            # build window on the right device/dtype each time
             if callable(self.window):
                 window = self.window(win_length, device=wav_hat.device, dtype=wav_hat.dtype)
             else:
                 window = self.window.to(device=wav_hat.device, dtype=wav_hat.dtype)
 
-            S_hat = self._stft(wav_hat, n_fft, hop, win_length, window)   # (B,C,F,T')
+            S_hat = self._stft(wav_hat, n_fft, hop, win_length, window)
             S_gt  = self._stft(wav_gt , n_fft, hop, win_length, window)
 
             if self._apply_pre_transform:
                 S_hat = self._pre_transform.transform(S_hat)
                 S_gt = self._pre_transform.transform(S_gt)
-            sc = self.sc_loss(S_hat, S_gt)  # scalar per-batch (mean)
+            sc = self.sc_loss(S_hat, S_gt)
             sc_vals.append(sc)
 
-        sc_vals = torch.stack(sc_vals, dim=0)  # (R,)
+        sc_vals = torch.stack(sc_vals, dim=0)
         if reduction == "mean":
             return sc_vals.mean()
         elif reduction == "sum":
@@ -383,70 +224,6 @@ class MultiResSpectralConvergence(nn.Module):
             return sc_vals
 
 class MultiResolutionSpectrogramLoss(nn.Module):
-    """
-    Multi-Resolution Spectrogram Loss (MR-Spec).
-
-    This loss aggregates time–frequency discrepancies between predicted and reference
-    waveforms across multiple STFT resolutions. For each resolution r (n_fft_r, hop_r, win_r)
-    the following scalar components are computed:
-
-        1. Spectral Convergence (SC):
-            SC_r = || S_r - Ŝ_r ||_F / ( || S_r ||_F + eps_sc )
-
-        2. Complex L1 (time–frequency reconstruction term):
-            L_complex_r = mean_{b,c,f,t} | Ŝ_r - S_r |
-
-        3. Optional Linear Magnitude L1 (phase-discarded):
-            L_linmag_r = mean_{b,c,f,t} | |Ŝ_r| - |S_r| |
-
-        4. Optional Log-Magnitude L1 (phase-discarded, improves perceptual balance):
-            L_logmag_r = mean_{b,c,f,t} | log(|Ŝ_r| + eps_mag) - log(|S_r| + eps_mag) |
-
-    Total per-resolution loss:
-        L_r = w_sc * SC_r
-              + w_complex * L_complex_r
-              + I_lin * w_lin * L_linmag_r
-              + I_log * w_log * L_logmag_r
-
-        where I_lin = 1 if linear_mag=True else 0,
-              I_log = 1 if log_mag=True else 0,
-              and not (linear_mag and log_mag) (mutually exclusive by design).
-
-    Final aggregation over all resolutions R:
-        L_MR =
-            mean_r L_r   if reduction == 'mean'
-            sum_r  L_r   if reduction == 'sum'
-            [L_r]_r      if reduction == 'none'
-
-    Args:
-        fft_sizes (Sequence[int]): STFT FFT sizes per resolution.
-        hop_sizes (Optional[Sequence[int]]): Hop sizes; defaults to n_fft // 4.
-        win_lengths (Optional[Sequence[int]]): Window lengths; defaults to fft_sizes.
-        window_fn (Callable): Window function constructor (e.g. torch.hann_window).
-        factor_sc (float): Weight w_sc for spectral convergence.
-        factor_mag (float): Weight w_complex for complex L1 term (|Ŝ - S|).
-        linear_mag (bool): Enable linear magnitude L1 term (| |Ŝ| - |S| |).
-        log_mag (bool): Enable log-magnitude L1 term (| log(|Ŝ|) - log(|S|) |).
-                        Mutually exclusive with linear_mag.
-        factor_linear_mag (float): Weight w_lin applied if linear_mag=True.
-        factor_log_mag (float): Weight w_log applied if log_mag=True.
-        eps (float): Numerical stability for spectral convergence denominator.
-        eps_mag (float): Numerical stability for magnitude + logarithm.
-        reduction (str): {'mean','sum','none'} aggregation over resolutions.
-        return_details (bool): If True returns (total_loss, per_resolution_losses).
-
-    Forward Args:
-        wav_hat (Tensor): Predicted waveform (B, C, T) or (B, T).
-        wav_gt (Tensor): Reference waveform (same shape as wav_hat).
-
-    Returns:
-        Tensor if return_details=False else (total_loss, per_resolution_losses).
-
-    Notes:
-        - Phase is not directly penalized except via SC and complex L1.
-        - Set exactly one of linear_mag or log_mag to True to add a pure magnitude term.
-        - If both linear_mag and log_mag are False, the loss reduces to SC + complex L1.
-    """
     def __init__(
         self,
         fft_sizes: Sequence[int] = (512, 1024, 2048, 4096),
@@ -480,8 +257,6 @@ class MultiResolutionSpectrogramLoss(nn.Module):
 
         if linear_mag and log_mag:
             raise ValueError("linear_mag and log_mag are mutually exclusive. Choose only one.")
-        if factor_sc < 0 or factor_mag < 0 or factor_linear_mag < 0 or factor_log_mag < 0:
-            raise ValueError("All factor weights must be non-negative.")
 
         self.window_fn = window_fn
         self.factor_sc = factor_sc
@@ -538,22 +313,16 @@ class MultiResolutionSpectrogramLoss(nn.Module):
                 S_hat = self._pre_transform.transform(S_hat)
                 S_gt = self._pre_transform.transform(S_gt)
 
-            # Spectral convergence
             loss_sc = self.sc_loss(S_hat, S_gt)
-
-            # Complex L1 (difference in the complex plane)
             loss_complex = (S_hat - S_gt).abs().mean()
 
-            # Optional magnitude-only terms
             add_mag = 0.0
             if self.linear_mag or self.log_mag:
                 mag_hat = S_hat.abs().clamp_min(self.eps_mag)
                 mag_gt = S_gt.abs().clamp_min(self.eps_mag)
-
                 if self.linear_mag:
                     lin_mag_loss = (mag_hat - mag_gt).abs().mean()
                     add_mag = add_mag + self.factor_linear_mag * lin_mag_loss
-
                 if self.log_mag:
                     log_mag_hat = torch.log(mag_hat + self.eps_mag)
                     log_mag_gt = torch.log(mag_gt + self.eps_mag)

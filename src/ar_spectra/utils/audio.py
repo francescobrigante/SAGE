@@ -6,6 +6,7 @@
 
 import torch
 from einops import rearrange
+from config import DEFAULT_SILENCE_THRESHOLD
 
 def trim_to_shortest(a: torch.Tensor, b: torch.Tensor):
     """Trim the longer of two tensors to the length of the shorter one."""
@@ -30,7 +31,7 @@ def get_dbmax(audio: torch.Tensor) -> float:
     """Finds the loudest value in the entire clip and puts that into dB (full scale)."""
     return 20 * torch.log10(torch.flatten(audio.abs()).max()).cpu().item()
 
-def is_silence(audio: torch.Tensor, thresh: float = -62) -> bool:
+def is_silence(audio: torch.Tensor, thresh: float = DEFAULT_SILENCE_THRESHOLD) -> bool:
     """Checks if entire clip is 'silence' below some dB threshold."""
     return get_dbmax(audio) < thresh
 
