@@ -19,7 +19,7 @@ from safetensors.torch import save_model
 from ..utils.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 from .engine import AutoencoderEngine  
 from ..models.autoencoder import AutoEncoder
-from .losses import auraloss
+from .losses import signal
 from .utils import log_audio, log_image, log_metric, log_point_cloud, logger_project_name
 from hydra.utils import instantiate as hydra_instantiate
 import torch.nn.functional as F

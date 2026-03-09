@@ -1,12 +1,7 @@
-# =============================================================================
-# Core abstraction for losses, providing base classes and composition utilities.
-# =============================================================================
 import typing as tp
 import torch
-
-from torch.nn import functional as F
 from torch import nn
-from .utils import mmd
+from torch.nn import functional as F
 
 class LossModule(nn.Module):
     def __init__(self, name: str, weight: float = 1.0, decay = 1.0):
@@ -23,6 +18,7 @@ class LossModule(nn.Module):
             self.weight *= self.decay
         elif self.decay == 1.0 and self.weight != self.master_weight:
             self.weight = torch.tensor(self.master_weight, dtype=self.weight.dtype, device=self.weight.device)
+
     def forward(self, info, *args, **kwargs):
         raise NotImplementedError
 
@@ -53,7 +49,6 @@ class L1Loss(LossModule):
 
         self.key_a = key_a
         self.key_b = key_b
-
         self.mask_key = mask_key
 
     def forward(self, info):
@@ -72,7 +67,6 @@ class MSELoss(LossModule):
 
         self.key_a = key_a
         self.key_b = key_b
-
         self.mask_key = mask_key
 
     def forward(self, info):
@@ -98,7 +92,6 @@ class LossWithTarget(LossModule):
         super().__init__(name, weight, decay)
 
         self.loss_module = loss_module
-
         self.input_key = input_key
         self.target_key = target_key
 
@@ -110,25 +103,23 @@ class LossWithTarget(LossModule):
 class AuralossLoss(LossWithTarget):
     def __init__(self, loss_module, input_key: str, target_key: str, name: str, weight: float = 1, decay = 1.0):
         super().__init__(loss_module, input_key=input_key, target_key=target_key, name=name, weight=weight, decay=decay)
+
     def forward(self, info):
-        loss = self.loss_module(info[self.target_key], info[self.input_key]) # Enforce wrong order of input and target until we find issue in Auraloss
+        # Enforce wrong order of input and target until we find issue in Auraloss
+        loss = self.loss_module(info[self.target_key], info[self.input_key])
         self.decay_weight()
         return self.weight * loss
 
 class MultiLoss(nn.Module):
     def __init__(self, losses: tp.List[LossModule]):
         super().__init__()
-
         self.losses = nn.ModuleList(losses)
 
     def forward(self, info):
         total_loss = 0
-
         losses = {}
-
         for loss_module in self.losses:
             module_loss = loss_module(info)
             total_loss += module_loss
             losses[loss_module.name] = module_loss
-
         return total_loss, losses

@@ -4,11 +4,11 @@
 # Legacy fallback: set trainer.use_json=true trainer.json_path=ar_spectra/config/experiments/SEANet_STFT.json
 
 defaults:
-  - data: data
-  - model: hf_autoencoder_kl
-  # - model: seanet_real_model
-  # - model: simple_transformer_AE
-  - trainer: trainer
+  - data@data
+  # - models: hf_autoencoder_kl
+  - models: seanet_real_model
+  # - models: simple_transformer_AE
+  - trainer@trainer
   - _self_
 
 hydra:

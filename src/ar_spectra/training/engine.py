@@ -8,10 +8,10 @@ from typing import Optional, Literal, Dict, Any, Tuple
 from ..models.autoencoder import AutoEncoder
 from ..models.discriminators import EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, BigVGANDiscriminator
 from ..models.bottlenecks import VAEBottleneck
-from .losses.losses import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss
-from .losses.semantic import MelSpectrogramLoss, HubertLoss
-from .losses import auraloss
-from .losses.ar_spectra_losses import (MultiResSpectralConvergence, ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance)
+from .losses.base import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss
+from .losses.perceptual import MelSpectrogramLoss, HubertLoss
+from .losses import signal
+from .losses.spectral import (MultiResSpectralConvergence, ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance)
 from ar_spectra.utils.console import ok, warn, err, info
 from ar_spectra.utils.audio import trim_to_shortest
 from ar_spectra.utils.tensors import align_freq_bins, align_time_frames

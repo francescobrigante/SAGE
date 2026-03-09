@@ -16,7 +16,8 @@ from config import (
     DEFAULT_MODEL_CHECKPOINT,
     DATA_PATH,
     DEFAULT_DEVICE,
-    DEFAULT_MAX_FILES
+    DEFAULT_MAX_FILES,
+    DEFAULT_AUDIO_EXTENSIONS
 )
     
    
@@ -42,7 +43,7 @@ def main() -> None:
     )
     parser.add_argument("--output-dir", type=str, required=True, help="Path to save the generated predictions")
     parser.add_argument("--device", type=str, default=DEFAULT_DEVICE, help="Computation device (e.g., 'cuda:0' or 'cpu')")
-    parser.add_argument("--extensions", type=str, default=".wav,.flac,.mp3,.ogg,.m4a", help="Comma-separated list of audio file extensions to process")
+    parser.add_argument("--extensions", type=str, default=",".join(DEFAULT_AUDIO_EXTENSIONS), help="Comma-separated list of audio file extensions to process")
     parser.add_argument("--max-files", type=int, default=DEFAULT_MAX_FILES, help="Max number of files to process (0 = all)")
     args = parser.parse_args()
 

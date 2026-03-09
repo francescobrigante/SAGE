@@ -134,7 +134,7 @@ class TableOnlyModelSummary(pl.Callback):
 
 
 
-@hydra.main(version_base=None, config_path="config", config_name="config")
+@hydra.main(version_base=None, config_path="config", config_name="main")
 def main(cfg: DictConfig):
     """Hydra entrypoint using native instantiate API.
     
@@ -199,7 +199,7 @@ def main(cfg: DictConfig):
         persistent_workers=(dl_cfg.get("persistent_workers", False) if num_workers > 0 else False),
         prefetch_factor=int(dl_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
         collate_fn=collate_stft,
-        timeout=60,  # 1 min timeout per batch to detect stuck workers
+        timeout=config.DEFAULT_DATALOADER_TIMEOUT,  # 1 min timeout per batch to detect stuck workers
     )
 
     eval_dl = None
@@ -220,7 +220,7 @@ def main(cfg: DictConfig):
     # ─────────────────────────────────────────────────────────────────────────
     # Model instantiation via Hydra
     # ─────────────────────────────────────────────────────────────────────────
-    model_cfg = OmegaConf.to_container(cfg.model.model, resolve=True)
+    model_cfg = OmegaConf.to_container(cfg.models.model, resolve=True)
     autoencoder = AutoEncoder.from_config(model_cfg)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -289,7 +289,7 @@ def main(cfg: DictConfig):
     if use_wandb:
         if _is_rank0():
             logger = WandbLogger(
-                project=wandb_cfg.get("project", "ICML_2026"),
+                project=wandb_cfg.get("project", config.DEFAULT_WANDB_PROJECT),
                 name=wandb_cfg.get("name", "default_name"),
                 save_dir=str(runs_dir),
                 log_model=wandb_cfg.get("log_model", "all"),

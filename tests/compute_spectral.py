@@ -14,7 +14,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import DATA_PATH, RUNS_DIR, DEFAULT_DEVICE
 from ar_spectra.utils.console import ok, warn, err, info
-from ar_spectra.training.losses.auraloss import STFTLoss
+from ar_spectra.training.losses.signal import STFTLoss
 
 _SKIP_DIRS = frozenset({"metrics", "convert", "embeddings"})
 from ar_spectra.utils.reproducibility import configure_reproducibility
