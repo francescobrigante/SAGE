@@ -16,6 +16,7 @@ from pytorch_lightning.callbacks import (
 from pytorch_lightning.loggers import WandbLogger, TensorBoardLogger
 from pytorch_lightning.profilers import PyTorchProfiler
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
+from pytorch_lightning.utilities.model_summary import summarize
 from torch.utils.data import DataLoader
 
 import hydra
@@ -27,14 +28,20 @@ from rich.console import Console
 console = Console()
 
 from ar_spectra.models.autoencoder import AutoEncoder
-from ar_spectra.training_utils.autoencoders import AutoencoderTrainingWrapper, AutoencoderValDemoCallback
-from ar_spectra.training_utils.initialization import collate_stft
-from ar_spectra.training_utils.reproducibility import configure_reproducibility
-from ar_spectra.utils import extract_model_config
-from ar_spectra.training_utils.utils import _is_rank0, get_checkpoint_dir, resolve_run_name
+from ar_spectra.training.autoencoders import AutoencoderTrainingWrapper, AutoencoderValDemoCallback
+from ar_spectra.training.initialization import collate_stft
+from ar_spectra.utils.reproducibility import configure_reproducibility
+from ar_spectra.utils.model_info import extract_model_config
+from ar_spectra.training.utils import _is_rank0, get_checkpoint_dir, resolve_run_name
 
-from ar_spectra.utils import ok, warn, err, info
+from ar_spectra.utils.console import ok, warn, err, info
+import logging
+logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 
+import config
+OmegaConf.register_new_resolver("config", lambda key: getattr(config, key))
+
+from ar_spectra.training.callbacks import DatasetEpochSetter, ModelInfoLogger
 
 class WandbConfigLogger:
     """Utility per caricare l'intera cartella di configurazione Hydra su W&B.
@@ -62,7 +69,7 @@ class WandbConfigLogger:
                 key = f"conf/{rel.as_posix()}"
                 out[key] = f.read_text()
             except Exception as e:
-                warn(f"Skip file {f} ({type(e).__name__}: {e})")
+                warn(f"Skip file {f} ({type(e).__name__}: {e})", prefix="TRAINER")
         return out
 
     def log_to_wandb(self, run):
@@ -70,7 +77,7 @@ class WandbConfigLogger:
             return
         data = self.load_contents()
         if not data:
-            warn("Nessun file di configurazione trovato da loggare su W&B.")
+            warn("Nessun file di configurazione trovato da loggare su W&B.", prefix="TRAINER")
             return
         rel_paths = list(data.keys())
         # Aggiorna config con la lista dei file (non con il contenuto completo)
@@ -85,16 +92,16 @@ class WandbConfigLogger:
                 for f in self.list_files():
                     artifact.add_file(str(f))
                 run.log_artifact(artifact)
-                ok(f"Caricata cartella conf come artifact W&B ({len(data)} files).")
+                ok(f"Caricata cartella conf come artifact W&B ({len(data)} files).", prefix="TRAINER")
             except Exception as e:
-                warn(f"Artifact upload fallito ({type(e).__name__}: {e}); provo fallback testuale.")
+                warn(f"Artifact upload fallito ({type(e).__name__}: {e}); provo fallback testuale.", prefix="TRAINER")
                 self._fallback_text(run, data)
         elif self.log_text:
             self._fallback_text(run, data)
         else:
             # Se nessuna modalità è attiva logga solo la lista
             run.log({"hydra/num_conf_files": len(data)}, commit=True)
-            ok("Loggata lista file di configurazione in W&B.")
+            ok("Loggata lista file di configurazione in W&B.", prefix="TRAINER")
 
     def _fallback_text(self, run, data: Dict[str, str]):
         # Log dei contenuti come testo (potrebbe generare molte chiavi)
@@ -106,79 +113,28 @@ class WandbConfigLogger:
             if len(v) > MAX_LEN:
                 text_payload[k] = v[:MAX_LEN] + "\n... [TRUNCATED]"
         run.log(text_payload, commit=True)
-        ok(f"Loggati contenuti YAML (fallback) su W&B ({len(data)} files).")
+        ok(f"Loggati contenuti YAML (fallback) su W&B ({len(data)} files).", prefix="TRAINER")
 
-class DatasetEpochSetter(pl.Callback):
-    def __init__(self, dataset):
+class TableOnlyModelSummary(pl.Callback):
+    """Custom model summary that only prints the parameters table, discarding verbose stats."""
+    def __init__(self, max_depth: int = 2):
         super().__init__()
-        self.dataset = dataset
-    def on_train_epoch_start(self, trainer, pl_module):
-        if hasattr(self.dataset, "set_epoch"):
-            self.dataset.set_epoch(trainer.current_epoch)
-
-class ModelInfoLogger(pl.Callback):
-    """Log model info and structure at the beginning of training.
-    - prints summary to console
-    - saves a JSON with parameter counts and module list
-    - logs (optionally) to Weights & Biases
-    """
-    def __init__(self, filename: str = "model_info.json", max_module_lines: int = 512, log_structure: bool = True ):
-        super().__init__()
-        self.filename = filename
-        self.max_module_lines = int(max_module_lines)
-        self.log_structure = bool(log_structure)
+        self.max_depth = max_depth
 
     @rank_zero_only
     def on_fit_start(self, trainer, pl_module):
-        # Extract info from the core model (autoencoder inside wrapper)
-        model = getattr(pl_module, "autoencoder", pl_module)
-        info = extract_model_config(model)
-
-        # Limit how many module lines to display
-        modules = info.get("modules", [])[: self.max_module_lines]
-
-        # Console output: parameter summary + structure
-        console.rule("[bold cyan]Model info")
-        console.print(f"params total/trainable: {info.get('num_parameters_total')}/{info.get('num_parameters_trainable')}")
-        console.print(f"model size (bytes): {info.get('model_bytes')}")
-        console.rule("[bold cyan]Model structure")
-        model_cfg = extract_model_config(model)
-        if self.log_structure:
-            console.print("[MODEL SUMMARY]\n", model_cfg["repr"])
-        console.rule()
-
-        # Save JSON to disk
-        try:
-            # prova a usare la cartella di logging; fallback alla root di lavoro
-            base_dir = Path(getattr(trainer.logger, "save_dir", "") or trainer.default_root_dir or ".")
-            base_dir.mkdir(parents=True, exist_ok=True)
-            out_path = base_dir / self.filename
-            out_path.write_text(json.dumps(info, indent=2))
-            ok(f"ModelInfoLogger: saved model info JSON to {str(out_path)}")
-        except Exception as e:
-            warn(f"ModelInfoLogger: not able to save JSON ({type(e).__name__}: {e})")
-            out_path = None
-
-        # logga su W&B (se presente)
-        if isinstance(trainer.logger, WandbLogger):
-            try:
-                run = trainer.logger.experiment
-                # Update run config with full model info
-                run.config.update({"model_info": info}, allow_val_change=True)
-                # Log structure as preformatted text
-                run.log(
-                    {"model/structure": model_cfg["repr"]},
-                    step=int(getattr(trainer, "global_step", 0)),
-                    commit=False,  # do not create a new step yet
-                )
-                # Upload JSON artifact
-                if out_path is not None:
-                    run.save(str(out_path), base_path=str(base_dir))
-            except Exception as e:
-                warn(f"ModelInfoLogger: W&B log skipped ({type(e).__name__}: {e})")
+        model_summary = summarize(pl_module, max_depth=self.max_depth)
+        summary_str = str(model_summary)
+        parts = summary_str.split("--------------------------------------------------------------------------")
+        if len(parts) >= 3:
+            table_str = "--------------------------------------------------------------------------".join(parts[:2]) + "\n--------------------------------------------------------------------------"
+            console.print(table_str)
+        else:
+            console.print(summary_str)
 
 
-@hydra.main(version_base=None, config_path="conf", config_name="config")
+
+@hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg: DictConfig):
     """Hydra entrypoint using native instantiate API.
     
@@ -186,6 +142,7 @@ def main(cfg: DictConfig):
     with _target_ configuration format.
     """
 
+    console.rule("[bold cyan]Training[/bold cyan]")
     # ─────────────────────────────────────────────────────────────────────────
     # Reproducibility setup
     # ─────────────────────────────────────────────────────────────────────────
@@ -200,7 +157,7 @@ def main(cfg: DictConfig):
         warn=warn,
     )
     seed_everything(seed, workers=True)
-    ok(f"Reproducibility configured with seed={seed}")
+    ok(f"Reproducibility configured with seed={seed}", prefix="SEED")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Directory setup
@@ -208,7 +165,7 @@ def main(cfg: DictConfig):
     runs_dir = Path(get_original_cwd()) / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     run_name = resolve_run_name(cfg)
-    ok(f"Resolved run name: {run_name}")
+    ok(f"Resolved run name: {run_name}", prefix="MODEL")
     base_ckpt_dir = Path(get_original_cwd()) / str(cfg.trainer.trainer.get("ckpt_dir", "checkpoints"))
     ckpt_dir = get_checkpoint_dir(base_ckpt_dir, run_name)
     profiler_dir = runs_dir / "profiler"
@@ -218,12 +175,12 @@ def main(cfg: DictConfig):
     # Dataset instantiation via Hydra
     # ─────────────────────────────────────────────────────────────────────────
     train_ds = instantiate(cfg.data.train_dataset, seed=seed)
-    ok(f"Train dataset instantiated: {len(train_ds)} samples")
+    ok(f"Train dataset instantiated: {len(train_ds)} samples", prefix="DATA")
 
     eval_ds = None
     if cfg.data.get("eval_dataset") is not None:
         eval_ds = instantiate(cfg.data.eval_dataset, seed=seed)
-        ok(f"Eval dataset instantiated: {len(eval_ds)} samples")
+        ok(f"Eval dataset instantiated: {len(eval_ds)} samples", prefix="DATA")
 
     # ─────────────────────────────────────────────────────────────────────────
     # DataLoader construction
@@ -259,14 +216,12 @@ def main(cfg: DictConfig):
             prefetch_factor=int(dl_eval_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
             collate_fn=collate_stft,
         )
-    ok("DataLoaders created")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Model instantiation via Hydra
     # ─────────────────────────────────────────────────────────────────────────
     model_cfg = OmegaConf.to_container(cfg.model.model, resolve=True)
     autoencoder = AutoEncoder.from_config(model_cfg)
-    ok("AutoEncoder instantiated via Hydra")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Channel configuration (from data config - must be set manually)
@@ -311,7 +266,6 @@ def main(cfg: DictConfig):
         pre_transform_spec=pre_transform_spec,
         accumulate_grad_batches=int(trainer_cfg.trainer.get("accumulate_grad_batches", 1)),
     )
-    ok("Training wrapper created")
 
     # Provide eval STFT params to engine for validation phase
     if eval_ds is not None:
@@ -346,7 +300,7 @@ def main(cfg: DictConfig):
                 conf_root = Path(get_original_cwd()) / "conf"
                 WandbConfigLogger(conf_root, use_artifact=True, log_text=False).log_to_wandb(run)
             except Exception as e:
-                warn(f"Upload dir conf on W&B failed ({type(e).__name__}: {e})")
+                warn(f"Upload dir conf on W&B failed ({type(e).__name__}: {e})", prefix="TRAINER")
         else:
             # Evita l'inizializzazione di run W&B sugli altri rank, ma mantieni un logger compatibile
             logger = TensorBoardLogger(save_dir=str(runs_dir), name="lightning_logs", version=None)
@@ -373,9 +327,9 @@ def main(cfg: DictConfig):
             auto_insert_metric_name=False,
         ),
         LearningRateMonitor(logging_interval="step"),
-        ModelSummary(max_depth=2),
+        TableOnlyModelSummary(max_depth=2),
         TQDMProgressBar(refresh_rate=1),
-        DatasetEpochSetter(train_ds),
+        DatasetEpochSetter(),
     ]
 
     # Validation demo callback
@@ -420,7 +374,7 @@ def main(cfg: DictConfig):
     except Exception:
         has_complex_params = False
     if is_bf16 and has_complex_params:
-        warn("bf16 + complex detected: convolutions will use torch.complex64 (complex-bfloat16 not supported).")
+        warn("bf16 + complex detected: convolutions will use torch.complex64 (complex-bfloat16 not supported).", prefix="TRAINER")
 
     # ─────────────────────────────────────────────────────────────────────────
     # PyTorch Lightning Trainer
@@ -437,7 +391,6 @@ def main(cfg: DictConfig):
         precision=requested_precision,
         logger=logger,
         callbacks=callbacks,
-        enable_model_summary=True,
         log_every_n_steps=int(pl_trainer_cfg.get("log_interval", 1)),
         num_sanity_val_steps=int(pl_trainer_cfg.get("num_sanity_val_steps", 0)),
         gradient_clip_val=float(pl_trainer_cfg.get("gradient_clip_val", 0.0)),
@@ -448,25 +401,39 @@ def main(cfg: DictConfig):
         limit_train_batches=pl_trainer_cfg.get("limit_train_batches", 1.0),
         limit_val_batches=pl_trainer_cfg.get("limit_val_batches", 1.0),
         deterministic=deterministic_flag,
+        enable_model_summary=False,
     )
 
-    ok("Starting training...")
+    ok(f"{req_accelerator}", prefix="DEVICE")
     try:
         trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl)
+    except KeyboardInterrupt:
+        warn("Training interrupted by user (Ctrl+C). Exiting gracefully...", prefix="TRAINER")
+        import os
+        os._exit(0)
     except RuntimeError as e:
         if "out of memory" in str(e).lower() or "not enough memory" in str(e).lower():
-            err("\n" + "="*80)
-            err("🚨 OUT OF MEMORY ERROR DETECTED 🚨")
-            err("="*80)
-            err(f"Error details: {e}")
-            err("\nTo fix this, you can:")
-            err("1. Decrease batch size (e.g., `data.train_dataloader.batch_size=8` instead of 32)")
-            err("2. Decrease model size (e.g., lower `block_out_channels` in `conf/model/hf_autoencoder_kl.yaml`)")
-            err("3. Use a smaller dataset or shorter audio segments")
-            err("4. Disable profilers or decrease `accumulate_grad_batches`")
-            err("="*80 + "\n")
+            err("="*80, prefix="TRAINER")
+            err("🚨 OUT OF MEMORY ERROR DETECTED 🚨", prefix="TRAINER")
+            err("="*80, prefix="TRAINER")
+            err(f"Error details: {e}", prefix="TRAINER")
+            err("To fix this, you can:", prefix="TRAINER")
+            err("1. Decrease batch size (e.g., `data.train_dataloader.batch_size=8` instead of 32)", prefix="TRAINER")
+            err("2. Decrease model size (e.g., lower `block_out_channels` in `conf/model/hf_autoencoder_kl.yaml`)", prefix="TRAINER")
+            err("3. Use a smaller dataset or shorter audio segments", prefix="TRAINER")
+            err("4. Disable profilers or decrease `accumulate_grad_batches`", prefix="TRAINER")
+            err("="*80 + "\n", prefix="TRAINER")
+        elif "is killed by signal: interrupt" in str(e).lower():
+            warn("Training interrupted by user (Ctrl+C). Force exiting.", prefix="TRAINER")
+            import os
+            os._exit(0)
         else:
             raise e
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        warn("Script terminated by user (Ctrl+C). Exiting gracefully.", prefix="TRAINER")
+        import os
+        os._exit(0)

@@ -1,0 +1,53 @@
+# Model configuration - Hydra instantiate API
+# Use _target_ for automatic instantiation via hydra.utils.instantiate
+
+model:
+  autoencoder:
+    return_latent: false
+    # Spectrogram normalization applied at encoder input and inverted at decoder output
+    pre_transform:
+      type: none     # none | log_mag | power_norm
+      apply_target: true
+      apply_inverse: true
+      config:
+        eps: 1.0e-8
+        alpha: 0.65
+        beta: 0.35
+
+  encoder:
+    _target_: ar_spectra.models.implementations.simple_transformer_AE.SimpleTransformerEncoder
+    # input_size MUST match data.model_channels (stereo=2, stereo+cac=4, mono=1, mono+cac=2)
+    # NOTE: when is_complex is True, 4 real channels become 2 complex channels!
+    input_size: 2
+    dim: 4
+    depth: 4
+    n_heads: 8
+    dropout_rate: 0.05
+    patch_size: [16, 16]
+    image_size: [1025, 128]      # spectrogram shape (F = n_fft//2 + 1, T = target_frames)
+    inter_dim: 64
+    mlp_ch_mult: 4
+    use_pos_enc: true
+    downsample_ratio: 1
+    is_complex: true
+
+  decoder:
+    _target_: ar_spectra.models.implementations.simple_transformer_AE.SimpleTransformerDecoder
+    # channels MUST match data.model_channels
+    # NOTE: when is_complex is True, 4 real channels become 2 complex channels!
+    channels: 2
+    dim: 4
+    depth: 4
+    n_heads: 8
+    dropout_rate: 0.05
+    patch_size: [16, 16]
+    inter_dim: 64
+    mlp_ch_mult: 4
+    image_size: [1025, 128]      # output shape (F = n_fft//2 + 1, T = target_frames)
+    use_pos_enc: true
+    downsample_ratio: 1
+    is_complex: true
+
+  bottleneck:
+    _target_: ar_spectra.models.bottlenecks.VAEBottleneck
+    skip_bottleneck: true

@@ -872,7 +872,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/62/59/e47bbd0542d0e6f4c
 [[package]]
 name = "eulero-backbone"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "cdpam" },
     { name = "complexpytorch" },
