@@ -3,18 +3,21 @@ import os
 import sys
 import argparse
 from pathlib import Path
-
-# Add project root to path so we can import ar_spectra
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import csv
 import torch
 import torchaudio
 from tqdm import tqdm
 from torchmetrics.audio.sdr import SignalDistortionRatio as SISDRMetric
 
-from ar_spectra.training_utils.losses.auraloss import STFTLoss
-from ar_spectra.training_utils.reproducibility import configure_reproducibility
+# Add project root to path so we can import ar_spectra and config
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from config import DATA_PATH, RUNS_DIR, DEFAULT_DEVICE
+from ar_spectra.utils.console import ok, warn, err, info
+from ar_spectra.training.losses.auraloss import STFTLoss
+
+_SKIP_DIRS = frozenset({"metrics", "convert", "embeddings"})
+from ar_spectra.utils.reproducibility import configure_reproducibility
 
 configure_reproducibility(seed=42, deterministic=False, strict_deterministic=False)
 
@@ -179,6 +182,8 @@ def match_pairs(target_dir, preds_dir, allowed_ext=None):
             ext = f.suffix.lower().lstrip(".")
             if allowed_ext and ext not in allowed_ext:
                 continue
+            if _SKIP_DIRS.intersection(f.relative_to(target_dir).parts[:-1]):
+                continue
             target_map.setdefault(stem, []).append(f)
 
     pairs = []
@@ -188,20 +193,26 @@ def match_pairs(target_dir, preds_dir, allowed_ext=None):
             ext = g.suffix.lower().lstrip(".")
             if allowed_ext and ext not in allowed_ext:
                 continue
+            if _SKIP_DIRS.intersection(g.relative_to(preds_dir).parts[:-1]):
+                continue
             if stem in target_map:
                 pairs.append((target_map[stem][0], g))
     return pairs
 
 def main():
     parser = argparse.ArgumentParser(description="Compare SI-SDR and STFTLoss between two directories (predictions vs. targets).")
-    parser.add_argument("--target-dir", type=str, default="/Users/francesco/Desktop/fma_small")
-    parser.add_argument("--preds-dir", default="/home/cerovaz/repos/ICML/Eulero_BackBone/runs/inference/all_losses_cplx_24.")
+    parser.add_argument("--target-dir", type=str, default=str(DATA_PATH))
+    parser.add_argument("--preds-dir", default=str(RUNS_DIR / "inference"))
     parser.add_argument("--extensions", type=str, default="")
     parser.add_argument("--csv_out", type=str, default="")
     args = parser.parse_args()
 
-    # Select computation device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Select computation device (honours config.DEFAULT_DEVICE: mps / cuda / cpu)
+    device = torch.device(DEFAULT_DEVICE)
+    # MPS does not support float64; fall back to float32 on MPS, keep float64 elsewhere
+    compute_dtype = torch.float32 if device.type == "mps" else torch.float64
+    # torchmetrics SISDRMetric calls .double() internally — run it on CPU for MPS
+    sisdr_device = torch.device("cpu") if device.type == "mps" else device
 
     allowed_ext = None
     if args.extensions.strip():
@@ -209,26 +220,27 @@ def main():
 
     pairs = match_pairs(args.target_dir, args.preds_dir, allowed_ext=allowed_ext)
     if not pairs:
-        print("Nessuna coppia trovata.")
+        warn("Nessuna coppia trovata.")
         return
 
-    sisdr_metric = SISDRMetric().to(device)
+    sisdr_metric = SISDRMetric().to(sisdr_device)
     stft_cache = {}
-    si_sdr_sum = torch.zeros((), device=device)
-    stft_sum = torch.zeros((), device=device)
+    si_sdr_sum = torch.zeros((), device=device, dtype=compute_dtype)
+    stft_sum = torch.zeros((), device=device, dtype=compute_dtype)
     count = 0
     per_file = []
 
     pbar = tqdm(pairs, desc="Calcolo metriche", unit="pair")
 
-    for tpath, ppath in pbar:
+    try:
+     for tpath, ppath in pbar:
         try:
             wav_target, sr_target = load_audio_tensor(str(tpath))
             wav_pred, sr_pred = load_audio_tensor(str(ppath))
 
             # Resample target to match prediction sample rate if needed
             if sr_target != sr_pred:
-                print(f"[WARN] Sample rate mismatch for {tpath.name}: target={sr_target} vs pred={sr_pred}, resampling target.")
+                warn(f"Sample rate mismatch for {tpath.name}: target={sr_target} vs pred={sr_pred}, resampling target.")
                 wav_target = torchaudio.transforms.Resample(sr_target, sr_pred)(wav_target)
                 sr_target = sr_pred
 
@@ -236,14 +248,14 @@ def main():
             ch_target = wav_target.shape[1]
             ch_pred = wav_pred.shape[1]
             if ch_target < ch_pred:
-                print(f"[WARN] Channel mismatch for {tpath.name}: target={ch_target}ch vs pred={ch_pred}ch, duplicating target to {ch_pred}ch.")
+                warn(f"Channel mismatch for {tpath.name}: target={ch_target}ch vs pred={ch_pred}ch, duplicating target to {ch_pred}ch.")
                 wav_target = wav_target.repeat(1, ch_pred, 1)
             elif ch_target > ch_pred:
-                print(f"[WARN] Channel mismatch for {tpath.name}: target={ch_target}ch vs pred={ch_pred}ch, mixing down target to {ch_pred}ch.")
+                warn(f"Channel mismatch for {tpath.name}: target={ch_target}ch vs pred={ch_pred}ch, mixing down target to {ch_pred}ch.")
                 wav_target = wav_target.mean(dim=1, keepdim=True)
 
-            wav_target = wav_target.to(device)
-            wav_pred   = wav_pred.to(device)
+            wav_target = wav_target.to(device=device, dtype=compute_dtype)
+            wav_pred   = wav_pred.to(device=device, dtype=compute_dtype)
             
             # 1) Coarsely crop to the shortest common length
             wav_target, wav_pred = crop_to_min_length(wav_target, wav_pred)
@@ -264,7 +276,7 @@ def main():
                     w_log_mag=1.0,
                     sample_rate=sr_target,
                     reduction="mean",
-                ).to(device)
+                ).to(device=device, dtype=compute_dtype)
             stft_loss_fn = stft_cache[sr_target]
 
             with torch.no_grad():
@@ -272,11 +284,14 @@ def main():
                 if stft_value.ndim != 0:
                     stft_value = stft_value.flatten().mean()
                 sisdr_metric.reset()
-                si_sdr_value = sisdr_metric(wav_pred, wav_target)
+                si_sdr_value = sisdr_metric(
+                    wav_pred.to(sisdr_device),
+                    wav_target.to(sisdr_device),
+                ).to(device)
                 if si_sdr_value.ndim != 0:
                     si_sdr_value = si_sdr_value.flatten().mean()
         except Exception as e:
-            print(f"Errore su coppia {tpath.name}/{ppath.name}: {e}")
+            err(f"Errore su coppia {tpath.name}/{ppath.name}: {e}")
             continue
 
 
@@ -298,15 +313,18 @@ def main():
             "stft_loss": stft_value.item(),
             "si_sdr": si_sdr_value.item(),
         })
+    except KeyboardInterrupt:
+        pbar.close()
+        warn("[Interrupted] Printing partial results...")
 
     if count == 0:
-        print("Nessun punteggio calcolato.")
+        warn("Nessun punteggio calcolato.")
         return
 
     final_stft = (stft_sum / count).item()
     final_si_sdr = (si_sdr_sum / count).item()
-    print(f"\nSTFTLoss media: {final_stft:.6f} su {count} coppie.")
-    print(f"SI-SDR medio: {final_si_sdr:.6f} su {count} coppie.")
+    ok(f"STFTLoss media: {final_stft:.6f} su {count} coppie.")
+    ok(f"SI-SDR medio: {final_si_sdr:.6f} su {count} coppie.")
 
     if args.csv_out:
         out_path = Path(args.csv_out)
@@ -318,7 +336,7 @@ def main():
             )
             writer.writeheader()
             writer.writerows(per_file)
-        print(f"Salvato CSV: {out_path}")
+        info(f"Salvato CSV: {out_path}")
 
 if __name__ == "__main__":
     main()
