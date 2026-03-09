@@ -1,0 +1,17 @@
+# Top-level Hydra composition file
+# You can override any group from CLI, e.g.:
+#   python train.py trainer.epochs=10 data.train_dataloader.batch_size=4
+# Legacy fallback: set trainer.use_json=true trainer.json_path=ar_spectra/config/experiments/SEANet_STFT.json
+
+defaults:
+  - data: data
+  - model: hf_autoencoder_kl
+  # - model: seanet_real_model
+  # - model: simple_transformer_AE
+  - trainer: trainer
+  - _self_
+
+hydra:
+  run:
+    dir: runs                               # only 'runs' directory
+  output_subdir: null                       # no subdir added
