@@ -8,11 +8,13 @@ from matplotlib.figure import Figure
 import numpy as np
 from PIL import Image
 import torch
-
 import torchaudio.transforms as T
 from einops import rearrange
+from umap import UMAP
+import plotly.graph_objects as go
+from wandb import Object3D
+from matplotlib import pyplot as plt
 
-import numpy as np
 
 def _to_real_features(tokens: torch.Tensor) -> torch.Tensor:
     """
@@ -50,7 +52,6 @@ def project_down(tokens,     # batched high-dimensional data with dims (b,d,n)
     A = A.float()
     if A.shape[-1] > proj_dims: 
         if method=='umap':
-            from umap import UMAP # type: ignore
             proj_data = UMAP(n_components=proj_dims, n_neighbors=n_neighbors, min_dist=min_dist,
                             metric='correlation', **kwargs).fit_transform(A.cpu().numpy())
             proj_data = torch.from_numpy(proj_data).to(tokens.device)
@@ -129,9 +130,8 @@ def point_cloud(
         
     if output_type == 'points':
         return point_cloud
+        
     elif output_type =='plotly':
-        import plotly.graph_objects as go
-
         fig = go.Figure(data=[go.Scatter3d(
             x=point_cloud[::ds_preplot,0], y=point_cloud[::ds_preplot,1], z=point_cloud[::ds_preplot,2], 
             marker=dict(size=size,  color=point_cloud[:,3:6]),
@@ -151,7 +151,6 @@ def point_cloud(
         if debug: print("point_cloud: fig made. returning")
         return fig
     else:
-        from wandb import Object3D
         return Object3D(point_cloud)
     
 def pca_point_cloud(
@@ -237,7 +236,6 @@ def spectrogram_image(
     if xmax:
         axs.set_xlim((0, xmax))
     if justimage:
-        import matplotlib.pyplot as plt 
         axs.axis('off')
         plt.tight_layout()
     else: 

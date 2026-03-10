@@ -6,13 +6,7 @@ import torch.nn as nn
 from typing import Optional, Literal, Dict, Any, Tuple
 
 from ..models.autoencoder import AutoEncoder
-from ..models.discriminators import EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, BigVGANDiscriminator
-from ..models.bottlenecks import VAEBottleneck
-from .losses.base import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss
-from .losses.perceptual import MelSpectrogramLoss, HubertLoss
-from .losses import signal
-from .losses.spectral import (MultiResSpectralConvergence, ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance)
-from ar_spectra.utils.console import ok, warn, err, info
+from ar_spectra.utils.console import warn, err
 from ar_spectra.utils.audio import trim_to_shortest
 from ar_spectra.utils.tensors import align_freq_bins, align_time_frames
 
@@ -30,7 +24,6 @@ class AutoencoderEngine(nn.Module):
                  sample_rate: int = 48000,
                  loss_config: Optional[dict] = None,
                  eval_loss_config: Optional[dict] = None,
-                 optimizer_configs: Optional[dict] = None,
                  warmup_steps: int = 0,
                  warmup_mode: Literal["adv", "full"] = "adv",
                  encoder_freeze_on_warmup: bool = False,
@@ -63,15 +56,6 @@ class AutoencoderEngine(nn.Module):
         self.encoder_freeze_on_warmup = encoder_freeze_on_warmup
         self.force_input_mono = force_input_mono
         self.latent_mask_ratio = latent_mask_ratio
-
-        # optimizer configs per adapters
-        if optimizer_configs is None:
-            optimizer_configs = {
-                "autoencoder": {"optimizer": {"type": "AdamW", "config": {"lr": 2e-4, "betas": (0.8, 0.99)}}},
-                "discriminator": {"optimizer": {"type": "AdamW", "config": {"lr": 2e-4, "betas": (0.8, 0.99)}}},
-            }
-        # NOTE: DEPRECATED, mantenuto per retrocompatibilità
-        self.optimizer_configs = optimizer_configs 
 
         # Numero di canali del segnale audio (mono/stereo)
         if audio_channels is None:

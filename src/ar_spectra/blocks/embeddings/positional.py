@@ -235,45 +235,6 @@ class LearnableFourierPosEnc(torch.nn.Module):
         x = x * self.xscale + pe
         return self.dropout(x)
 
-class LegacyRelPositionalEncoding(PositionalEncoding):
-    """Relative positional encoding module (old version).
-
-    Details can be found in https://github.com/espnet/espnet/pull/2816.
-
-    See : Appendix B in https://arxiv.org/abs/1901.02860
-
-    Args:
-        d_model (int): Embedding dimension.
-        dropout_rate (float): Dropout rate.
-        max_len (int): Maximum input length.
-
-    """
-
-    def __init__(self, d_model, dropout_rate, max_len=5000):
-        """Initialize class."""
-        super().__init__(
-            d_model=d_model,
-            dropout_rate=dropout_rate,
-            max_len=max_len,
-            reverse=True,
-        )
-
-    def forward(self, x):
-        """Compute positional encoding.
-
-        Args:
-            x (torch.Tensor): Input tensor (batch, time, `*`).
-
-        Returns:
-            torch.Tensor: Encoded tensor (batch, time, `*`).
-            torch.Tensor: Positional embedding tensor (1, time, `*`).
-
-        """
-        self.extend_pe(x)
-        x = x * self.xscale
-        pos_emb = self.pe[:, : x.size(1)]
-        return self.dropout(x), self.dropout(pos_emb)
-
 class RelPositionalEncoding(torch.nn.Module):
     """Relative positional encoding module (new implementation).
 
@@ -399,27 +360,3 @@ class StreamPositionalEncoding(torch.nn.Module):
         self.extend_pe(x.size(1) + start_idx, x.device, x.dtype)
         x = x * self.xscale + self.pe[:, start_idx : start_idx + x.size(1)]
         return self.dropout(x)
-
-class SinusoidalPositionEncoder(torch.nn.Module):
-    '''
-
-    '''
-    def __init__(self, d_model=80, dropout_rate=0.1):
-        pass
-
-    def encode(self, positions: torch.Tensor = None, depth: int = None, dtype: torch.dtype = torch.float32):
-        batch_size = positions.size(0)
-        positions = positions.type(dtype)
-        log_timescale_increment = torch.log(torch.tensor([10000], dtype=dtype)) / (depth / 2 - 1)
-        inv_timescales = torch.exp(torch.arange(depth / 2).type(dtype) * (-log_timescale_increment))
-        inv_timescales = torch.reshape(inv_timescales, [batch_size, -1])
-        scaled_time = torch.reshape(positions, [1, -1, 1]) * torch.reshape(inv_timescales, [1, 1, -1])
-        encoding = torch.cat([torch.sin(scaled_time), torch.cos(scaled_time)], dim=2)
-        return encoding.type(dtype)
-
-    def forward(self, x):
-        batch_size, timesteps, input_dim = x.size()
-        positions = torch.arange(1, timesteps+1)[None, :]
-        position_encoding = self.encode(positions, input_dim, x.dtype).to(x.device)
-
-        return x + position_encoding

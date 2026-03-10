@@ -9,7 +9,7 @@ import torch.nn as nn
 from diffusers.models.autoencoders.autoencoder_kl import Decoder as HFDecoderKL
 from diffusers.models.autoencoders.autoencoder_kl import Encoder as HFEncoderKL
 
-from ar_spectra.models.implementations.abstract_ae import AbastractDecoder, AbstractEncoder
+from ar_spectra.models.implementations.abstract_ae import AbstractDecoder, AbstractEncoder
 
 
 class HFAutoencoderKLEncoder(AbstractEncoder):
@@ -70,7 +70,7 @@ class HFAutoencoderKLEncoder(AbstractEncoder):
         return torch.cat([mean, logvar], dim=1), info
 
 
-class HFAutoencoderKLDecoder(AbastractDecoder):
+class HFAutoencoderKLDecoder(AbstractDecoder):
     """Decoder companion for :class:`HFAutoencoderKLEncoder`.
 
     Expects sampled latents with ``latent_channels`` channels. The usual SD

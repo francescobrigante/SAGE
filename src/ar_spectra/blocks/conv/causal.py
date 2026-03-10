@@ -1,24 +1,9 @@
-from .normed import NormConv1d, NormConv2d, NormConvTranspose1d, NormConvTranspose2d, get_extra_padding_for_conv1d, pad1d, pad2d, unpad1d, unpad2d
-import torch
-
 import math
-
 import typing as tp
-
 import warnings
-
 from torch import nn
 
-from torch.nn import functional as F
-
-from torch.nn.utils import spectral_norm
-
-from torch.nn.utils.parametrizations import weight_norm
-
-import complextorch.nn as cplx
-
-from ..normalization import (ConvLayerNorm, ComplexWeightNorm, ComplexConvLayerNorm2d, 
-                   ComplexConvLayerNorm1d, ComplexGroupNorm, ComplexBatchNorm2d, ComplexBatchNorm1d)
+from .normed import NormConv1d, NormConv2d, NormConvTranspose1d, NormConvTranspose2d, get_extra_padding_for_conv1d, pad1d, pad2d, unpad1d, unpad2d
 
 class SConv1d(nn.Module):
     """Conv1d with some builtin handling of asymmetric or causal padding
@@ -41,7 +26,6 @@ class SConv1d(nn.Module):
         self.pad_mode = pad_mode
 
     def forward(self, x):
-        #print("inputSConv1d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         B, C, T = x.shape
         kernel_size = self.conv.conv.kernel_size[0]
         stride = self.conv.conv.stride[0]
@@ -57,7 +41,6 @@ class SConv1d(nn.Module):
             padding_left = padding_total - padding_right
             x = pad1d(x, (padding_left, padding_right + extra_padding), mode=self.pad_mode)
         x = self.conv(x)
-        #print("outputSConv1d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         return x
 
 class SConvTranspose1d(nn.Module):
@@ -78,7 +61,6 @@ class SConvTranspose1d(nn.Module):
         assert self.trim_right_ratio >= 0. and self.trim_right_ratio <= 1.
 
     def forward(self, x):
-        #print("inputSConvTranspose1d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         kernel_size = self.convtr.convtr.kernel_size[0]
         stride = self.convtr.convtr.stride[0]
         padding_total = kernel_size - stride
@@ -100,7 +82,6 @@ class SConvTranspose1d(nn.Module):
             padding_right = padding_total // 2
             padding_left = padding_total - padding_right
             y = unpad1d(y, (padding_left, padding_right))
-        #print("outputSConvTranspose1d:", y.shape, torch.sum(y), torch.sum(torch.abs(y)))
         return y
 
 def tuple_it(x, num=2):
@@ -171,7 +152,6 @@ class SConv2d(nn.Module):
             time_before = padding_total_list[1] - time_after + extra_padding_list[1]
             x = pad2d(x, ((time_before, time_after), (freq_before, freq_after)), mode=self.pad_mode)
         x = self.conv(x)
-        #print("outputSConv1d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         return x
 
 class SConvTranspose2d(nn.Module):
@@ -201,7 +181,6 @@ class SConvTranspose2d(nn.Module):
         assert self.trim_right_ratio >= 0. and self.trim_right_ratio <= 1.
 
     def forward(self, x):
-        #print("inputSConvTranspose1d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         kernel_size = self.convtr.convtr.kernel_size[0]
         stride = self.convtr.convtr.stride[0]
         padding_freq_total = kernel_size - stride
@@ -239,5 +218,4 @@ class SConvTranspose2d(nn.Module):
                 (max(padding_time_left - time_out_pad_left, 0), max(padding_time_right - time_out_pad_right, 0)),
                 (max(padding_freq_left - freq_out_pad_left, 0), max(padding_freq_right - freq_out_pad_right, 0))
             ))
-        #print("outputSConvTranspose1d:", y.shape, torch.sum(y), torch.sum(torch.abs(y)))
         return y

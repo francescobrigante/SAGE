@@ -1,6 +1,11 @@
 [project]
-name = "eulero-backbone"
+name = "C-VAE
 version = "0.1.0"
+description = "end-to-end C-VAE for Audio generation"
+authors = [
+    { name = "Francesco Brigante", email = "francescobrigantefb@gmail.com" }
+]
+license = { text = "TBD" }
 requires-python = ">=3.10"
 dependencies = [
     "descript-audio-codec>=1.0.0",
@@ -29,6 +34,9 @@ dependencies = [
     "diffusers>=0.36.0",
     "nvitop>=1.6.2; sys_platform == 'linux'",
     "huggingface-hub<1.0",
+    "umap-learn>=0.5.5",
+    "matplotlib>=3.8.0",
+    "python-dotenv>=1.0.1",
 ]
 
 [tool.uv.sources]

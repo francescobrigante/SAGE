@@ -5,21 +5,19 @@ import torch
 from torch.nn import Module, ModuleList
 import torch.nn as nn
 from typing import Sequence, Tuple, Union, Dict
+import typing as tp
+
 from ar_spectra.blocks.attention.complex import CMultiHeadedAttention
 from ar_spectra.blocks.attention.standard import MultiHeadedAttention, RelPositionMultiHeadedAttention
-from ar_spectra.blocks.conv import (
-    NormConv2d, NormConvTranspose2d,
-    SConv2d, SConvTranspose2d,
-)
+from ar_spectra.blocks.conv import SConv2d, SConvTranspose2d
 from ar_spectra.blocks.complex_patch_merging import ConvPatchDownsampleComplex, ConvPatchUpsampleComplex
-import typing as tp
-from ar_spectra.blocks.embeddings import ComplexPositionalEncoding, ComplexScaledPositionalEncoding
-from ar_spectra.blocks.normalization import ComplexLayerNorm, ComplexBatchNorm1d
+from ar_spectra.blocks.embeddings import ComplexScaledPositionalEncoding
+from ar_spectra.blocks.normalization import ComplexLayerNorm
 from ar_spectra.blocks.activations import get_activation
-from ar_spectra.models.implementations.abstract_ae import AbstractEncoder, AbastractDecoder
+from ar_spectra.models.implementations.abstract_ae import AbstractEncoder, AbstractDecoder
 from ar_spectra.models.implementations.SeaNET_AE import SEANetResnetBlock2d
 from ar_spectra.blocks.layers import CLinear
-from ar_spectra.utils.console import ok, warn, err
+from ar_spectra.utils.console import ok
 
 def pair(t):
     if isinstance(t, Sequence) and not isinstance(t, (str, bytes)):
@@ -488,7 +486,7 @@ class SimpleTransformerEncoder(AbstractEncoder):
         return x, latent_info
 
 
-class SimpleTransformerDecoder(AbastractDecoder):
+class SimpleTransformerDecoder(AbstractDecoder):
     """Vision Transformer-style decoder for complex-valued spectrogram reconstruction.
 
     Parameters

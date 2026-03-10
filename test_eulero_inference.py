@@ -4,7 +4,7 @@ from pathlib import Path
 import torch
 import torchaudio
 
-from ar_spectra.models.eulero_inference import EuleroEncodeDecode
+from ar_spectra.models.inference import EuleroEncodeDecode
 from ar_spectra.utils.console import ok, warn, err, info
 from config import CHECKPOINT_DIR, DEFAULT_MODEL_CHECKPOINT, DATA_PATH, DEFAULT_DEVICE
 

@@ -23,12 +23,7 @@ from pathlib import Path
 from functools import lru_cache
 from typing import Optional, List
 
-# Replaced hardcoded path with the config path. If the root config is unavailable, default is used.
-try:
-    from config import FMA_METADATA
-    DEFAULT_METADATA_PATH = str(FMA_METADATA)
-except ImportError:
-    DEFAULT_METADATA_PATH = "/Users/francesco/Desktop/fma_metadata/tracks.csv"
+from config import FMA_METADATA
 
 @lru_cache(maxsize=1)
 def _load_tracks_df(csv_path: str):
@@ -60,7 +55,7 @@ def get_audio_files(
     Returns:
         List of absolute file paths
     """
-    csv_path = metadata_csv or DEFAULT_METADATA_PATH
+    csv_path = metadata_csv or FMA_METADATA
     df = _load_tracks_df(csv_path)
     
     # Filter by split

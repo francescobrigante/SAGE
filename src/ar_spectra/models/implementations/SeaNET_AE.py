@@ -12,6 +12,7 @@ from ar_spectra.blocks.conv import SConv1d, SConv2d
 from ar_spectra.blocks.conv import SConvTranspose2d
 from ar_spectra.blocks.rnn import SLSTM
 from ar_spectra.blocks.activations import get_activation
+from ar_spectra.blocks.transformer import TransformerEncoder
 
 
 # Frequency packing and unpacking modules (UNORIGINAL CLASSES)  
@@ -86,7 +87,6 @@ class SEANetResnetBlock2d(nn.Module):
                                     groups=dim // 2 // conv_group_ratio if conv_group_ratio > 0 else 1, is_complex=is_complex)
 
     def forward(self, x):
-        #print("x shape in SEANetResnetBlock2d:", x.shape)
         return self.shortcut(x) + self.block(x) # This is simply the sum of two tensors of the same size
 
 
@@ -96,7 +96,6 @@ class ReshapeModule(nn.Module):
         self.dim = dim
 
     def forward(self, x):
-        #print(f"ReshapeModule input shape: {x.shape}")
         # If there are extra spatial dimensions (encoder path), collapse all dimensions
         # starting from `dim` into a single time axis: (B, C, H, W, ...) -> (B, C, T)
         if x.dim() > 3:
@@ -104,7 +103,6 @@ class ReshapeModule(nn.Module):
         # If the input is already 3D (decoder path), add a frequency axis: (B, C, T) -> (B, C, 1, T)
         if x.dim() == 3:
             return torch.unsqueeze(x, dim=self.dim)
-        #print(f"We reshaped it into {x.shape}")
         return x
 
 # Only channels, norm, causal are different between 24HZ & 48HZ, everything else is default parameter
@@ -198,7 +196,6 @@ class SEANetEncoder2d(nn.Module):
                 if seq_model == 'lstm':
                     model += [SLSTM(mult * n_filters * latent_fbins, num_layers=seq_layer_num, skip=res_seq)]
                 elif seq_model == "transformer":
-                    from ar_spectra.blocks.transformer import TransformerEncoder
                     model += [TransformerEncoder(
                         mult * n_filters * latent_fbins,
                         output_size=mult * n_filters * latent_fbins,
@@ -238,7 +235,6 @@ class SEANetEncoder2d(nn.Module):
             if seq_model == 'lstm':
                 model += [SLSTM(dimension, num_layers=seq_layer_num, skip=res_seq)]
             elif seq_model == "transformer":
-                from ar_spectra.blocks.transformer import TransformerEncoder
                 model += [TransformerEncoder(
                     dimension,
                     output_size=dimension,
@@ -341,7 +337,6 @@ class SEANetDecoder2d(nn.Module):
             if seq_model == "lstm":
                 model += [SLSTM(input_size, num_layers=seq_layer_num, skip=res_seq)]
             elif seq_model == "transformer":
-                from ar_spectra.blocks.transformer import TransformerEncoder
                 model += [TransformerEncoder(
                     input_size,
                     output_size=input_size,
@@ -370,7 +365,6 @@ class SEANetDecoder2d(nn.Module):
                 if seq_model == "lstm":
                     model += [SLSTM(mult * n_filters * latent_fbins, num_layers=seq_layer_num, skip=res_seq)]
                 elif seq_model == "transformer":
-                    from ar_spectra.blocks.transformer import TransformerEncoder
                     model += [TransformerEncoder(
                         mult * n_filters * latent_fbins,
                         output_size=mult * n_filters * latent_fbins,

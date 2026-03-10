@@ -1,24 +1,23 @@
 # =============================================================================
 # Manages parsing, instantiating, and aggregating generic loss functions and discriminators.
 # =============================================================================
-import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional
+from typing import Optional
 
 from ..models.discriminators import EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, BigVGANDiscriminator
 from ..models.bottlenecks import VAEBottleneck
 from .losses.base import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss
 from .losses.perceptual import MelSpectrogramLoss, HubertLoss
 from .losses import signal
-from .losses.spectral import (MultiResSpectralConvergence, ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance)
-from ar_spectra.utils.console import ok, warn, err, info
+from .losses.spectral import MultiResSpectralConvergence, ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance
+from ar_spectra.utils.console import ok, warn
 
 def create_loss_modules_from_bottleneck(bottleneck, loss_config):
     losses = []
     if isinstance(bottleneck, VAEBottleneck):
         try:
             kl_weight = loss_config['bottleneck']['weights']['kl']
-        except:
+        except (KeyError, TypeError):
             kl_weight = 1e-6
 
         kl_loss = ValueLoss(key='kl', weight=kl_weight, name='kl_loss')
@@ -110,7 +109,6 @@ class LossManager(nn.Module):
                 configs_phase = phase_block.get("config", phase_block) or {}
                 self.phase_loss = PhaseCosineDistance(**configs_phase)
 
-        self.lrstft = None
         self.discriminator = None
         if self.use_disc:
             disc_type = self.loss_config['discriminator']['type']

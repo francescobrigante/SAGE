@@ -1,20 +1,10 @@
 import torch
-
 import math
-
 import typing as tp
-
-import warnings
-
 from torch import nn
-
 from torch.nn import functional as F
-
 from torch.nn.utils import spectral_norm
-
 from torch.nn.utils.parametrizations import weight_norm
-
-import complextorch.nn as cplx
 
 from ..normalization import (ConvLayerNorm, ComplexWeightNorm, ComplexConvLayerNorm2d, 
                    ComplexConvLayerNorm1d, ComplexGroupNorm, ComplexBatchNorm2d, ComplexBatchNorm1d)
@@ -65,7 +55,8 @@ def get_norm_module(module: nn.Module, causal: bool = False, norm: str = 'none',
             if isinstance(module, nn.Conv1d):
                 return ComplexBatchNorm1d(module.out_channels, **norm_kwargs)
             else:
-                return ComplexBatchNorm2d(module.out_channels, **norm_kwargs)
+                # return ComplexBatchNorm2d(module.out_channels, **norm_kwargs)
+                raise ValueError("Batch norm for complex weights is not implemented yet.")
         else:
             if isinstance(module, nn.Conv1d):
                 return nn.BatchNorm1d(module.out_channels, **norm_kwargs)
@@ -193,10 +184,8 @@ class NormLinear(nn.Module):
         self.norm_type = norm
 
     def forward(self, x):
-        #print("inputLinearLayer:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         x = self.linear(x)
         x = self.norm(x)
-        #print("outputLinearLayer:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         return x
 
 class NormConv1d(nn.Module):
@@ -217,14 +206,10 @@ class NormConv1d(nn.Module):
         self.norm_type = norm
 
     def forward(self, x):
-        #print("inputNormConv1d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)), "norm:", self.norm_type, "conv:", self.conv)
         x = self.conv(x)
-        #print("betweenNormConv1d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         if torch.isnan(torch.sum(x)).any():
-            print("got nan", x.shape, self.conv)
-            exit(0)
+            raise RuntimeError(f"NaN detected in NormConv1d forward pass. Layer: {self.conv}")
         x = self.norm(x)
-        #print("outputNormConv1d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         return x
 
 class NormConv2d(nn.Module):
@@ -243,10 +228,8 @@ class NormConv2d(nn.Module):
         self.norm_type = norm
 
     def forward(self, x):
-        #print("inputNormConv2d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         x = self.conv(x)
         x = self.norm(x)
-        #print("outputNormConv2d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         return x
 
 class NormConvTranspose1d(nn.Module):
@@ -265,10 +248,8 @@ class NormConvTranspose1d(nn.Module):
         self.norm_type = norm
 
     def forward(self, x):
-        #print("inputNormConvTranspose1d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         x = self.convtr(x)
         x = self.norm(x)
-        #print("outputNormConvTranspose1d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         return x
 
 class NormConvTranspose2d(nn.Module):
@@ -286,8 +267,6 @@ class NormConvTranspose2d(nn.Module):
         self.norm = get_norm_module(self.convtr, causal, norm, is_complex=is_complex, **norm_kwargs)
 
     def forward(self, x):
-        #print("inputNormConvTranspose2d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         x = self.convtr(x)
         x = self.norm(x)
-        #print("outputNormConvTranspose2d:", x.shape, torch.sum(x), torch.sum(torch.abs(x)))
         return x

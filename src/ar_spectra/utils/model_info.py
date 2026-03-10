@@ -4,7 +4,6 @@
 #   contains helpers to extract module details and parameter counts
 # ===================================================================
 
-import torch
 import torch.nn as nn
 
 def _nbytes(model: nn.Module) -> int:
@@ -40,7 +39,6 @@ def extract_model_config(model: nn.Module) -> dict:
         "model_bytes": tot_bytes,
         "num_parameters_total": int(total_params),
         "num_parameters_trainable": int(trainable_params),
-        "model_total_bytes": tot_bytes,
         "modules": modules[:512],  # limita la lunghezza per non esagerare nei log
         "repr": repr(model),
     }

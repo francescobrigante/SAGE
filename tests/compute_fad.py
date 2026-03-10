@@ -1,13 +1,12 @@
 import os
 import sys
 from pathlib import Path
+from argparse import ArgumentParser
 
 # Add project root to path so we can import ar_spectra and config
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import DATA_PATH, RUNS_DIR
-from argparse import ArgumentParser
-
 from ar_spectra.utils.console import ok, warn, err, info
 
 import numpy as np

@@ -1,12 +1,8 @@
 # =============================================================================
 # Structural bottlenecks for Autoencoders, supporting continuous (VAE) and passthrough (Skip) configurations.
 # =============================================================================
-import numpy as np
-import random 
 import torch
 from torch import nn
-from torch.nn import functional as F
-from einops import rearrange
 
 class Bottleneck(nn.Module):
     def __init__(self, is_discrete: bool = False):
@@ -83,7 +79,7 @@ class SkipBottleneck(Bottleneck):
 
             if self.target_channels % cx != 0:
                 raise AssertionError(
-                    f"SkipBottleneck: encoder channels={cx} must be uquals or multiple of "
+                    f"SkipBottleneck: encoder channels={cx} must be euqual or multiple of "
                     f"decoder target={self.target_channels} "
                     f"to bypass VAE."
                 )

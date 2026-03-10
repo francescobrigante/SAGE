@@ -3,18 +3,16 @@
 # EnCodec family discriminators (e.g., multi-resolution).
 # =============================================================================
 
-from .types import IndividualDiscriminatorOut
+from .types import IndividualDiscriminatorOut, get_hinge_losses
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 import typing as tp
-from typing import List, Tuple
-from functools import reduce
 from einops import rearrange
 from torch.utils.checkpoint import checkpoint
 import torchaudio
-from ...blocks.conv.normed import NormConv2d, get_2d_padding
+
+from ar_spectra.blocks.conv.normed import NormConv2d, get_2d_padding
 
 class DiscriminatorSTFT(nn.Module):
     """STFT sub-discriminator."""

@@ -8,9 +8,7 @@ from ar_spectra.blocks.normalization import LayerNorm
 from ar_spectra.blocks.conv import Conv1dLinear
 from ar_spectra.blocks.conv import MultiLayeredConv1d
 from ar_spectra.utils.tensors import make_pad_mask
-from ar_spectra.blocks.layers import (
-    PositionwiseFeedForward,  # noqa: H301
-)
+from ar_spectra.blocks.layers import PositionwiseFeedForward
 from ar_spectra.blocks.layers import repeat
 from ar_spectra.blocks.subsampling import Conv2dSubsampling
 from ar_spectra.blocks.subsampling import Conv2dSubsampling2

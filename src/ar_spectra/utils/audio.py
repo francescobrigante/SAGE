@@ -6,7 +6,9 @@
 
 import torch
 from einops import rearrange
+import torch.nn.functional as F
 from config import DEFAULT_SILENCE_THRESHOLD
+import torchaudio
 
 def trim_to_shortest(a: torch.Tensor, b: torch.Tensor):
     """Trim the longer of two tensors to the length of the shorter one."""
@@ -50,7 +52,6 @@ def load_waveform(path: str, target_sample_rate: int, expected_channels: int) ->
         channel_mismatched: True if original channels differed from expected_channels.
         sr_mismatched: True if original sample rate differed from target_sample_rate.
     """
-    import torchaudio
     wav, sr = torchaudio.load(str(path), normalize=True)
     wav = wav.to(torch.float32)
     
@@ -75,7 +76,6 @@ def random_crop_or_pad(wav: torch.Tensor, segment_samples: int, min_acceptable_l
     Randomly crops a segment of exactly `segment_samples` from the waveform.
     If the waveform is shorter but above `min_acceptable_len`, it pads it with silence (zeros) symmetrically.
     """
-    import torch.nn.functional as F
     cur_len = wav.shape[-1]
     
     if cur_len >= segment_samples:

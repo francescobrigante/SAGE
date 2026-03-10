@@ -20,7 +20,6 @@ class SLSTM(nn.Module):
         self.lstm = nn.LSTM(dimension, dimension, num_layers)
 
     def forward(self, x):
-        #print(f"lstm input shape: {x.shape}")
         x = x.permute(2, 0, 1)
         y, _ = self.lstm(x)
         if self.skip:

@@ -1,24 +1,20 @@
-"""Training script for audio autoencoders using Hydra configuration.
+# ==============================================
+# Train Entry Point
+# ==============================================
 
-All instantiation is done via hydra.utils.instantiate with _target_ configs.
-"""
-import json
 from pathlib import Path
+import sys
+import os
 from typing import Dict, List
-
-import torch
 import torch.profiler as torch_profiler
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer, seed_everything
-from pytorch_lightning.callbacks import (
-    ModelCheckpoint, LearningRateMonitor, ModelSummary, TQDMProgressBar
-)
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, TQDMProgressBar
 from pytorch_lightning.loggers import WandbLogger, TensorBoardLogger
 from pytorch_lightning.profilers import PyTorchProfiler
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from pytorch_lightning.utilities.model_summary import summarize
 from torch.utils.data import DataLoader
-
 import hydra
 from hydra.utils import get_original_cwd, instantiate
 from omegaconf import DictConfig, OmegaConf
@@ -31,10 +27,9 @@ from ar_spectra.models.autoencoder import AutoEncoder
 from ar_spectra.training.autoencoders import AutoencoderTrainingWrapper, AutoencoderValDemoCallback
 from ar_spectra.training.initialization import collate_stft
 from ar_spectra.utils.reproducibility import configure_reproducibility
-from ar_spectra.utils.model_info import extract_model_config
 from ar_spectra.utils.run_config import _is_rank0, get_checkpoint_dir, resolve_run_name
+from ar_spectra.utils.console import ok, warn, err
 
-from ar_spectra.utils.console import ok, warn, err, info
 import logging
 logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 
@@ -253,7 +248,6 @@ def main(cfg: DictConfig):
         model_channels=model_channels,
         loss_config=OmegaConf.to_container(trainer_cfg.get("loss_config", {}), resolve=True) or None,
         eval_loss_config=OmegaConf.to_container(trainer_cfg.get("eval_loss_config", {}), resolve=True) or None,
-        optimizer_configs=None,
         warmup_steps=int(trainer_cfg.trainer.get("warmup_steps", 0)),
         warmup_mode=str(trainer_cfg.trainer.get("warmup_mode", "adv")),
         encoder_freeze_on_warmup=bool(trainer_cfg.trainer.get("encoder_freeze_on_warmup", False)),
@@ -409,7 +403,6 @@ def main(cfg: DictConfig):
         trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl)
     except KeyboardInterrupt:
         warn("Training interrupted by user (Ctrl+C). Exiting gracefully...", prefix="TRAINER")
-        import os
         os._exit(0)
     except RuntimeError as e:
         if "out of memory" in str(e).lower() or "not enough memory" in str(e).lower():
@@ -425,7 +418,6 @@ def main(cfg: DictConfig):
             err("="*80 + "\n", prefix="TRAINER")
         elif "is killed by signal: interrupt" in str(e).lower():
             warn("Training interrupted by user (Ctrl+C). Force exiting.", prefix="TRAINER")
-            import os
             os._exit(0)
         else:
             raise e
@@ -435,5 +427,4 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         warn("Script terminated by user (Ctrl+C). Exiting gracefully.", prefix="TRAINER")
-        import os
-        os._exit(0)
+        sys.exit(0)
