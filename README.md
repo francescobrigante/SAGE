@@ -68,7 +68,7 @@ C-VAE/
     │   ├── models/                       # Model architectures
     │   │   ├── autoencoder.py            # AutoEncoder container: wires encoder + decoder + bottleneck
     │   │   ├── bottlenecks.py            # VAEBottleneck (KL reparametrization), SkipBottleneck (passthrough)
-    │   │   ├── eulero_inference.py       # Standalone inference wrapper for checkpoints
+    │   │   ├── inference.py              # Standalone inference wrapper for checkpoints
     │   │   ├── implementations/          # Concrete encoder/decoder implementations
     │   │   │   ├── abstract_ae.py        # AbstractAutoEncoder base class (interface contract)
     │   │   │   ├── SeaNET_AE.py          # SEANetEncoder2d / SEANetDecoder2d (real & complex)

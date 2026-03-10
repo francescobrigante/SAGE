@@ -8,11 +8,9 @@ import torch
 import torch.nn.functional as F
 from ar_spectra.blocks.embeddings import IdentityPositionalEncoding
 import logging
-from ar_spectra.blocks.conv import SConv1d, SConv2d
+from ar_spectra.blocks.conv import SConv1d
 from ar_spectra.blocks.conv import NormLinear
 from ar_spectra.blocks.activations import get_activation
-import math
-from .helpers import TooShortUttError, check_short_utt, sequence_mask
 
 
 class Conv1dSubsampling2(torch.nn.Module):

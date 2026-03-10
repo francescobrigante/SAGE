@@ -4,27 +4,19 @@ from __future__ import annotations
 # Generic wrapping structure for Autoencoders, handling wiring between encoder, decoder, and bottlenecks.
 # =============================================================================
 
-import importlib
-import json
+import math
 import warnings
+import json
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
-
+from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
-from hydra.utils import instantiate as hydra_instantiate
 
 from ar_spectra.models.bottlenecks import SkipBottleneck, VAEBottleneck
 from ar_spectra.training.pre_transform import resolve_pre_transform
-from ar_spectra.utils.console import ok, warn, err, info
-
-
-from ar_spectra.utils.model_factory import (
-    checkpoint, _locate_class, _instantiate_component,
-    _class_path, _canonicalize_module_spec,
-    load_config, build_from_json,
-)
+from ar_spectra.utils.console import warn, info
+from ar_spectra.utils.model_factory import _locate_class, _instantiate_component, _canonicalize_module_spec
 
 @dataclass
 class STFTConfig:
@@ -139,7 +131,8 @@ class AutoEncoder(nn.Module):
         try:
             self.configure_pre_transform(pre_transform)
             info(self.pre_transform_description(), prefix="PRE-TRANSFORM")
-        except Exception:
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            warn(f"Failed to configure pre_transform ({type(exc).__name__}: {exc}); disabling.", prefix="PRE-TRANSFORM")
             self.pre_transform = None
             self._pre_transform_apply_encoder = True
             self._pre_transform_apply_inverse = True
@@ -609,7 +602,6 @@ class AutoEncoder(nn.Module):
         step = chunk_size - overlap_size
         if step <= 0:
             raise ValueError("chunk_size must be greater than overlap_size")
-        import math
         n_chunks = math.ceil((total_len - overlap_size) / step)
         padded_len = (n_chunks - 1) * step + chunk_size
         chunks: List[Tuple[int,int]] = []
@@ -696,5 +688,16 @@ class AutoEncoder(nn.Module):
             return cls(encoder_spec, decoder_spec, bottleneck=bottleneck_inst, **ae_kwargs)
 
         return cls(encoder_spec, decoder_spec, bottleneck=bottleneck_spec, **ae_kwargs)
+
+    @classmethod
+    def build_from_json(cls, path: str) -> "AutoEncoder":
+        """Convenience wrapper combining load_config and AutoEncoder.from_config.
+
+        External scripts can call this in a single line to recover a fully
+        initialised model from a JSON export stored alongside a checkpoint.
+        """
+        with open(path, "r") as f:
+            cfg = json.load(f)
+        return cls.from_config(cfg)
 
 

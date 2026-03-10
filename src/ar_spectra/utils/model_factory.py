@@ -13,6 +13,7 @@ import torch.nn as nn
 from hydra.utils import instantiate as hydra_instantiate
 
 
+
 def checkpoint(function, *args, **kwargs):
     kwargs.setdefault("use_reentrant", False)
     return torch.utils.checkpoint.checkpoint(function, *args, **kwargs)
@@ -88,13 +89,6 @@ def load_config(path: str) -> Dict[str, Any]:
     with open(path, "r") as f:
         return json.load(f)
 
-def build_from_json(path: str) -> AutoEncoder:
-    """Convenience wrapper combining :func:`load_config` and ``AutoEncoder.from_config``.
-
-    External scripts can call this in a single line to recover a fully
-    initialised model from a JSON export stored alongside a checkpoint.
-    """
-    return AutoEncoder.from_config(load_config(path))
 
 
 def patch_legacy_paths(d: Any) -> Any:

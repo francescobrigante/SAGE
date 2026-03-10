@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-import argparse
 import os
 import sys
+import argparse
 from pathlib import Path
 import torch
 

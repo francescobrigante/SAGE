@@ -26,9 +26,9 @@ def fast_scandir(dir: str, ext: list) -> tuple[list[str], list[str]]:
                     is_hidden = os.path.basename(f.path).startswith(".")
                     if file_ext in ext and not is_hidden:
                         files.append(f.path)
-            except:
+            except OSError:
                 pass
-    except:
+    except OSError:
         pass
 
     for subdir in list(subfolders):

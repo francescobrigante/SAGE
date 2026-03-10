@@ -8,6 +8,7 @@ import torch
 import numpy as np
 from typing import List, Any
 import scipy.signal
+import librosa.filters as librosa_filters
 
 def normalized_complex_distance_loss(x, y, eps=1e-7):
     numerator = torch.nn.functional.l1_loss(x,y, reduction = 'none').abs()
@@ -26,7 +27,7 @@ def apply_reduction(losses, reduction="none", retain_batch_dim=False):
 def get_window(win_type: str, win_length: int):
     try:
         win = getattr(torch, win_type)(win_length)
-    except:
+    except (AttributeError, TypeError):
         win = torch.from_numpy(scipy.signal.windows.get_window(win_type, win_length))
     return win
 
@@ -168,12 +169,11 @@ class STFTLoss(torch.nn.Module):
         self.linstft = STFTMagnitudeLoss(log=False, reduction=reduction if not self.retain_batch_dim else "none", distance=mag_distance, **kwargs)
 
         if scale is not None:
-            import librosa.filters
             if self.scale == "mel":
-                fb = librosa.filters.mel(sr=sample_rate, n_fft=fft_size, n_mels=n_bins)
+                fb = librosa_filters.mel(sr=sample_rate, n_fft=fft_size, n_mels=n_bins)
                 fb = torch.tensor(fb).unsqueeze(0)
             elif self.scale == "chroma":
-                fb = librosa.filters.chroma(sr=sample_rate, n_fft=fft_size, n_chroma=n_bins)
+                fb = librosa_filters.chroma(sr=sample_rate, n_fft=fft_size, n_chroma=n_bins)
             self.register_buffer("fb", fb)
 
         if self.perceptual_weighting:

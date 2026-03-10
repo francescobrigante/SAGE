@@ -3,30 +3,37 @@
 # =============================================================================
 import os
 import torch
-import torchaudio
-try:
-    import wandb
-    _HAS_WANDB = True
-except Exception:
-    wandb = None
-    _HAS_WANDB = False
 import pytorch_lightning as pl
 from typing import Any, Dict, Optional, Literal
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from copy import deepcopy
-from einops import rearrange
+from hydra.utils import instantiate as hydra_instantiate
+import torch.nn.functional as F
 from safetensors.torch import save_model
+from einops import rearrange
+
+# Optional audio libraries for fallback saving
+try:
+    import torchaudio as _ta
+except ImportError:
+    _ta = None
+
+try:
+    import soundfile as sf
+except ImportError:
+    sf = None
+
+try:
+    from scipy.io.wavfile import write as wavwrite
+except ImportError:
+    wavwrite = None
+
 from ..utils.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 from .engine import AutoencoderEngine  
 from ..models.autoencoder import AutoEncoder
-from .losses import signal
-from ..utils.console import log_audio, log_image, log_metric, log_point_cloud, logger_project_name
-from hydra.utils import instantiate as hydra_instantiate
-import torch.nn.functional as F
-from ..models.eulero_inference import encode_audio as inference_encode_audio
-from ..models.eulero_inference import decode_audio as inference_decode_audio
-from ar_spectra.utils.console import ok, warn, err, info
-from ar_spectra.utils.audio import trim_to_shortest, fold_channels_into_batch, unfold_channels_from_batch
+from ..models.inference import encode_audio as inference_encode_audio, decode_audio as inference_decode_audio
+from ar_spectra.utils.console import ok, warn, log_metric, log_point_cloud, log_image, log_audio, logger_project_name
+from ar_spectra.utils.audio import trim_to_shortest
 
 def _save_audio_with_fallback(path: str, wav_chxn: torch.Tensor, sr: int) -> bool:
     """
@@ -40,7 +47,8 @@ def _save_audio_with_fallback(path: str, wav_chxn: torch.Tensor, sr: int) -> boo
     wav = wav_chxn.detach().to(torch.float32).cpu().contiguous()
     # 1) torchaudio
     try:
-        import torchaudio as _ta
+        if _ta is None:
+            raise ImportError("torchaudio not installed")
         _ta.save(path, wav, sr, encoding="PCM_F", bits_per_sample=32)
         return True
     except Exception as e:
@@ -48,7 +56,8 @@ def _save_audio_with_fallback(path: str, wav_chxn: torch.Tensor, sr: int) -> boo
 
     # 2) soundfile
     try:
-        import soundfile as sf
+        if sf is None:
+            raise ImportError("soundfile not installed")
         data = wav.transpose(0, 1).numpy()  # (N, C)
         sf.write(path, data, sr, subtype="FLOAT")
         return True
@@ -57,7 +66,8 @@ def _save_audio_with_fallback(path: str, wav_chxn: torch.Tensor, sr: int) -> boo
 
     # 3) scipy
     try:
-        from scipy.io.wavfile import write as wavwrite
+        if wavwrite is None:
+            raise ImportError("scipy not installed")
         data = wav.transpose(0, 1).numpy().astype("float32")  # (N, C)
         wavwrite(path, sr, data)
         return True
@@ -81,7 +91,6 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         sample_rate=48000,
         loss_config: Optional[dict] = None,
         eval_loss_config: Optional[dict] = None,
-        optimizer_configs: Optional[dict] = None,
         lr: float = 1e-4,
         warmup_steps: int = 0,
         warmup_mode: Literal["adv", "full"] = "adv",
@@ -117,7 +126,6 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             sample_rate=sample_rate,
             loss_config=loss_config,
             eval_loss_config=eval_loss_config,
-            optimizer_configs=optimizer_configs,  # no longer used for creation; kept for compatibility
             warmup_steps=warmup_steps,
             warmup_mode=warmup_mode,
             encoder_freeze_on_warmup=encoder_freeze_on_warmup,
@@ -135,10 +143,6 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             ok(self.engine.autoencoder.pre_transform_description(), prefix="PRE TRANSFORM")
         except Exception as e:
             warn(f"Failed to create/apply pre_transform ({type(e).__name__}: {e})")
-
-        # Opzionale: se in precedenza usavi EMA
-        self.use_ema = getattr(self, "use_ema", False)
-        self.autoencoder_ema = getattr(self, "autoencoder_ema", None)
 
         # Buffer intermedio per valid
         self.validation_step_outputs = []
@@ -180,10 +184,6 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             inference_cfg["train_stft_params"] = deepcopy(self.stft_params)
 
         checkpoint["inference_config"] = {k: v for k, v in inference_cfg.items() if v is not None}
-    
-    def transfer_batch_to_device(self, batch, device, dataloader_idx):
-        S, wav = batch
-        return S.to(device, non_blocking=True), wav.to(device, non_blocking=True)
     
     def configure_optimizers(self):
         """
@@ -299,8 +299,6 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         # GEN step
         else:
             gen_loss = out["gen_total"]
-            if self.use_ema:
-                self.autoencoder_ema.update()
 
             if self._accum_steps_gen == 0:
                 opt_gen.zero_grad()
@@ -359,13 +357,11 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         for k, v in sum_loss_dict.items():
             avg = v / len(self.validation_step_outputs)
             avg = self.all_gather(torch.tensor(avg, device=self.device)).mean().item()
-            from ..utils.console import log_metric
             log_metric(self.logger, f"val/{k}", avg)
         self.validation_step_outputs.clear()
 
     def export_model(self, path, use_safetensors=False):
         model = self.autoencoder_ema.ema_model if getattr(self, "autoencoder_ema", None) is not None else self.autoencoder
-        from safetensors.torch import save_model
         if use_safetensors:
             save_model(model, path)
         else:
@@ -441,9 +437,6 @@ class AutoencoderValDemoCallback(pl.Callback):
                 waveform_input = waveform_input.mean(dim=1, keepdim=True)
             waveform_input = waveform_input.contiguous()
 
-            pack_complex = not bool(getattr(pl_module.autoencoder.encoder, "is_complex", False))
-            stereo_flag = not force_mono
-
             try:
                 latents = inference_encode_audio(
                     pl_module.autoencoder,
@@ -482,8 +475,6 @@ class AutoencoderValDemoCallback(pl.Callback):
 
             input_encoder_audio = reference_audio
 
-            # interleave reals e fakes per salvataggio
-            from einops import rearrange
             reals_fakes = rearrange([reference_audio, decoded], 'i b d n -> (b i) d n')
             reals_fakes = rearrange(reals_fakes, 'b d n -> d (b n)')
             encoder_input_istft = rearrange([reference_audio, input_encoder_audio], 'i b d n -> (b i) d n')
@@ -491,7 +482,6 @@ class AutoencoderValDemoCallback(pl.Callback):
 
             # path di salvataggio
             try:
-                from ..utils.console import logger_project_name
                 data_dir = os.path.join(
                     trainer.logger.save_dir, logger_project_name(trainer.logger),
                     getattr(getattr(trainer.logger, "experiment", None), "id", "offline"), "media")
@@ -525,10 +515,6 @@ class AutoencoderValDemoCallback(pl.Callback):
             # Prova prima torchaudio (TorchCodec), poi fallback a soundfile/scipy
             saved_enc = _save_audio_with_fallback(filename_input_encoder_istft, wav_input_encoder_istft_f32, sr)
             saved_rec = _save_audio_with_fallback(filename, wav_reals_fakes_f32, sr)
-
-            # logging
-            from ..utils.console import log_audio, log_image, log_point_cloud
-            from ..utils.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 
             if saved_rec:
                 log_audio(trainer.logger, 'val/recon', filename, sr)

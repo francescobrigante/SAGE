@@ -21,8 +21,8 @@ def configure_reproducibility(
     *,
     deterministic: bool = True,
     strict_deterministic: bool = True,
-    warn: Optional[Callable[[str], None]] = None,
-) -> None:
+    warn: Optional[Callable[[str], None]] = None) -> None:
+    
     """Set seeds and backend flags to favour reproducible behaviour.
 
     Args:

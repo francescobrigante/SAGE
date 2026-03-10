@@ -1,18 +1,15 @@
-"""Initialization utilities for training and inference.
+# ================================================================================
 
-This module provides helper functions for:
-- Custom collate function for STFT datasets
-- Inference dataloader construction
-- Chunk size resolution for streaming inference
+# This module provides helper functions for:
+# - Custom collate function for STFT datasets
+# - Inference dataloader construction
+# - Chunk size resolution for streaming inference
 
-All dataset/model instantiation now uses Hydra's `instantiate` API directly.
-"""
+# All dataset/model instantiation now uses Hydra's `instantiate` API directly.
+# ================================================================================ 
+
 from __future__ import annotations
-
-from typing import Any, Dict, Optional, Tuple
-
 import torch
-from torch.utils.data import DataLoader
 
 
 def collate_stft(batch):

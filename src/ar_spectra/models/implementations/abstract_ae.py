@@ -2,26 +2,9 @@ from abc import ABC
 # =============================================================================
 # Abstract base classes defining the required encoder/decoder interfaces for custom implementations.
 # =============================================================================
-from abc import abstractmethod
 from typing import Optional
 from typing import Tuple
-import torch
 import torch.nn as nn
-
-class AbsEncoder(torch.nn.Module, ABC):
-    @abstractmethod
-    def output_size(self) -> int:
-        raise NotImplementedError
-
-    @abstractmethod
-    def forward(
-        self,
-        xs_pad: torch.Tensor,
-        ilens: torch.Tensor,
-        # prev_states: torch.Tensor = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        raise NotImplementedError 
-    
 
 class AbstractEncoder(nn.Module, ABC):
     """Minimal encoder contract.
@@ -42,7 +25,7 @@ class AbstractEncoder(nn.Module, ABC):
         self.last_feature_shape: Optional[Tuple[int, int]] = None
 
 
-class AbastractDecoder(nn.Module, ABC):
+class AbstractDecoder(nn.Module, ABC):
     """Minimal decoder contract mirroring :class:`AbstractEncoder`.
 
     Decoders may optionally read ``feature_shape`` to reshape tokens back into

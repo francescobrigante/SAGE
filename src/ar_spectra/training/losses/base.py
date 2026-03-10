@@ -100,16 +100,6 @@ class LossWithTarget(LossModule):
         self.decay_weight()
         return self.weight * loss
 
-class AuralossLoss(LossWithTarget):
-    def __init__(self, loss_module, input_key: str, target_key: str, name: str, weight: float = 1, decay = 1.0):
-        super().__init__(loss_module, input_key=input_key, target_key=target_key, name=name, weight=weight, decay=decay)
-
-    def forward(self, info):
-        # Enforce wrong order of input and target until we find issue in Auraloss
-        loss = self.loss_module(info[self.target_key], info[self.input_key])
-        self.decay_weight()
-        return self.weight * loss
-
 class MultiLoss(nn.Module):
     def __init__(self, losses: tp.List[LossModule]):
         super().__init__()

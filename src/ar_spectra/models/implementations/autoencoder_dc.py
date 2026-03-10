@@ -9,7 +9,7 @@ import torch.nn as nn
 from diffusers.models.autoencoders.autoencoder_dc import Decoder as HFDecoderDC
 from diffusers.models.autoencoders.autoencoder_dc import Encoder as HFEncoderDC
 
-from ar_spectra.models.implementations.abstract_ae import AbastractDecoder, AbstractEncoder
+from ar_spectra.models.implementations.abstract_ae import AbstractDecoder, AbstractEncoder
 
 
 class HFAutoencoderDCEncoder(AbstractEncoder):
@@ -91,7 +91,7 @@ class HFAutoencoderDCEncoder(AbstractEncoder):
         return torch.cat([mean, logvar], dim=1), info
 
 
-class HFAutoencoderDCDecoder(AbastractDecoder):
+class HFAutoencoderDCDecoder(AbstractDecoder):
     """Decoder companion for :class:`HFAutoencoderDCEncoder`.
 
     Mirrors the original DCAE decoder; latents are optionally rescaled to

@@ -1,17 +1,8 @@
-
 # =============================================================================
 # Helper functions and validity checks (masks, temporal limits) for sub-sampler modules.
 # =============================================================================
 
-import numpy as np
 import torch
-import torch.nn.functional as F
-from ar_spectra.blocks.embeddings import IdentityPositionalEncoding
-import logging
-from ar_spectra.blocks.conv import SConv1d, SConv2d
-from ar_spectra.blocks.conv import NormLinear
-from ar_spectra.blocks.activations import get_activation
-import math
 
 def sequence_mask(lengths, maxlen=None, dtype=torch.float32, device=None):
 	if maxlen is None:

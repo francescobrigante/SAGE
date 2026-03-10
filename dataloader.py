@@ -9,11 +9,7 @@ import os
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 from torch.utils.data import Dataset
-import pytorch_lightning as pl
 
-# ─────────────────────────────────────────────────────────────────────────
-# Imports from phase 2 refactoring
-# ─────────────────────────────────────────────────────────────────────────
 from ar_spectra.utils.console import warn
 from ar_spectra.utils.audio import is_silence, load_waveform, random_crop_or_pad
 from ar_spectra.utils.file_scanning import fast_scandir
@@ -23,20 +19,9 @@ from ar_spectra.utils.audio_probe import pick_probe_fn
 from config import (
     DEFAULT_SEED,
     DEFAULT_MAX_RETRIES_PER_SAMPLE,
-    DEFAULT_MAX_PAD_RATIO
+    DEFAULT_MAX_PAD_RATIO,
+    DEFAULT_AUDIO_EXTENSIONS
 )
-
-# ─────────────────────────────────────────────────────────────────────────
-# Datasets and Epoch Setters
-# ─────────────────────────────────────────────────────────────────────────
-
-class DatasetEpochSetter(pl.Callback):
-    def __init__(self, dataset):
-        super().__init__()
-        self.dataset = dataset
-    def on_train_epoch_start(self, trainer, pl_module):
-        if hasattr(self.dataset, "set_epoch"):
-            self.dataset.set_epoch(trainer.current_epoch)
 
 class OnTheFlySTFTDataset(Dataset):
     """
@@ -78,7 +63,7 @@ class OnTheFlySTFTDataset(Dataset):
         if not self.audio_dir.exists():
             raise FileNotFoundError(f"Audio directory not found: {self.audio_dir}")
 
-        self.extensions = list(extensions or AUDIO_EXTENSIONS)
+        self.extensions = list(extensions or DEFAULT_AUDIO_EXTENSIONS)
         self.sample_rate = int(sample_rate)
         self.n_fft = int(n_fft)
         self.hop_length = int(hop_length)

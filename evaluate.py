@@ -1,16 +1,10 @@
-import os
 import argparse
 from pathlib import Path
-
-# Add project root to path so we can import ar_spectra
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import torch
 import torchaudio
 
-from ar_spectra.models.eulero_inference import EuleroEncodeDecode
-from ar_spectra.utils.console import ok, warn, err, info
+from ar_spectra.models.inference import EuleroEncodeDecode
+from ar_spectra.utils.console import ok, warn, info
 from tqdm import tqdm
 from config import (
     DEFAULT_MODEL_CHECKPOINT,

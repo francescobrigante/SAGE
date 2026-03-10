@@ -3,16 +3,14 @@
 # Interface and implementation of discriminators derived from Oobleck for high audio fidelity.
 # =============================================================================
 
-from .types import BANDS
+from .types import BANDS, get_hinge_losses
+from .multi import MultiScaleDiscriminator, MultiPeriodDiscriminator, MultiDiscriminator
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-import typing as tp
-from typing import List, Tuple
-from functools import reduce
 from einops import rearrange
-from torch.utils.checkpoint import checkpoint
+from audiotools import AudioSignal, STFTParams
+from dac.model.discriminator import WNConv1d, WNConv2d
 
 class OobleckDiscriminator(nn.Module):
 
@@ -78,9 +76,6 @@ class OobleckDiscriminator(nn.Module):
 class MPD(nn.Module):
     def __init__(self, period, channels=1):
         super().__init__()
-
-        from dac.model.discriminator import WNConv2d
-
         self.period = period
         self.convs = nn.ModuleList(
             [
@@ -118,9 +113,6 @@ class MPD(nn.Module):
 class MSD(nn.Module):
     def __init__(self, rate: int = 1, sample_rate: int = 44100, channels=1):
         super().__init__()
-
-        from dac.model.discriminator import WNConv1d
-
         self.convs = nn.ModuleList(
             [
                 WNConv1d(channels, 16, 15, 1, padding=7),
@@ -136,9 +128,9 @@ class MSD(nn.Module):
         self.rate = rate
 
     def forward(self, x):
-        x = AudioSignal(x, self.sample_rate)
-        x.resample(self.sample_rate // self.rate)
-        x = x.audio_data
+        sig = AudioSignal(x, self.sample_rate)
+        sig.resample(self.sample_rate // self.rate)
+        x = sig.audio_data
 
         fmap = []
 
@@ -173,9 +165,6 @@ class MRD(nn.Module):
         """
         super().__init__()
 
-        from dac.model.discriminator import WNConv2d
-        from audiotools import STFTParams
-
         self.window_length = window_length
         self.hop_factor = hop_factor
         self.sample_rate = sample_rate
@@ -205,7 +194,6 @@ class MRD(nn.Module):
         self.conv_post = WNConv2d(ch, 1, (3, 3), (1, 1), padding=(1, 1), act=False)
 
     def spectrogram(self, x):
-        from audiotools import AudioSignal
         x = AudioSignal(x, self.sample_rate, stft_params=self.stft_params)
         x = torch.view_as_real(x.stft())
         x = rearrange(x, "b ch f t c -> (b ch) c t f", ch=self.channels)

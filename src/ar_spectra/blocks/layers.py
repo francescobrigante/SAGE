@@ -7,8 +7,8 @@
 """Positionwise feed forward layer definition."""
 
 import torch
+import torch.nn as nn
 
-from ar_spectra.blocks.normalization import LayerNorm
 from ar_spectra.blocks.conv import NormLinear
 from ar_spectra.blocks.activations import get_activation
 
@@ -34,33 +34,6 @@ class PositionwiseFeedForward(torch.nn.Module):
     def forward(self, x):
         """Forward function."""
         return self.w_2(self.dropout(self.activation(self.w_1(x))))
-
-
-class PositionwiseFeedForwardDecoderSANM(torch.nn.Module):
-    """Positionwise feed forward layer.
-
-    Args:
-        idim (int): Input dimenstion.
-        hidden_units (int): The number of hidden units.
-        dropout_rate (float): Dropout rate.
-
-    """
-
-    def __init__(self, idim, hidden_units, dropout_rate, adim=None, activation=torch.nn.ReLU()):
-        """Construct an PositionwiseFeedForward object."""
-        super(PositionwiseFeedForwardDecoderSANM, self).__init__()
-        self.w_1 = torch.nn.Linear(idim, hidden_units)
-        self.w_2 = torch.nn.Linear(hidden_units, idim if adim is None else adim, bias=False)
-        self.dropout = torch.nn.Dropout(dropout_rate)
-        self.activation = activation
-        self.norm = LayerNorm(hidden_units)
-
-    def forward(self, x):
-        """Forward function."""
-        return self.w_2(self.norm(self.dropout(self.activation(self.w_1(x)))))
-
-import torch
-import torch.nn as nn
 
 class ComplexDropout(nn.Module):
     """
@@ -96,8 +69,6 @@ class ComplexDropout(nn.Module):
 
 """Repeat the same layer definition."""
 
-import torch
-
 
 class MultiSequential(torch.nn.Sequential):
     """Multi-input multi-output torch.nn.Sequential."""
@@ -121,31 +92,6 @@ def repeat(N, fn):
 
     """
     return MultiSequential(*[fn(n) for n in range(N)])
-
-import torch
-import torch.nn as nn
-
-class ComplexLinearHalf(nn.Module):
-    def __init__(self, in_f, out_f, bias=False, dtype=torch.float16, device="cuda"):
-        super().__init__()
-        self.Wr = nn.Parameter(torch.empty(out_f, in_f, device=device, dtype=dtype))
-        self.Wi = nn.Parameter(torch.empty(out_f, in_f, device=device, dtype=dtype))
-        nn.init.kaiming_uniform_(self.Wr); nn.init.kaiming_uniform_(self.Wi)
-        self.bias = bias
-        if bias:
-            self.br = nn.Parameter(torch.zeros(out_f, device=device, dtype=torch.float32))
-            self.bi = nn.Parameter(torch.zeros(out_f, device=device, dtype=torch.float32))
-            self.bias = True
-
-    def forward(self, x):  # x: complex, real/imag in half
-        xr, xi = x.real.to(self.Wr.dtype), x.imag.to(self.Wr.dtype)
-        # accumulo in fp32 per stabilità
-        yr = (self.Wr @ xr.T - self.Wi @ xi.T).to(torch.float32).T
-        yi = (self.Wr @ xi.T + self.Wi @ xr.T).to(torch.float32).T
-        if self.bias:
-            yr = yr + self.br
-            yi = yi + self.bi
-        return torch.complex(yr, yi)
 
 class CLinear(nn.Module):
     """

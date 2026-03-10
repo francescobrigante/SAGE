@@ -2,12 +2,11 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from pytorch_lightning.loggers import WandbLogger
-import time
 import json
 from pathlib import Path
 from rich.console import Console
 
-from ar_spectra.utils.console import info, ok, warn
+from ar_spectra.utils.console import ok, warn
 from ar_spectra.utils.model_info import extract_model_config
 
 console = Console()
@@ -51,9 +50,8 @@ class ModelInfoLogger(pl.Callback):
         console.print(f"params total/trainable: {info_dict.get('num_parameters_total')}/{info_dict.get('num_parameters_trainable')}")
         console.print(f"model size (bytes): {info_dict.get('model_bytes')}")
         console.rule("[bold cyan]Model structure")
-        model_cfg = extract_model_config(model)
         if self.log_structure:
-            console.print("[MODEL SUMMARY]\n", model_cfg["repr"])
+            console.print("[MODEL SUMMARY]\n", info_dict["repr"])
         console.rule()
 
         # Save JSON to disk
@@ -85,12 +83,3 @@ class ModelInfoLogger(pl.Callback):
                     run.save(str(out_path), base_path=str(base_dir))
             except Exception as e:
                 warn(f"ModelInfoLogger: W&B log skipped ({type(e).__name__}: {e})", prefix="TRAINER")
-            
-class TimeLogger(Callback):
-    """Logs epoch time"""
-    def on_train_epoch_start(self, trainer, pl_module):
-        self.epoch_start_time = time.time()
-        
-    def on_train_epoch_end(self, trainer, pl_module):
-        elapsed = time.time() - self.epoch_start_time
-        info(f"Epoch {trainer.current_epoch} took {elapsed:.2f} s")

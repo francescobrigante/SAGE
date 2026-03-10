@@ -7,7 +7,7 @@
 """Interactive utility to retrofit checkpoints with complete inference metadata.
 
 Given a Lightning checkpoint and a model YAML, the script rebuilds the
-``inference_config`` block expected by :mod:`ar_spectra.models.eulero_inference`.
+``inference_config`` block expected by :mod:`ar_spectra.models.inference`.
 Missing fields (for example channel counts or STFT parameters) are requested
 interactively.  A new checkpoint file is emitted alongside the original with
 ``_rigenerated`` appended to the filename stem; the source checkpoint is left

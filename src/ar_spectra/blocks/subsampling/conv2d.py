@@ -3,16 +3,13 @@
 # Subsampling modules based on 2D convolutions (ideal for spectrogram-like representations).
 # =============================================================================
 
-import numpy as np
 import torch
-import torch.nn.functional as F
 from ar_spectra.blocks.embeddings import IdentityPositionalEncoding
-import logging
-from ar_spectra.blocks.conv import SConv1d, SConv2d
+from ar_spectra.blocks.conv import SConv2d
 from ar_spectra.blocks.conv import NormLinear
 from ar_spectra.blocks.activations import get_activation
 import math
-from .helpers import TooShortUttError, check_short_utt, sequence_mask
+from .helpers import sequence_mask
 
 
 class Conv2dSubsampling(torch.nn.Module):
