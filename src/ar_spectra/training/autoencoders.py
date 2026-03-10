@@ -20,7 +20,7 @@ from ..utils.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 from .engine import AutoencoderEngine  
 from ..models.autoencoder import AutoEncoder
 from .losses import signal
-from .utils import log_audio, log_image, log_metric, log_point_cloud, logger_project_name
+from ..utils.console import log_audio, log_image, log_metric, log_point_cloud, logger_project_name
 from hydra.utils import instantiate as hydra_instantiate
 import torch.nn.functional as F
 from ..models.eulero_inference import encode_audio as inference_encode_audio
@@ -191,7 +191,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         Fallbacks to sensible defaults if specs are missing.
         """
         default_opt = {"_target_": "torch.optim.AdamW", "lr": 2e-4, "betas": [0.8, 0.99]}
-        default_sched = {"_target_": "ar_spectra.training.utils.InverseLR", "inv_gamma": 200000, "power": 0.5, "warmup": 0.999}
+        default_sched = {"_target_": "ar_spectra.training.schedulers.InverseLR", "inv_gamma": 200000, "power": 0.5, "warmup": 0.999}
 
         opt_spec = self._optimizer_spec if self._optimizer_spec else default_opt
         sched_spec = self._scheduler_spec if self._scheduler_spec else default_sched
@@ -359,7 +359,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         for k, v in sum_loss_dict.items():
             avg = v / len(self.validation_step_outputs)
             avg = self.all_gather(torch.tensor(avg, device=self.device)).mean().item()
-            from .utils import log_metric
+            from ..utils.console import log_metric
             log_metric(self.logger, f"val/{k}", avg)
         self.validation_step_outputs.clear()
 
@@ -491,7 +491,7 @@ class AutoencoderValDemoCallback(pl.Callback):
 
             # path di salvataggio
             try:
-                from .utils import logger_project_name
+                from ..utils.console import logger_project_name
                 data_dir = os.path.join(
                     trainer.logger.save_dir, logger_project_name(trainer.logger),
                     getattr(getattr(trainer.logger, "experiment", None), "id", "offline"), "media")
@@ -527,7 +527,7 @@ class AutoencoderValDemoCallback(pl.Callback):
             saved_rec = _save_audio_with_fallback(filename, wav_reals_fakes_f32, sr)
 
             # logging
-            from .utils import log_audio, log_image, log_point_cloud
+            from ..utils.console import log_audio, log_image, log_point_cloud
             from ..utils.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 
             if saved_rec:

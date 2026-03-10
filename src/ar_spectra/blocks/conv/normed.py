@@ -135,6 +135,9 @@ def pad1d(x: torch.Tensor, paddings: tp.Tuple[int, int], mode: str = 'zero', val
     else:
         return F.pad(x, paddings, mode, value)
 
+def get_2d_padding(kernel_size: tp.Tuple[int, int], dilation: tp.Tuple[int, int] = (1, 1)):
+    return (((kernel_size[0] - 1) * dilation[0]) // 2, ((kernel_size[1] - 1) * dilation[1]) // 2)
+
 def pad2d(x: torch.Tensor, paddings: tp.Tuple[tp.Tuple[int, int], tp.Tuple[int, int]], mode: str = 'zero', value: float = 0.):
     """Tiny wrapper around F.pad, just to allow for reflect padding on small input.
     If this is the case, we insert extra 0 padding to the right before the reflection happen.

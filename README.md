@@ -6,6 +6,10 @@
 ![Hydra](https://img.shields.io/badge/Hydra-Config-89b8cd)
 ![License](https://img.shields.io/badge/License-TBD-lightgrey)
 
+<p align="center">
+  <img src="resources/vae.jpg" alt="VAE Architecture" width="80%">
+</p>
+
 > [!IMPORTANT]
 > 🚧 **This project is under active development as part of my Master's Thesis.** Feel free to star ⭐️ the repo to stay updated!
 
@@ -17,8 +21,9 @@ This repository explores **complex-valued Variational Autoencoders (VAEs)** for 
 
 The codebase provides:
 
-- **`ar_spectra`** — A modular library of encoder/decoder architectures based on complex-valued neural network building blocks, with training infrastructure (PyTorch Lightning) and loss functions (spectral, perceptual, adversarial).
-- **`c-vae`** 🚧 — A planned module for the complex-valued VAE generative model (not yet implemented).
+- **`ar_spectra:`** A modular library of encoder/decoder architectures based on complex-valued neural network building blocks, with training infrastructure (PyTorch Lightning) and loss functions (spectral, perceptual, adversarial). Developed by [Luca Cerovaz](https://github.com/CerovazS) and refactored by me.
+
+- **`c-vae:`** 🚧 A module for the complex-valued VAE generative model (not yet implemented).
 
 Training is fully configured via [Hydra](https://hydra.cc/) YAML files, logged through [Weights & Biases](https://wandb.ai/), and evaluated with standard audio quality metrics (SI-SDR, spectral convergence, CDPAM, FAD).
 
@@ -26,18 +31,18 @@ Training is fully configured via [Hydra](https://hydra.cc/) YAML files, logged t
 
 ## 📁 Project Structure
 
-```
+```bash
 C-VAE/
 ├── config.py                             # Centralized constants: paths, sample rate, device, seeds
 ├── train.py                              # Hydra training entrypoint (PyTorch Lightning)
-├── evaluate.py                           # Argparse inference script — encode/decode audio via checkpoint
-├── dataloader.py                         # OnTheFlySTFTDataset — loads audio, computes STFT on-the-fly
-├── test_eulero_inference.py              # Quick smoke test for EuleroEncodeDecode inference
+├── evaluate.py                           # Inference script
+├── dataloader.py                         # OnTheFlySTFTDataset that loads audio, computes STFT on-the-fly
+├── test_eulero_inference.py              # Quick smoke test for EuleroDec inference
 ├── pyproject.toml                        # Package metadata, dependencies, build config (hatchling)
 ├── .gitignore
 │
 ├── config/                               # Hydra YAML configuration hierarchy
-│   ├── main.yaml                         # Top-level composition — selects model, data, trainer groups
+│   ├── main.yaml                         # Top-level composition: selects model, data, trainer groups
 │   ├── data.yaml                         # Dataset & dataloader config (STFT params, splits, channels)
 │   ├── trainer.yaml                      # Optimizer, scheduler, losses, WandB, training hyperparams
 │   └── models/                           # Model architecture configs (one per architecture)
@@ -47,114 +52,106 @@ C-VAE/
 │       ├── hf_autoencoder_dc.yaml         # HuggingFace AutoencoderDC (DCAE, pixel_unshuffle)
 │       └── simple_transformer_AE.yaml     # Complex-valued Transformer AE with patch embeddings
 │
-├── src/
-│   ├── ar_spectra/                       # Core library (installable as 'ar_spectra' package)
-│   │   ├── models/                       # Model architectures and assembly
-│   │   │   ├── autoencoder.py            # AutoEncoder container — wires encoder + decoder + bottleneck
-│   │   │   ├── bottlenecks.py            # VAEBottleneck (KL reparametrization), SkipBottleneck (passthrough)
-│   │   │   ├── eulero_inference.py       # EuleroEncodeDecode — standalone inference wrapper for checkpoints
-│   │   │   ├── encodec.py               # Encodec model utilities
-│   │   │   ├── implementations/          # Concrete encoder/decoder implementations
-│   │   │   │   ├── abstract_ae.py        # AbstractAutoEncoder base class (interface contract)
-│   │   │   │   ├── __init__.py           # Registry and imports for all implementations
-│   │   │   │   ├── SeaNET_AE.py          # SEANetEncoder2d / SEANetDecoder2d (real & complex)
-│   │   │   │   ├── autoencoder_kl.py     # HFAutoencoderKLEncoder / Decoder (diffusers wrapper)
-│   │   │   │   ├── autoencoder_dc.py     # HFAutoencoderDCEncoder / Decoder (DCAE wrapper)
-│   │   │   │   └── simple_transformer_AE.py  # SimpleTransformerEncoder / Decoder (patch + ViT)
-│   │   │   └── discriminators/           # GAN discriminator zoo
-│   │   │       ├── __init__.py           # EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, etc.
-│   │   │       ├── encodec.py            # Encodec multi-scale discriminator
-│   │   │       ├── oobleck.py            # MPD / MSD / MRD discriminators
-│   │   │       ├── dac.py               # Descript Audio Codec discriminator
-│   │   │       ├── bigvgan.py            # BigVGAN discriminator
-│   │   │       ├── multi.py             # MultiScale and MultiPeriod discriminators
-│   │   │       ├── subband.py            # Subband CQT discriminator
-│   │   │       └── types.py             # Shared discriminator type definitions
-│   │   │
-│   │   ├── training/                     # Training infrastructure (PyTorch Lightning)
-│   │   │   ├── __init__.py
-│   │   │   ├── engine.py                # AutoencoderEngine — core training/validation step logic
-│   │   │   ├── autoencoders.py          # AutoencoderTrainingWrapper (LightningModule) + ValDemoCallback
-│   │   │   ├── loss_manager.py          # LossManager — orchestrates weighted multi-loss computation
-│   │   │   ├── losses/                  # Loss function implementations
-│   │   │   │   ├── __init__.py          # Loss registry and factory (all losses importable from here)
-│   │   │   │   ├── base.py             # BaseLoss — abstract loss interface
-│   │   │   │   ├── spectral.py          # ComplexMSE, MultiResSpectralConvergence, MelSpectrogramLoss, etc.
-│   │   │   │   ├── signal.py            # STFTLoss, L1/MSE time-domain losses
-│   │   │   │   └── perceptual.py        # HubertLoss, PhaseCosineDistance
-│   │   │   ├── callbacks.py             # DatasetEpochSetter, ModelInfoLogger (PL callbacks)
-│   │   │   ├── initialization.py        # collate_stft and weight initialization utilities
-│   │   │   ├── pre_transform.py         # Spectrogram normalization: power_norm, log_mag, none
-│   │   │   └── utils.py                # InverseLR scheduler, rank helpers, checkpoint dir resolution
-│   │   │
-│   │   ├── blocks/                      # Modular neural network building blocks
-│   │   │   ├── activations/             # Activation functions
-│   │   │   │   ├── __init__.py          # Activation registry and lookup
-│   │   │   │   ├── snake.py             # Snake activation (periodic, for audio)
-│   │   │   │   ├── silu.py             # SiLU / Swish (real & complex variants)
-│   │   │   │   ├── gelu.py             # GELU (real & complex variants)
-│   │   │   │   ├── relu.py             # ReLU, CReLU (split complex activation)
-│   │   │   │   └── misc.py             # Miscellaneous activations
-│   │   │   ├── attention/               # Attention mechanisms
-│   │   │   │   ├── complex.py           # Complex-valued multi-head attention
-│   │   │   │   └── standard.py          # Standard real-valued attention
-│   │   │   ├── conv/                    # Convolution layers
-│   │   │   │   ├── __init__.py          # Conv registry
-│   │   │   │   ├── variants.py          # Conv1d/2d variants (complex, real, transposed)
-│   │   │   │   ├── causal.py            # Causal convolutions (for autoregressive models)
-│   │   │   │   └── normed.py            # Weight-normalized and spectral-normalized convs
-│   │   │   ├── embeddings/              # Embedding layers
-│   │   │   │   ├── __init__.py
-│   │   │   │   ├── positional.py        # Sinusoidal and learnable positional embeddings
-│   │   │   │   └── complex.py           # Complex-valued patch embeddings
-│   │   │   ├── normalization/           # Normalization layers
-│   │   │   │   ├── __init__.py
-│   │   │   │   ├── real.py              # LayerNorm, GroupNorm, RMSNorm
-│   │   │   │   └── complex.py           # Complex-valued normalization layers
-│   │   │   ├── subsampling/             # Downsampling / upsampling ops
-│   │   │   │   ├── __init__.py
-│   │   │   │   ├── conv1d.py            # Strided conv1d downsampling
-│   │   │   │   ├── conv2d.py            # Strided conv2d downsampling
-│   │   │   │   └── helpers.py           # Padding and shape utilities
-│   │   │   ├── transformer.py           # Transformer blocks (encoder/decoder layers)
-│   │   │   ├── layers.py               # Residual blocks, FeedForward, and generic layers
-│   │   │   ├── rnn.py                  # LSTM / GRU wrappers
-│   │   │   └── complex_patch_merging.py # Complex-valued patch merging for hierarchical models
-│   │   │
-│   │   ├── utils/                       # Utility modules
-│   │   │   ├── audio.py                # Audio I/O, resampling, channel matching
-│   │   │   ├── audio_probe.py          # Probe audio files for sample rate, channels, duration
-│   │   │   ├── audio_validation.py     # Validate audio integrity (silence, clipping, corruption)
-│   │   │   ├── console.py             # Rich console logging: ok(), warn(), err(), info()
-│   │   │   ├── distributions.py        # Probability distributions for VAE sampling
-│   │   │   ├── file_scanning.py        # Recursive file discovery with extension filtering
-│   │   │   ├── metadata/
-│   │   │   │   ├── fma.py             # FMA dataset metadata reader (track splits, genre labels)
-│   │   │   │   └── providers.py        # Generic metadata provider interface
-│   │   │   ├── model_factory.py        # Dynamic model instantiation from config dicts
-│   │   │   ├── model_info.py           # Extract and log model parameter counts and structure
-│   │   │   ├── regenerate_checkpoint.py # Re-save checkpoints with updated model keys
-│   │   │   ├── reproducibility.py      # Seed management and deterministic flag configuration
-│   │   │   ├── scan_corrupt_audio.py   # Batch scan for corrupt/unreadable audio files
-│   │   │   ├── spectral.py            # STFT / iSTFT helpers, spectral feature computation
-│   │   │   ├── tensors.py             # Tensor shape utilities, complex ↔ real conversion
-│   │   │   └── aeiou.py               # Audio-to-STFT pipeline and channel format helpers
-│   │   │
-│   │   └── data/
-│   │       └── dataloader.py           # Library-internal dataloader utilities
-│   │
-│   └── c-vae/                           # 🚧 Complex-valued VAE generative model (WIP)
-│       └── .gitkeep                     # Placeholder — module not yet implemented
+├── tests/                                # Evaluation metric scripts
+│   ├── compute_all.py                    # Orchestrator — runs inference + all metrics end-to-end
+│   ├── compute_all.sh                    # Bash equivalent of compute_all.py with virtualenv support
+│   ├── compute_spectral.py               # SI-SDR + multi-resolution STFT loss (per-file CSV output)
+│   ├── compute_cdpam.py                  # Contrastive Deep Perceptual Audio Metric (CDPAM)
+│   └── compute_fad.py                    # Fréchet Audio Distance via VGGish embeddings
 │
-├── tests/                               # Evaluation metric scripts
-│   ├── compute_all.py                   # Orchestrator — runs inference + all metrics end-to-end
-│   ├── compute_all.sh                   # Bash equivalent of compute_all.py with virtualenv support
-│   ├── compute_spectral.py              # SI-SDR + multi-resolution STFT loss (per-file CSV output)
-│   ├── compute_cdpam.py                 # Contrastive Deep Perceptual Audio Metric (CDPAM)
-│   └── compute_fad.py                   # Fréchet Audio Distance via VGGish embeddings
+├── checkpoints/                          # Trained model checkpoints (.ckpt files)
+├──  runs/                                 # Training run outputs (logs, profiler, TensorBoard)
 │
-├── checkpoints/                         # Trained model checkpoints (.ckpt files)
-└── runs/                                # Training run outputs (logs, profiler, TensorBoard)
+│
+└── src/
+    ├── ar_spectra/                       # Core complex framework
+    │   ├── models/                       # Model architectures
+    │   │   ├── autoencoder.py            # AutoEncoder container: wires encoder + decoder + bottleneck
+    │   │   ├── bottlenecks.py            # VAEBottleneck (KL reparametrization), SkipBottleneck (passthrough)
+    │   │   ├── eulero_inference.py       # Standalone inference wrapper for checkpoints
+    │   │   ├── implementations/          # Concrete encoder/decoder implementations
+    │   │   │   ├── abstract_ae.py        # AbstractAutoEncoder base class (interface contract)
+    │   │   │   ├── SeaNET_AE.py          # SEANetEncoder2d / SEANetDecoder2d (real & complex)
+    │   │   │   ├── autoencoder_kl.py     # HFAutoencoderKLEncoder / Decoder (diffusers wrapper)
+    │   │   │   ├── autoencoder_dc.py     # HFAutoencoderDCEncoder / Decoder (DCAE wrapper)
+    │   │   │   └── simple_transformer_AE.py  # SimpleTransformerEncoder / Decoder (patch + ViT)
+    │   │   └── discriminators/           # GAN discriminator zoo
+    │   │       ├── __init__.py           # EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, etc.
+    │   │       ├── encodec.py            # MS-STFT discriminator (DiscriminatorSTFT, MultiScaleSTFTDiscriminator)
+    │   │       ├── oobleck.py            # MPD / MSD / MRD discriminators
+    │   │       ├── dac.py                # Descript Audio Codec discriminator
+    │   │       ├── bigvgan.py            # BigVGAN discriminator
+    │   │       ├── multi.py              # MultiScale and MultiPeriod discriminators
+    │   │       ├── subband.py            # Subband CQT discriminator
+    │   │       └── types.py              # Shared discriminator type definitions
+    │   │
+    │   ├── training/                     # Training infrastructure (PyTorch Lightning)
+    │   │   ├── __init__.py
+    │   │   ├── engine.py                 # AutoencoderEngine: core training/validation step logic
+    │   │   ├── autoencoders.py           # AutoencoderTrainingWrapper (LightningModule) + ValDemoCallback
+    │   │   ├── loss_manager.py           # LossManager: orchestrates weighted multi-loss computation
+    │   │   ├── schedulers.py             # InverseLR learning rate scheduler
+    │   │   ├── losses/                   # Loss function implementations
+    │   │   │   ├── base.py               # BaseLoss: abstract loss interface
+    │   │   │   ├── spectral.py           # ComplexMSE, MultiResSpectralConvergence, MelSpectrogramLoss, etc.
+    │   │   │   ├── signal.py             # STFTLoss, L1/MSE time-domain losses
+    │   │   │   └── perceptual.py         # HubertLoss, PhaseCosineDistance
+    │   │   ├── callbacks.py              # DatasetEpochSetter, ModelInfoLogger (PL callbacks)
+    │   │   ├── initialization.py         # collate_stft and weight initialization utilities
+    │   │   └── pre_transform.py          # Spectrogram normalization: power_norm, log_mag, none
+    │   │
+    │   ├── blocks/                       # Modular neural network building blocks
+    │   │   ├── activations/              # Activation functions
+    │   │   │   ├── snake.py              # Snake activation (periodic, for audio)
+    │   │   │   ├── silu.py               # SiLU / Swish (real & complex variants)
+    │   │   │   ├── gelu.py               # GELU (real & complex variants)
+    │   │   │   ├── relu.py               # ReLU, CReLU (split complex activation)
+    │   │   │   └── misc.py               # Miscellaneous activations
+    │   │   ├── attention/                # Attention mechanisms
+    │   │   │   ├── complex.py            # Complex-valued multi-head attention
+    │   │   │   └── standard.py           # Standard real-valued attention
+    │   │   ├── conv/                     # Convolution layers
+    │   │   │   ├── variants.py           # Conv1d/2d variants (complex, real, transposed)
+    │   │   │   ├── causal.py             # Causal convolutions (for autoregressive models)
+    │   │   │   └── normed.py             # Weight-normalized convs
+    │   │   ├── embeddings/               # Embedding layers
+    │   │   │   ├── positional.py         # Sinusoidal and learnable positional embeddings
+    │   │   │   └── complex.py            # Complex-valued patch embeddings
+    │   │   ├── normalization/            # Normalization layers
+    │   │   │   ├── real.py               # LayerNorm, GroupNorm, RMSNorm
+    │   │   │   └── complex.py            # Complex-valued normalization layers
+    │   │   ├── subsampling/              # Downsampling / upsampling ops
+    │   │   │   ├── conv1d.py             # Strided conv1d downsampling
+    │   │   │   ├── conv2d.py             # Strided conv2d downsampling
+    │   │   │   └── helpers.py            # Padding and shape utilities
+    │   │   ├── transformer.py            # Transformer blocks (encoder/decoder layers)
+    │   │   ├── layers.py                 # Residual blocks, FeedForward, and generic layers
+    │   │   ├── rnn.py                    # LSTM / GRU wrappers
+    │   │   └── complex_patch_merging.py  # Complex-valued patch merging for hierarchical models
+    │   │
+    │   └── utils/                        # Utility modules
+    │       ├── audio.py                  # Audio I/O, resampling, channel matching
+    │       ├── audio_probe.py            # Probe audio files for sample rate, channels, duration
+    │       ├── audio_validation.py       # Validate audio integrity (silence, clipping, corruption)
+    │       ├── console.py                # Rich console logging + WandB/CometML log helpers
+    │       ├── distributions.py          # Probability distributions for VAE sampling
+    │       ├── file_scanning.py          # Recursive file discovery with extension filtering
+    │       ├── run_config.py             # Distributed rank helpers, run-name builders, checkpoint dir
+    │       ├── metadata/
+    │       │   ├── fma.py                # FMA dataset metadata reader (track splits, genre labels)
+    │       │   └── providers.py          # Generic metadata provider interface
+    │       ├── model_factory.py          # Dynamic model instantiation from config dicts
+    │       ├── model_info.py             # Extract and log model parameter counts and structure
+    │       ├── regenerate_checkpoint.py  # Re-save checkpoints with updated model keys
+    │       ├── reproducibility.py        # Seed management and deterministic flag configuration
+    │       ├── scan_corrupt_audio.py     # Batch scan for corrupt/unreadable audio files
+    │       ├── spectral.py               # STFT / iSTFT helpers, spectral feature computation
+    │       ├── tensors.py                # Tensor shape utilities, complex ↔ real conversion
+    │       └── aeiou.py                  # Audio-to-STFT pipeline and channel format helpers
+    │
+    └── c-vae/                            # 🚧 Complex-valued VAE generative model (WIP)
+        └── .gitkeep
+
 ```
 
 ---
@@ -171,7 +168,7 @@ C-VAE/
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/C-VAE.git
+git clone https://github.com/francescobrigante/C-VAE.git
 cd C-VAE
 
 # Install with uv (recommended)
@@ -197,9 +194,9 @@ device: ${config:DEFAULT_DEVICE}              # resolves to mps / cuda:0 / cpu
 
 | File | Purpose |
 |------|---------|
-| `config.py` | Global constants — paths, sample rate (44100), device auto-detection, seed (94), audio extensions |
-| `config/main.yaml` | Top-level Hydra composition — selects which model, data, and trainer configs to load |
-| `config/data.yaml` | Dataset (OnTheFlySTFTDataset) and dataloader settings — STFT params, batch size, workers, channel mapping |
+| `config.py` | Global constants: paths, sample rate (44100), device auto-detection, seed (94), audio extensions |
+| `config/main.yaml` | Top-level Hydra composition: selects which model, data, and trainer configs to load |
+| `config/data.yaml` | Dataset (OnTheFlySTFTDataset) and dataloader settings: STFT params, batch size, workers, channel mapping |
 | `config/trainer.yaml` | Optimizer (AdamW), scheduler (InverseLR), loss config, WandB settings, training hyperparameters |
 | `config/models/*.yaml` | One file per model architecture (see [Architecture Overview](#-architecture-overview)) |
 
@@ -382,7 +379,7 @@ The system follows a modular **Encoder → Bottleneck → Decoder** architecture
 | Bottleneck | Class | Description |
 |---|---|---|
 | **VAE** | `VAEBottleneck` | Reparametrization trick: μ/σ → z ~ N(μ, σ²), KL divergence regularization |
-| **Skip** | `SkipBottleneck` | Passthrough — no compression or regularization (deterministic AE) |
+| **Skip** | `SkipBottleneck` | Passthrough: no compression or regularization (deterministic AE) |
 
 ### Discriminator Zoo
 
@@ -435,7 +432,7 @@ loss_config:
 ## 🚧 C-VAE Module
 
 > [!NOTE]
-> The `src/c-vae/` directory is a placeholder for the upcoming **Complex-Valued VAE** generative model. This module is under active development and is not yet implemented. The current codebase focuses on the `ar_spectra` backbone — encoder/decoder architectures, training infrastructure, and evaluation tooling that will serve as the foundation for the C-VAE.
+> The `src/c-vae/` directory is a placeholder for the upcoming **Complex-Valued VAE** generative model.
 
 ---
 
@@ -451,6 +448,7 @@ Built on top of:
 - [fadtk](https://github.com/microsoft/fadtk) (Fréchet Audio Distance Toolkit)
 - [CDPAM](https://github.com/pranaymanocha/PerceptualAudio) (Contrastive Deep Perceptual Audio Metric)
 - [FMA Dataset](https://github.com/mdeff/fma) (Free Music Archive)
+- [EuleroDec](https://arxiv.org/pdf/2601.17517) a complex-valued RVQ-VAE for Audio coding
 
 ---
 

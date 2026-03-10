@@ -32,7 +32,7 @@ from ar_spectra.training.autoencoders import AutoencoderTrainingWrapper, Autoenc
 from ar_spectra.training.initialization import collate_stft
 from ar_spectra.utils.reproducibility import configure_reproducibility
 from ar_spectra.utils.model_info import extract_model_config
-from ar_spectra.training.utils import _is_rank0, get_checkpoint_dir, resolve_run_name
+from ar_spectra.utils.run_config import _is_rank0, get_checkpoint_dir, resolve_run_name
 
 from ar_spectra.utils.console import ok, warn, err, info
 import logging
