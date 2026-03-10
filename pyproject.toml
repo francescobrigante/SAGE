@@ -1,5 +1,5 @@
 [project]
-name = "C-VAE
+name = "C-VAE"
 version = "0.1.0"
 description = "end-to-end C-VAE for Audio generation"
 authors = [
