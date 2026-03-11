@@ -1,7 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from packaging.version import Version
 from ar_spectra.blocks.layers import CLinear
 from torch.nn.attention.flex_attention import flex_attention # Keep this import as flex_attention is used later
 import math

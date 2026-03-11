@@ -55,8 +55,7 @@ def get_norm_module(module: nn.Module, causal: bool = False, norm: str = 'none',
             if isinstance(module, nn.Conv1d):
                 return ComplexBatchNorm1d(module.out_channels, **norm_kwargs)
             else:
-                # return ComplexBatchNorm2d(module.out_channels, **norm_kwargs)
-                raise ValueError("Batch norm for complex weights is not implemented yet.")
+                return ComplexBatchNorm2d(module.out_channels, **norm_kwargs)
         else:
             if isinstance(module, nn.Conv1d):
                 return nn.BatchNorm1d(module.out_channels, **norm_kwargs)
