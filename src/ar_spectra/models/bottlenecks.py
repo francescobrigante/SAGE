@@ -46,6 +46,10 @@ def vae_sample(mean, scale):
     
     
 class VAEBottleneck(Bottleneck):
+    # Number of encoder output channels per latent channel.
+    # Standard VAEBottleneck uses 2 ([mu | scale]); subclasses may override.
+    encoder_channel_multiplier: int = 2
+
     def __init__(self):
         super().__init__(is_discrete=False)
 
