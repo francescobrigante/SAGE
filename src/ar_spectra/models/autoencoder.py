@@ -166,14 +166,18 @@ class AutoEncoder(nn.Module):
         dec_in  = _get_dec_in_dim(self.decoder)
 
         if isinstance(self.bottleneck, VAEBottleneck):
+            mult = getattr(self.bottleneck, "encoder_channel_multiplier", 2)
             if (enc_dim is not None) and (dec_in is not None):
-                assert enc_dim == 2 * dec_in, (
+                assert enc_dim == mult * dec_in, (
                     f"Config mismatch with VAEBottleneck: encoder channels={enc_dim} "
-                    f"must be 2× decoder input={dec_in}. "
-                    f"Hint: set encoder.dimension=2*C and decoder.input_size=C."
+                    f"must be {mult}x decoder input={dec_in}. "
+                    f"Hint: set encoder.dimension={mult}*C and decoder.input_size=C."
                 )
             else:
-                warnings.warn("VAEBottleneck active but unable to deduce enc_dim/dec_in for check. Ensure encoder.dimension=2*C and decoder.input_size=C when using VAE bottleneck.")
+                warnings.warn(
+                    f"VAEBottleneck active but unable to deduce enc_dim/dec_in for check. "
+                    f"Ensure encoder.dimension={mult}*C and decoder.input_size=C when using VAE bottleneck."
+                )
         elif isinstance(self.bottleneck, SkipBottleneck):
             if (enc_dim is not None) and (dec_in is not None):
                 assert enc_dim == dec_in or dec_in % enc_dim == 0, (

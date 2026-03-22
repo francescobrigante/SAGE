@@ -2,6 +2,10 @@
 .env
 __pycache__/
 *.pyc
+.pytest_cache/
+
+CLAUDE.md
+MSc-thesis/
 
 .DS_Store
 .wandb/
