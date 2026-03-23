@@ -22,7 +22,7 @@ model:
     _target_: ar_spectra.models.implementations.SeaNET_AE.SEANetEncoder2d
     # input_size MUST match data.model_channels
     input_size: 4
-    dimension: ${mul:${model.parameters_to_predict},${model.latent_channels}}
+    dimension: ${mul:${models.model.parameters_to_predict},${models.model.latent_channels}}
     n_filters: 8
     n_residual_layers: 1
     ratios: [[4,2],[1,2],[4,2]]
@@ -42,7 +42,7 @@ model:
     _target_: ar_spectra.models.implementations.SeaNET_AE.SEANetDecoder2d
     # channels MUST match data.model_channels
     channels: 4
-    input_size: ${model.latent_channels}
+    input_size: ${models.model.latent_channels}
     n_filters: 8
     n_residual_layers: 1
     ratios: [[4,2],[1,2],[4,2]]
