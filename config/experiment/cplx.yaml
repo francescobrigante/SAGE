@@ -1,0 +1,17 @@
+# @package _global_
+defaults:
+  - override /models: SEANet_cplx_model
+
+data:
+  train_dataset:
+    cac: false
+  eval_dataset:
+    cac: false
+  model_channels: 2
+  demo:
+    istft_params:
+      cac: false
+
+trainer:
+  wandb:
+    name: "CPLX_Base"
