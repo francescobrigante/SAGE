@@ -15,6 +15,7 @@ from pytorch_lightning.profilers import PyTorchProfiler
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from pytorch_lightning.utilities.model_summary import summarize
 from torch.utils.data import DataLoader
+from datetime import datetime
 import hydra
 from hydra.utils import get_original_cwd, instantiate
 from omegaconf import DictConfig, OmegaConf
@@ -158,13 +159,25 @@ def main(cfg: DictConfig):
     # ─────────────────────────────────────────────────────────────────────────
     # Directory setup
     # ─────────────────────────────────────────────────────────────────────────
-    runs_dir = Path(get_original_cwd()) / "runs"
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    run_name = resolve_run_name(cfg)
+    now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    
+    # 1) Get the run name (user provided via wandb.name or resolved)
+    user_run_name = cfg.trainer.get("wandb", {}).get("name") if cfg.get("trainer") else None
+    if not user_run_name or user_run_name == "FMA_autoencoder_KL":
+        run_name = resolve_run_name(cfg)
+    else:
+        run_name = user_run_name
+        
     ok(f"Resolved run name: {run_name}", prefix="MODEL")
-    base_ckpt_dir = Path(get_original_cwd()) / str(cfg.trainer.trainer.get("ckpt_dir", "checkpoints"))
-    ckpt_dir = get_checkpoint_dir(base_ckpt_dir, run_name)
-    profiler_dir = runs_dir / "profiler"
+    
+    # 2) Create unique, nested run directory
+    run_dir = Path(get_original_cwd()) / "runs" / run_name / now
+    run_dir.mkdir(parents=True, exist_ok=True)
+    
+    ckpt_dir = run_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    
+    profiler_dir = run_dir / "profiler"
     profiler_dir.mkdir(parents=True, exist_ok=True)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -285,22 +298,23 @@ def main(cfg: DictConfig):
         if _is_rank0():
             logger = WandbLogger(
                 project=wandb_cfg.get("project", config.DEFAULT_WANDB_PROJECT),
-                name=wandb_cfg.get("name", "default_name"),
-                save_dir=str(runs_dir),
+                name=run_name,
+                save_dir=str(run_dir),
                 log_model=wandb_cfg.get("log_model", "all"),
+                config=OmegaConf.to_container(cfg, resolve=True),
                 settings=wandb.Settings(_service_wait=7),
             )
             try:
                 run = logger.experiment
-                conf_root = Path(get_original_cwd()) / "conf"
+                conf_root = Path(get_original_cwd()) / "config"
                 WandbConfigLogger(conf_root, use_artifact=True, log_text=False).log_to_wandb(run)
             except Exception as e:
                 warn(f"Upload dir conf on W&B failed ({type(e).__name__}: {e})", prefix="TRAINER")
         else:
             # Evita l'inizializzazione di run W&B sugli altri rank, ma mantieni un logger compatibile
-            logger = TensorBoardLogger(save_dir=str(runs_dir), name="lightning_logs", version=None)
+            logger = TensorBoardLogger(save_dir=str(run_dir), name="lightning_logs", version=None)
     else:
-        logger = TensorBoardLogger(save_dir=str(runs_dir), name="lightning_logs", version=None)
+        logger = TensorBoardLogger(save_dir=str(run_dir), name="lightning_logs", version=None)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Callbacks setup
@@ -309,7 +323,7 @@ def main(cfg: DictConfig):
     
     callbacks = [
         ModelInfoLogger(
-            filename="model_info.json",
+            filename=str(run_dir / "model_info.json"),
             max_module_lines=768,
             log_structure=bool(pl_trainer_cfg.get("log_model_structure", False))
         ),
@@ -378,7 +392,7 @@ def main(cfg: DictConfig):
     req_accelerator = req_device.split(":")[0]  # strip index, e.g. "cuda:0" -> "cuda"
 
     trainer = Trainer(
-        default_root_dir=str(runs_dir),
+        default_root_dir=str(run_dir),
         accelerator=req_accelerator,
         devices=int(pl_trainer_cfg.get("num_gpus", 1)),
         strategy=pl_trainer_cfg.get("strategy", "auto"),
