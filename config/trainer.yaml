@@ -4,7 +4,7 @@ device: ${config:DEFAULT_DEVICE}
 
 optimizer:
   _target_: torch.optim.AdamW
-  lr: 5e-3
+  lr: 5e-4
   weight_decay: 1e-4
   betas: [0.9, 0.98]
 
@@ -44,7 +44,7 @@ trainer:
 wandb:
   project: ${config:DEFAULT_WANDB_PROJECT}
   name: FMA_autoencoder_KL
-  use_wandb: false
+  use_wandb: true
 
 eval_loss_config:
   sisdr:
@@ -67,8 +67,17 @@ loss_config:
     stft_mse:
       config:
         reduction: mean
-
-    weights: {stft_mse: 1.0}
+    mrstft:
+      config: {}          # uses MultiResolutionSTFTLoss defaults (fft=[1024,2048,512])
+    weights:
+      stft_mse: 1.0
+      mrstft: 0.0         # disabled by default; override to 1.0 to activate
+  mrmel:
+    weights:
+      mrmel: 0.0          # disabled by default; override to activate
+    config:
+      n_mels: 128         # required: no default in MelSpectrogramLoss
+      window_lengths: [2048, 1024, 512]   # required: no default
   bottleneck:
     weights:
-      kl: 1e-3
+      kl: 1e-5
