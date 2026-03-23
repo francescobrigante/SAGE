@@ -46,12 +46,9 @@ def vae_sample(mean, scale):
     
     
 class VAEBottleneck(Bottleneck):
-    # Number of encoder output channels per latent channel.
-    # Standard VAEBottleneck uses 2 ([mu | scale]); subclasses may override.
-    encoder_channel_multiplier: int = 2
-
-    def __init__(self):
+    def __init__(self, parameters_to_predict: int = 2):
         super().__init__(is_discrete=False)
+        self.parameters_to_predict = parameters_to_predict  # num encoder slots per latent channel
 
     def encode(self, x, return_info=False, **kwargs):
         info = {}
@@ -93,4 +90,3 @@ class SkipBottleneck(Bottleneck):
 
     def decode(self, x):
         return x
-

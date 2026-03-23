@@ -23,7 +23,7 @@ The codebase provides:
 
 - **`ar_spectra:`** A modular library of encoder/decoder architectures based on complex-valued neural network building blocks, with training infrastructure (PyTorch Lightning) and loss functions (spectral, perceptual, adversarial). Developed by [Luca Cerovaz](https://github.com/CerovazS) and refactored by me.
 
-- **`c-vae:`** 🚧 A module for the complex-valued VAE generative model (not yet implemented).
+- **`c_vae:`** A module implementing the **Complex-Valued VAE bottleneck** (`ComplexVAEBottleneck`), supporting proper (circular), improper, and Cholesky-parameterized complex Gaussian posteriors.
 
 Training is fully configured via [Hydra](https://hydra.cc/) YAML files, logged through [Weights & Biases](https://wandb.ai/), and evaluated with standard audio quality metrics (SI-SDR, spectral convergence, CDPAM, FAD).
 
@@ -149,8 +149,8 @@ C-VAE/
     │       ├── tensors.py                # Tensor shape utilities, complex ↔ real conversion
     │       └── aeiou.py                  # Audio-to-STFT pipeline and channel format helpers
     │
-    └── c-vae/                            # 🚧 Complex-valued VAE generative model (WIP)
-        └── .gitkeep
+    └── c_vae/                            # Complex-valued VAE generative model
+        └── bottleneck.py                 # ComplexVAEBottleneck: proper, improper, Cholesky modes
 
 ```
 
@@ -182,12 +182,15 @@ uv sync
 
 ## 🔧 Configuration
 
-All configuration is managed through [Hydra](https://hydra.cc/) with a hierarchical YAML structure. Global constants live in `config.py` and are referenced in YAML files via a custom resolver:
+All configuration is managed through [Hydra](https://hydra.cc/) with a hierarchical YAML structure. Global constants live in `config.py` and are referenced in YAML files via custom resolvers:
 
 ```yaml
-# Example: config/data.yaml references config.py constants
+# config.py constants
 sample_rate: ${config:DEFAULT_SAMPLE_RATE}    # resolves to 44100
 device: ${config:DEFAULT_DEVICE}              # resolves to mps / cuda:0 / cpu
+
+# Inline integer arithmetic (registered in train.py)
+dimension: ${mul:${model.parameters_to_predict},${model.latent_channels}}
 ```
 
 ### Configuration Hierarchy
@@ -199,6 +202,24 @@ device: ${config:DEFAULT_DEVICE}              # resolves to mps / cuda:0 / cpu
 | `config/data.yaml` | Dataset (OnTheFlySTFTDataset) and dataloader settings: STFT params, batch size, workers, channel mapping |
 | `config/trainer.yaml` | Optimizer (AdamW), scheduler (InverseLR), loss config, WandB settings, training hyperparameters |
 | `config/models/*.yaml` | One file per model architecture (see [Architecture Overview](#-architecture-overview)) |
+
+#### Latent Space Configuration
+
+Model YAMLs define `latent_channels` and `parameters_to_predict` as a **single source of truth** — encoder/decoder channel dimensions are derived automatically:
+
+```yaml
+model:
+  latent_channels: 64         # decoder input dim = latent space size
+  parameters_to_predict: 3    # 2 = proper (C=0),  3 = improper (full complex Gaussian)
+
+  encoder:
+    dimension: ${mul:${model.parameters_to_predict},${model.latent_channels}}   # 192
+  decoder:
+    input_size: ${model.latent_channels}                                         # 64
+```
+
+> [!NOTE]
+> `parameters_to_predict` must match the bottleneck mode: `2` for `proper: true` (circular), `3` for improper or Cholesky modes.
 
 ### Selecting a Model
 
@@ -379,6 +400,9 @@ The system follows a modular **Encoder → Bottleneck → Decoder** architecture
 | Bottleneck | Class | Description |
 |---|---|---|
 | **VAE** | `VAEBottleneck` | Reparametrization trick: μ/σ → z ~ N(μ, σ²), KL divergence regularization |
+| **Complex VAE (Proper)** | `ComplexVAEBottleneck(proper=True)` | Circular complex Gaussian CN(μ, diag(γ), 0); `parameters_to_predict=2` |
+| **Complex VAE (Improper)** | `ComplexVAEBottleneck(proper=False)` | Full complex Gaussian CN(μ, diag(σ), diag(c)); σ > \|c\| enforced via KL barrier; `parameters_to_predict=3` |
+| **Complex VAE (Cholesky)** | `ComplexVAEBottleneck(apply_cholesky_constraints=True)` | Same posterior as improper, but σ > \|c\| guaranteed by construction via Cholesky factorization; `parameters_to_predict=3` |
 | **Skip** | `SkipBottleneck` | Passthrough: no compression or regularization (deterministic AE) |
 
 ### Discriminator Zoo
@@ -429,10 +453,17 @@ loss_config:
 
 ---
 
-## 🚧 C-VAE Module
+## 🧮 C-VAE Module
 
-> [!NOTE]
-> The `src/c-vae/` directory is a placeholder for the upcoming **Complex-Valued VAE** generative model.
+`src/c_vae/bottleneck.py` implements the **Complex Gaussian VAE bottleneck**, supporting three posterior families:
+
+| Mode | Config | Posterior | Constraint |
+|---|---|---|---|
+| **Proper (circular)** | `proper: true`, `parameters_to_predict: 2` | CN(μ, diag(γ), 0) | γ > 0 via Softplus |
+| **Improper (default)** | `proper: false`, `parameters_to_predict: 3` | CN(μ, diag(σ), diag(c)) | σ > \|c\| via KL barrier |
+| **Cholesky** | `apply_cholesky_constraints: true`, `parameters_to_predict: 3` | same as improper | σ > \|c\| by construction |
+
+The Cholesky mode expresses the sampling kernel via lower-triangular factors (l₁₁, l₂₁, l₂₂), yielding a numerically stable KL analogous to the real-VAE formula: `KL = ‖μ‖² + Σ[l₁₁² + l₂₁² + l₂₂² − 1 − log(2·l₁₁·l₂₂)]`.
 
 ---
 
