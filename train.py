@@ -35,6 +35,7 @@ logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 
 import config
 OmegaConf.register_new_resolver("config", lambda key: getattr(config, key))
+OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
 from ar_spectra.training.callbacks import DatasetEpochSetter, ModelInfoLogger
 

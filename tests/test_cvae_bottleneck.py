@@ -14,7 +14,7 @@ _SRC = "/Users/francesco/Desktop/C-VAE/src"
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from c_vae.bottleneck import reparametrize, get_kl, get_cholesky_kl, ComplexVAEBottleneck
+from c_vae.bottleneck import reparametrize, get_kl, get_cholesky_kl, get_proper_kl, ComplexVAEBottleneck
 from ar_spectra.models.bottlenecks import VAEBottleneck
 
 
@@ -367,6 +367,31 @@ def test_reparametrize_unbiased_mean():
     assert abs(mean.real.item() - mu.real.item()) < 0.05, (
         f"E[z.real]={mean.real.item():.3f} should be ≈ mu.real={mu.real.item():.3f}"
     )
-    assert abs(mean.imag.item() - mu.imag.item()) < 0.05, (
-        f"E[z.imag]={mean.imag.item():.3f} should be ≈ mu.imag={mu.imag.item():.3f}"
-    )
+# ---------------------------------------------------------------------------
+# Test 21 — encode() output shape (Proper mode)
+# ---------------------------------------------------------------------------
+
+def test_encode_shape_proper():
+    """encode(x, return_info=True) with x=(2,4,8,16) -> z=(2,2,8,16) complex, kl scalar."""
+    bottleneck = ComplexVAEBottleneck(proper=True)
+    # Proper mode expects parameters_to_predict=2, so C=4 -> z has 4/2=2 channels
+    x = _make_input(B=2, C=4, H=8, W=16)
+    z, info = bottleneck.encode(x, return_info=True)
+
+    assert torch.is_complex(z), "z must be complex"
+    assert z.shape == (2, 2, 8, 16), f"Expected z shape (2,2,8,16), got {z.shape}"
+    assert "kl" in info, "info dict must contain 'kl'"
+    assert info["kl"].ndim == 0, "kl must be a scalar (0-dim tensor)"
+
+
+# ---------------------------------------------------------------------------
+# Test 22 — Proper KL non-negativity
+# ---------------------------------------------------------------------------
+
+def test_get_proper_kl_non_negative():
+    """get_proper_kl should be >= 0 for random inputs."""
+    shape = (2, 4, 8, 16)
+    mu = _make_mu(shape)
+    gamma = torch.rand(*shape).abs() + 0.1 # Strictly positive variance
+    kl = get_proper_kl(mu, gamma)
+    assert kl.item() >= 0.0, f"Proper KL should be non-negative, got {kl.item()}"

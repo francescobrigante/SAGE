@@ -169,7 +169,7 @@ class AutoEncoder(nn.Module):
         dec_in  = _get_dec_in_dim(self.decoder)
 
         if isinstance(self.bottleneck, VAEBottleneck):
-            mult = getattr(self.bottleneck, "encoder_channel_multiplier", 2)
+            mult = getattr(self.bottleneck, "parameters_to_predict", 2)
             if (enc_dim is not None) and (dec_in is not None):
                 assert enc_dim == mult * dec_in, (
                     f"Config mismatch with VAEBottleneck: encoder channels={enc_dim} "
