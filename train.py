@@ -404,7 +404,7 @@ def main(cfg: DictConfig):
         trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl)
     except KeyboardInterrupt:
         warn("Training interrupted by user (Ctrl+C). Exiting gracefully...", prefix="TRAINER")
-        os._exit(0)
+        sys._exit(0)
     except RuntimeError as e:
         if "out of memory" in str(e).lower() or "not enough memory" in str(e).lower():
             err("="*80, prefix="TRAINER")
@@ -419,7 +419,7 @@ def main(cfg: DictConfig):
             err("="*80 + "\n", prefix="TRAINER")
         elif "is killed by signal: interrupt" in str(e).lower():
             warn("Training interrupted by user (Ctrl+C). Force exiting.", prefix="TRAINER")
-            os._exit(0)
+            sys._exit(0)
         else:
             raise e
 

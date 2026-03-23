@@ -1,5 +1,10 @@
 # Model configuration - Hydra instantiate API (Complex SEANet)
 # Use _target_ for automatic instantiation via hydra.utils.instantiate
+#
+# REQUIRED data overrides (add to every train.py call for this model):
+#   data.train_dataset.cac=false data.eval_dataset.cac=false
+#   data.model_channels=2 data.demo.istft_params.cac=false
+# Reason: complex encoder expects complex tensors (not real CAC-split tensors)
 
 model:
   # ── single source of truth ──────────────────────────────────────────

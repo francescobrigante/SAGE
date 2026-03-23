@@ -58,8 +58,6 @@ class PatchMergingLinearComplex(nn.Module):
         if pad_h or pad_w:
             # pad format: (dim_last, dim_last, W, W, H, H)
             x = torch.nn.functional.pad(x, (0, 0, 0, pad_w, 0, pad_h))
-            H = H + pad_h
-            W = W + pad_w
 
         # Extract the 4 corners of each 2×2 block
         x0 = x[:, 0::2, 0::2, :]  # top-left    (B, H/2, W/2, D)
@@ -191,13 +189,14 @@ class ConvPatchDownsampleComplex(nn.Module):
 
 class PatchUnmergingLinearComplex(nn.Module):
     """
-    Swin-style patch unmerging (upsampling):
+    Swin-style patch unmerging (upsampling — exact inverse of PatchMergingLinearComplex):
 
     - Input:  x ∈ C^{B × L × D}, with L = H * W.
     - Rebuild the grid: (B, H, W, D).
-    - Group 2×2 blocks: concatenate 4 tokens → (B, H/2, W/2, 4D).
-    - Apply ComplexLayerNorm + Linear(4D → out_dim) to expand dimensions.
-    - Return the sequence: (B, L', out_dim) with L' = H/2 * W/2 (upsampled).
+    - Apply ComplexLayerNorm + Linear(D → 4 * out_dim).
+    - Split into 4 sub-tensors of shape (B, H, W, out_dim).
+    - Interleave via 2×2 scatter → (B, 2H, 2W, out_dim).
+    - Return the sequence: (B, L', out_dim) with L' = 2H * 2W.
     """
 
     def __init__(
@@ -208,10 +207,10 @@ class PatchUnmergingLinearComplex(nn.Module):
     ):
         super().__init__()
         self.dim = dim
-        self.out_dim = out_dim if out_dim is not None else 2 * dim  # default: raddoppia D
+        self.out_dim = out_dim if out_dim is not None else dim // 2  # inverse of merging: halve D
 
-        self.norm = ComplexLayerNorm(4 * dim) if use_norm else None
-        self.reduction = nn.Linear(4 * dim, self.out_dim, dtype=torch.complex64)
+        self.norm = ComplexLayerNorm(dim) if use_norm else None
+        self.expansion = nn.Linear(dim, 4 * self.out_dim, dtype=torch.complex64)
 
     def forward(
         self,
@@ -223,8 +222,8 @@ class PatchUnmergingLinearComplex(nn.Module):
         grid_hw: (H, W) with H * W = L
 
         Returns:
-            x_unmerged: (B, L', out_dim) with L' = (H'/W') = (H//2 * W//2) (upsampled)
-            new_grid: (H', W') = (H//2, W//2) (including any padding)
+            x_unmerged: (B, L', out_dim) with L' = 2H * 2W
+            new_grid:   (2H, 2W)
         """
         B, L, D = x.shape
         H, W = grid_hw
@@ -235,35 +234,26 @@ class PatchUnmergingLinearComplex(nn.Module):
             raise ValueError(f"L={L} != H*W={H*W} (inconsistent grid_hw)")
 
         # (B, L, D) → (B, H, W, D)
-        x = x.view(B, H, W, D)
+        x = x.view(B, H, W, D)                                           # (B, H,   W,   D)
 
-        # Pad if H or W is odd (as in Swin)
-        pad_h = H % 2
-        pad_w = W % 2
-        if pad_h or pad_w:
-            # pad format: (dim_last, dim_last, W, W, H, H)
-            x = torch.nn.functional.pad(x, (0, 0, 0, pad_w, 0, pad_h))
-            H = H + pad_h
-            W = W + pad_w
-
-        # Extract the 4 corners of each 2×2 block
-        x0 = x[:, 0::2, 0::2, :]  # top-left    (B, H/2, W/2, D)
-        x1 = x[:, 1::2, 0::2, :]  # bottom-left (B, H/2, W/2, D)
-        x2 = x[:, 0::2, 1::2, :]  # top-right   (B, H/2, W/2, D)
-        x3 = x[:, 1::2, 1::2, :]  # bottom-right(B, H/2, W/2, D)
-
-        # Concatenate (4 × D) for each new grid cell
-        x = torch.cat([x0, x1, x2, x3], dim=-1)  # (B, H/2, W/2, 4D)
-
-        # Norm + linear 4D → out_dim
+        # Norm + linear D → 4 * out_dim  (expand channels before scattering)
         if self.norm is not None:
-            x = self.norm(x)
-        x = self.reduction(x)  # (B, H/2, W/2, out_dim)
+            x = self.norm(x)                                              # (B, H,   W,   D)
+        x = self.expansion(x)                                             # (B, H,   W,   4*out_dim)
 
-        new_H, new_W = x.shape[1], x.shape[2]
+        # Split into 4 sub-tensors, one per 2×2 position
+        x0, x1, x2, x3 = x.chunk(4, dim=-1)                             # 4 × (B, H, W, out_dim)
 
-        # Return to sequence: (B, L', out_dim) with L' = new_H * new_W
-        x = x.view(B, new_H * new_W, self.out_dim)
+        # Scatter into doubled grid via 2×2 interleaving (inverse of merging extraction)
+        new_H, new_W = H * 2, W * 2
+        out = torch.zeros(B, new_H, new_W, self.out_dim, dtype=x0.dtype, device=x0.device)
+        out[:, 0::2, 0::2, :] = x0  # top-left
+        out[:, 1::2, 0::2, :] = x1  # bottom-left
+        out[:, 0::2, 1::2, :] = x2  # top-right
+        out[:, 1::2, 1::2, :] = x3  # bottom-right                      # (B, 2H,  2W,  out_dim)
+
+        # (B, 2H, 2W, out_dim) → (B, L', out_dim) with L' = 2H * 2W
+        x = out.view(B, new_H * new_W, self.out_dim)                     # (B, L',  out_dim)
         return x, (new_H, new_W)
 
 

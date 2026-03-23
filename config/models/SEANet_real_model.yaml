@@ -10,7 +10,7 @@ model:
   autoencoder:
     return_latent: false
     pre_transform:
-      type: none     # none | log_mag | power_norm
+      type: power_norm     # none | log_mag | power_norm
       apply_target: true
       apply_inverse: true
       config:

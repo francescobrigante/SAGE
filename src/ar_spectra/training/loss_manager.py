@@ -233,6 +233,7 @@ class LossManager(nn.Module):
                 params = self._extract_hparams(self.mrstft)
             except Exception:
                 params = {}
+                warn(f"Failed to extract hparams from {type(self.mrstft).__name__}", prefix="LOSS")
             ok(f"{type(self.mrstft).__name__}: {params}", prefix="LOSS")
             if self.apply_pre_transform_to_wave_losses:
                 ok("pre_transform applied to waveform spectral losses", prefix="LOSS")
@@ -241,6 +242,7 @@ class LossManager(nn.Module):
                 params = self._extract_hparams(self.phase_loss)
             except Exception:
                 params = {}
+                warn(f"Failed to extract hparams from {type(self.phase_loss).__name__}", prefix="LOSS")
             ok(f"{type(self.phase_loss).__name__}: {params}", prefix="LOSS")
         if spectral_cfg:
             ok(f"Spectral weights: {spectral_cfg.get('weights', {})}", prefix="LOSS")
