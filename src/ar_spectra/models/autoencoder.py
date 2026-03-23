@@ -148,18 +148,21 @@ class AutoEncoder(nn.Module):
         def _get_enc_dim(m):
             if hasattr(m, "output_size"):
                 try: return int(m.output_size())
-                except Exception: pass
+                except Exception:
+                    warn(f"Unable to call output_size() on encoder {type(m).__name__}; skipping dimension check.", prefix="CONFIG CHECK")
             for k in ["dimension", "latent_dim", "out_channels"]:
                 if hasattr(m, k):
                     try: return int(getattr(m, k))
-                    except Exception: pass
+                    except Exception:
+                        warn(f"Unable to get encoder dimension from attribute '{k}' on {type(m).__name__}; skipping dimension check.", prefix="CONFIG CHECK")
             return None
 
         def _get_dec_in_dim(m):
             for k in ["input_size", "dimension", "in_channels"]:
                 if hasattr(m, k):
                     try: return int(getattr(m, k))
-                    except Exception: pass
+                    except Exception:
+                        warn(f"Unable to get decoder input dimension from attribute '{k}' on {type(m).__name__}; skipping dimension check.", prefix="CONFIG CHECK")
             return None
 
         enc_dim = _get_enc_dim(self.encoder)
