@@ -99,32 +99,66 @@ class PowerMagnitudeTransform:
         eps: Numerical stability term used only when extracting phase.
     """
 
-    def __init__(self, alpha: float = 1.0, beta: float = 1.0, eps: float = 1e-8):
+    def __init__(
+        self,
+        alpha: float = 1.0,
+        beta: float = 1.0,
+        eps: float = 1e-8,
+        eps_phase: Optional[float] = None,
+        eps_pow: Optional[float] = None,
+        alpha_min: float = 1e-3,
+    ):
         if alpha <= 0.0:
             raise ValueError("alpha must be strictly positive for power-law rescaling")
         if beta <= 0.0:
             raise ValueError("beta must be strictly positive for power-law rescaling")
+        if alpha_min <= 0.0:
+            raise ValueError("alpha_min must be strictly positive")
         self.alpha = float(alpha)
         self.beta = float(beta)
         self.eps = float(eps)
+        self.eps_phase = float(self.eps if eps_phase is None else eps_phase)
+        self.eps_pow = float(self.eps if eps_pow is None else eps_pow)
+        self.alpha_min = float(alpha_min)
+
+    def _safe_unit(self, S: torch.Tensor, mag: torch.Tensor) -> torch.Tensor:
+        safe_mag = mag.clamp_min(self.eps_phase)
+        unit = S / safe_mag
+        return torch.where(mag > self.eps_phase, unit, torch.zeros_like(unit))
 
     def transform(self, S_in: torch.Tensor) -> torch.Tensor:
         S = _spectrogram_to_complex(S_in)
         mag = torch.abs(S)
-        unit = S / (mag + self.eps)
+        unit = self._safe_unit(S, mag)
         # magnitude follows beta_rescale * |x|**alpha_rescale
-        mag_scaled = self.beta * mag.pow(self.alpha)
+        alpha_safe = max(self.alpha, self.alpha_min)
+        mag_scaled = self.beta * mag.clamp_min(self.eps_pow).pow(alpha_safe)
         Sout = unit * mag_scaled
+        if torch.is_complex(Sout):
+            Sout = torch.complex(
+                torch.nan_to_num(Sout.real, nan=0.0, posinf=0.0, neginf=0.0),
+                torch.nan_to_num(Sout.imag, nan=0.0, posinf=0.0, neginf=0.0),
+            )
+        else:
+            Sout = torch.nan_to_num(Sout, nan=0.0, posinf=0.0, neginf=0.0)
         return _spectrogram_from_complex(Sout, S_in)
 
     def inverse(self, S_in: torch.Tensor) -> torch.Tensor:
         S = _spectrogram_to_complex(S_in)
         mag = torch.abs(S)
-        mag_scaled = mag / self.beta
+        mag_scaled = (mag / self.beta).clamp_min(self.eps_pow)
         # undo the normalize_complex exponentiation
-        mag_restored = mag_scaled.clamp_min(0.0).pow(1.0 / self.alpha)
-        unit = S / (mag + self.eps)
+        alpha_safe = max(self.alpha, self.alpha_min)
+        mag_restored = mag_scaled.pow(1.0 / alpha_safe)
+        unit = self._safe_unit(S, mag)
         Sout = unit * mag_restored
+        if torch.is_complex(Sout):
+            Sout = torch.complex(
+                torch.nan_to_num(Sout.real, nan=0.0, posinf=0.0, neginf=0.0),
+                torch.nan_to_num(Sout.imag, nan=0.0, posinf=0.0, neginf=0.0),
+            )
+        else:
+            Sout = torch.nan_to_num(Sout, nan=0.0, posinf=0.0, neginf=0.0)
         return _spectrogram_from_complex(Sout, S_in)
 
 
