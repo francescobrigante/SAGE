@@ -99,6 +99,8 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         latent_mask_ratio: float = 0.0,
         teacher_model: Optional[AutoEncoder] = None,
         clip_grad_norm: float = 0.0,
+        kl_annealing_epochs: int = 0,
+        kl_beta_target: float = 0.0,
         audio_channels: Optional[int] = None,
         model_channels: Optional[int] = None,
         stft_params: Optional[dict] = None,
@@ -111,6 +113,8 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         self.automatic_optimization = False
         self.accumulate_grad_batches = max(1, int(accumulate_grad_batches))
         self.clip_grad_norm = clip_grad_norm
+        self.kl_annealing_epochs = kl_annealing_epochs  # 0 = disabled; N = linear warmup over N epochs
+        self.kl_beta_target = kl_beta_target             # target β at end of warmup
         self.lr = lr
         self.audio_channels = audio_channels
         self.model_channels = model_channels
@@ -235,6 +239,19 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         latents = enc_out[0] if isinstance(enc_out, tuple) else enc_out
         decoded = self.engine.autoencoder.decode(latents)
         return decoded
+
+    def on_train_epoch_start(self) -> None:
+        if self.kl_annealing_epochs <= 0:
+            return
+        epoch = self.current_epoch
+        if epoch > self.kl_annealing_epochs:
+            return  # warmup complete; weight already at target
+        kl_module = self.engine.loss_manager.get_kl_loss_module()
+        if kl_module is None:
+            return
+        annealed = self.kl_beta_target * min(epoch / self.kl_annealing_epochs, 1.0)
+        kl_module.update_weight(annealed)
+        self.log("train/kl_weight", annealed, on_epoch=True, prog_bar=False)
 
     def training_step(self, batch, batch_idx):
         out = self.engine.compute(batch, global_step=int(self.global_step))

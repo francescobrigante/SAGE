@@ -36,6 +36,8 @@ trainer:
   accumulate_grad_batches: 1
   strategy: auto
   num_gpus: 1
+  clip_grad_norm: 1.0
+  kl_annealing_epochs: 20
   terminate_on_nan: true
   detect_anomaly: false
   # gradient_clip_val/algorithm rimossi: non supportati con manual optimization
@@ -68,16 +70,20 @@ loss_config:
       config:
         reduction: mean
     mrstft:
-      config: {}          # uses MultiResolutionSTFTLoss defaults (fft=[1024,2048,512])
+      config:
+        max_loss_clamp: 100.0     # bounds explosive spikes from near-zero bins
     weights:
       stft_mse: 1.0
       mrstft: 0.0         # disabled by default; override to 1.0 to activate
   mrmel:
     weights:
-      mrmel: 0.0          # disabled by default; override to activate
+      mrmel: 0.3
     config:
-      n_mels: 128         # required: no default in MelSpectrogramLoss
-      window_lengths: [2048, 1024, 512]   # required: no default
+      n_mels: [128, 128, 128]
+      window_lengths: [2048, 1024, 512]
+      pow: 2.0            # exponent for power spectrogram (1.0 = mag, 2.0 = power)
+      log_weight: 1.0
+      mag_weight: 1.0
   bottleneck:
     weights:
-      kl: 1e-5
+      kl: 1.0e-3          # annealed from 0 to kl_beta_target over kl_annealing_epochs
