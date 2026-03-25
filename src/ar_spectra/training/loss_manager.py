@@ -213,6 +213,13 @@ class LossManager(nn.Module):
         ok(f"initialized with eval losses: {list(self.eval_losses.keys())}", prefix="LOSS MANAGER")
         self._log_losses_summary()
 
+    def get_kl_loss_module(self):
+        """Return the KL ValueLoss module, or None if not present."""
+        for loss_module in self.losses_gen.losses:
+            if getattr(loss_module, 'name', '') == 'kl_loss':
+                return loss_module
+        return None
+
     def _extract_hparams(self, module: nn.Module) -> dict:
         simple = {}
         for k, v in vars(module).items():

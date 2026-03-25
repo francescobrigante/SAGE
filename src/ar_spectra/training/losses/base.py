@@ -13,6 +13,11 @@ class LossModule(nn.Module):
         weight = torch.tensor(float(weight))
         self.register_buffer('weight', weight)
 
+    def update_weight(self, new_weight: float) -> None:
+        """Set weight and master_weight so decay_weight() does not undo the change."""
+        self.weight.fill_(new_weight)
+        self.master_weight = new_weight
+
     def decay_weight(self):
         if self.decay != 1.0:
             self.weight *= self.decay

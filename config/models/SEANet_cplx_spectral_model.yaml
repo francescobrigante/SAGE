@@ -1,15 +1,20 @@
-# Model configuration - Hydra instantiate API (Complex SEANet)
+# Model configuration - Hydra instantiate API (Complex SEANet, Spectral Bottleneck)
 # Use _target_ for automatic instantiation via hydra.utils.instantiate
 #
 # REQUIRED data overrides (add to every train.py call for this model):
 #   data.train_dataset.cac=false data.eval_dataset.cac=false
 #   data.model_channels=2 data.demo.istft_params.cac=false
 # Reason: complex encoder expects complex tensors (not real CAC-split tensors)
+#
+# Spectral parameterization:
+#   σ = λ₁ + λ₂,  c = (λ₁ − λ₂)e^{2iθ}
+#   slot_2.real → λ₁ (softplus), slot_2.imag → λ₂ (softplus), slot_3.real → θ (free)
+#   σ > |c| guaranteed by construction (triangle inequality), no clamping needed.
 
 model:
   # ── single source of truth ──────────────────────────────────────────
   latent_channels: 64      # decoder input dim = latent space size
-  parameters_to_predict: 3 # 2 = proper (C=0),  3 = improper (full CN)
+  parameters_to_predict: 3 # must be 3 for spectral (improper) mode
   # ────────────────────────────────────────────────────────────────────
 
   autoencoder:
@@ -61,5 +66,6 @@ model:
 
   bottleneck:
     _target_: c_vae.bottleneck.ComplexVAEBottleneck
-    proper: false                       # must match parameters_to_predict: 2 → proper, 3 → improper
-    apply_cholesky_constraints: false   # explicit: use tanh+softplus barrier mode (default)
+    proper: false
+    apply_cholesky_constraints: false
+    apply_spectral_parameterization: true

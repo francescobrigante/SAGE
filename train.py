@@ -255,12 +255,15 @@ def main(cfg: DictConfig):
     trainer_cfg = cfg.trainer
     pre_transform_spec = model_cfg.get("autoencoder", {}).get("pre_transform")
     
+    loss_config_dict = OmegaConf.to_container(trainer_cfg.get("loss_config", {}), resolve=True) or {}
+    kl_beta_target = float((loss_config_dict.get("bottleneck") or {}).get("weights", {}).get("kl", 0.0))
+
     wrapper = AutoencoderTrainingWrapper(
         autoencoder=autoencoder,
         sample_rate=sample_rate,
         audio_channels=audio_channels,
         model_channels=model_channels,
-        loss_config=OmegaConf.to_container(trainer_cfg.get("loss_config", {}), resolve=True) or None,
+        loss_config=loss_config_dict or None,
         eval_loss_config=OmegaConf.to_container(trainer_cfg.get("eval_loss_config", {}), resolve=True) or None,
         warmup_steps=int(trainer_cfg.trainer.get("warmup_steps", 0)),
         warmup_mode=str(trainer_cfg.trainer.get("warmup_mode", "adv")),
@@ -273,6 +276,9 @@ def main(cfg: DictConfig):
         scheduler_spec=OmegaConf.to_container(trainer_cfg.get("scheduler", {}), resolve=True) or None,
         pre_transform_spec=pre_transform_spec,
         accumulate_grad_batches=int(trainer_cfg.trainer.get("accumulate_grad_batches", 1)),
+        clip_grad_norm=float(trainer_cfg.trainer.get("clip_grad_norm", 0.0)),
+        kl_annealing_epochs=int(trainer_cfg.trainer.get("kl_annealing_epochs", 0)),
+        kl_beta_target=kl_beta_target,
     )
 
     # Provide eval STFT params to engine for validation phase

@@ -79,11 +79,16 @@ def get_kl(mu: torch.Tensor, sigma: torch.Tensor, c: torch.Tensor) -> torch.Tens
     """
     # μ^H μ = |μ|² elementwise
     mu_x2 = mu.real**2 + mu.imag**2
-    # log determinant log(σ² - |c|²) with clamp
-    log_det = torch.log((sigma**2 - c.abs()**2).clamp(min=SMALL_EPSILON))
 
+    # log determinant log(σ² - |c|²) = log(σ-|c|) + log(σ+|c|)
+    gap1 = (sigma - c.abs()).clamp(min=SMALL_EPSILON)   # σ - |c|
+    gap2 =  sigma + c.abs()                             # σ + |c|,  no clamp needed
+    log_det = torch.log(gap1) + torch.log(gap2)         # log(σ² - |c|²)
+    
     kl_per_dim = mu_x2 + sigma - 1.0 - 0.5 * log_det
     return kl_per_dim.sum(dim=1).mean()
+
+
 
 
 def get_cholesky_kl(mu: torch.Tensor, l11: torch.Tensor, l21: torch.Tensor, l22: torch.Tensor) -> torch.Tensor:
@@ -109,36 +114,48 @@ def get_cholesky_kl(mu: torch.Tensor, l11: torch.Tensor, l21: torch.Tensor, l22:
     """
     mu_x2 = mu.real**2 + mu.imag**2
 
-    kl_per_dim = l11**2 + l21**2 + l22**2 - 1.0 - torch.log(2.0 * l11 * l22 + SMALL_EPSILON)
+    kl_per_dim = l11**2 + l21**2 + l22**2 - 1.0 - torch.log(2.0 * l11) - torch.log(l22)
     return (mu_x2 + kl_per_dim).sum(dim=1).mean()
 
 
 class ComplexVAEBottleneck(VAEBottleneck):
     """
-    Complex Gaussian VAE bottleneck. 
+    Complex Gaussian VAE bottleneck.
     Expects a complex tensor with (parameters_to_predict x latent_channels) along dim=1.
-    Operates in three modes:
+    Operates in four modes:
 
     1) proper = True (Circular Mode):
         Predicted parameters: μ (complex), γ (real only)
         Posterior: CN(μ, diag(γ), 0)
         Strict positivity of γ is ensured by Softplus + SMALL_EPSILON.
 
-    2) proper = False, apply_cholesky_constraints = False (DEFAULT):
+    2) proper = False, apply_cholesky_constraints = False, apply_spectral_parameterization = False (DEFAULT):
         Predicted parameters: μ (complex), log_σ (used only Re), c (complex)
-        The constraint σ > |c| is not explicitly enforced: the KL divergence term 
+        The constraint σ > |c| is not explicitly enforced: the KL divergence term
             -1/2 * log(σ² - |c|²) acts as a natural barrier function (→ +∞ as |c| → σ).
 
     3) proper = False, apply_cholesky_constraints = True:
         Predicted parameters: μ (complex), log(l₁₁), l₂₁, log(l₂₂) (3 predicted because log(l₁₁) and l₂₁ are Re and Im)
         The constraint σ > |c| is guaranteed by construction whenever l₁₁,l₂₂ > 0,
             which is ensured by l₁₁ = exp(·) > 0 and l₂₂ = exp(·) > 0.
+
+    4) proper = False, apply_spectral_parameterization = True:
+        Predicted parameters: μ (complex), λ₁ = softplus(slot_2.real), λ₂ = softplus(slot_2.imag), θ = slot_3.real
+        Eigendecomposition of the augmented 2×2 covariance: σ = λ₁ + λ₂, c = (λ₁ − λ₂)e^{2iθ}
+        The constraint σ > |c| is guaranteed by construction (triangle inequality: |λ₁−λ₂| ≤ λ₁+λ₂).
+        No clamping needed: log_det = log(4λ₁λ₂) is always finite for λᵢ > 0.
     """
 
-    def __init__(self, apply_cholesky_constraints: bool = False, proper: bool = False):
+    def __init__(
+        self,
+        apply_cholesky_constraints: bool = False,
+        apply_spectral_parameterization: bool = False,
+        proper: bool = False,
+    ):
         # 2 parameters for proper mode, 3 for improper mode
         super().__init__(parameters_to_predict=2 if proper else 3)
-        self.apply_cholesky_constraints = apply_cholesky_constraints
+        self.apply_cholesky_constraints      = apply_cholesky_constraints       # improper Cholesky mode
+        self.apply_spectral_parameterization = apply_spectral_parameterization  # improper spectral mode
         self.proper = proper
 
     def encode(self, x: torch.Tensor, return_info: bool = False, **kwargs) -> tuple[torch.Tensor, dict] | torch.Tensor:
@@ -156,6 +173,32 @@ class ComplexVAEBottleneck(VAEBottleneck):
             sigma = F.softplus(slot_2.real) + SMALL_EPSILON
             c     = None             
             kl    = get_proper_kl(mu, sigma)
+
+        # ────────────────────────────────── Improper mode (Spectral) ──────────────────────────────────
+        # ⚠ YAML: set model.parameters_to_predict=3 and model.bottleneck.apply_spectral_parameterization=true
+        elif self.apply_spectral_parameterization:
+            assert x.shape[1] % 3 == 0, (
+                f"ComplexVAEBottleneck (spectral) expects channels divisible by 3 [μ|λ₁λ₂|θ], "
+                f"got {x.shape[1]}"
+            )
+            slot_2 = x[:, m:2*m]
+            slot_3 = x[:, 2*m:]
+
+            lambda1 = F.softplus(slot_2.real) + SMALL_EPSILON  # eigenvalue 1, > 0
+            lambda2 = F.softplus(slot_2.imag) + SMALL_EPSILON  # eigenvalue 2, > 0 (slot_2.imag was previously wasted)
+            theta   = slot_3.real                               # rotation angle, unconstrained
+
+            sigma = lambda1 + lambda2                           # total variance: σ = λ₁ + λ₂
+            c = torch.complex(                                  # pseudo-variance: c = (λ₁−λ₂)e^{2iθ}
+                (lambda1 - lambda2) * torch.cos(2.0 * theta),
+                (lambda1 - lambda2) * torch.sin(2.0 * theta),
+            )
+
+            # log(4λ₁λ₂) always finite for λᵢ > 0 — no clamp needed
+            log_det    = torch.log(4.0 * lambda1 * lambda2)
+            mu_x2      = mu.real**2 + mu.imag**2
+            kl_per_dim = mu_x2 + sigma - 1.0 - 0.5 * log_det
+            kl         = kl_per_dim.sum(dim=1).mean()
 
         # ────────────────────────────────── Improper mode (Default) ──────────────────────────────────
         # ⚠ YAML: set model.parameters_to_predict=3

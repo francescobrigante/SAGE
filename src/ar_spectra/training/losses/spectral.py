@@ -243,8 +243,10 @@ class MultiResolutionSpectrogramLoss(nn.Module):
         return_details: bool = False,
         apply_pre_transform: bool = False,
         pre_transform: Optional[Any] = None,
+        max_loss_clamp: float = 0.0,
     ):
         super().__init__()
+        self.max_loss_clamp = max_loss_clamp   # 0.0 = disabled; bounds explosive spikes from near-zero bins
         self.fft_sizes = fft_sizes
         self.hop_sizes = hop_sizes if hop_sizes is not None else [n // 4 for n in fft_sizes]
         self.win_lengths = win_lengths if win_lengths is not None else fft_sizes
@@ -346,6 +348,9 @@ class MultiResolutionSpectrogramLoss(nn.Module):
             total_loss = losses_per_res
         else:
             raise ValueError(f"Invalid reduction: {self.reduction}")
+
+        if self.max_loss_clamp > 0.0:
+            total_loss = total_loss.clamp(max=self.max_loss_clamp)
 
         if self.return_details:
             return total_loss, losses_per_res
