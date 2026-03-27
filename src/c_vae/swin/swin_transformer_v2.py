@@ -16,6 +16,17 @@ import torch.utils.checkpoint as checkpoint
 from timm.layers import DropPath, to_2tuple, trunc_normal_
 import numpy as np
 
+from ar_spectra.utils.console import ok, warn
+
+try:
+    from .cuda_kernels import WindowProcess, WindowProcessReverse, FUSED_WINDOW_AVAILABLE
+    ok("Fused CUDA window-process kernels loaded.", prefix="SwinV2")
+except (ImportError, ModuleNotFoundError):
+    WindowProcess = None
+    WindowProcessReverse = None
+    FUSED_WINDOW_AVAILABLE = False
+    warn("Fused CUDA window kernels unavailable — using torch.roll + window_partition.", prefix="SwinV2")
+
 
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
@@ -208,7 +219,8 @@ class SwinTransformerBlock(nn.Module):
 
     def __init__(self, dim, input_resolution, num_heads, window_size=7, shift_size=0,
                  mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0.,
-                 act_layer=nn.GELU, norm_layer=nn.LayerNorm, pretrained_window_size=0):
+                 act_layer=nn.GELU, norm_layer=nn.LayerNorm, pretrained_window_size=0,
+                 fused_window_process=False):
         super().__init__()
         self.dim = dim
         self.input_resolution = input_resolution
@@ -216,6 +228,7 @@ class SwinTransformerBlock(nn.Module):
         self.window_size = window_size
         self.shift_size = shift_size
         self.mlp_ratio = mlp_ratio
+        self.fused_window_process = fused_window_process and FUSED_WINDOW_AVAILABLE
         if min(self.input_resolution) <= self.window_size:
             # if window size is larger than input resolution, we don't partition windows
             self.shift_size = 0
@@ -266,28 +279,30 @@ class SwinTransformerBlock(nn.Module):
         shortcut = x
         x = x.view(B, H, W, C)
 
-        # cyclic shift
+        # cyclic shift + window partition (fused CUDA kernel when available)
         if self.shift_size > 0:
-            shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
+            if not self.fused_window_process:
+                shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
+                x_windows = window_partition(shifted_x, self.window_size)  # nW*B, ws, ws, C
+            else:
+                x_windows = WindowProcess.apply(x, B, H, W, C, -self.shift_size, self.window_size)
         else:
-            shifted_x = x
-
-        # partition windows
-        x_windows = window_partition(shifted_x, self.window_size)  # nW*B, window_size, window_size, C
-        x_windows = x_windows.view(-1, self.window_size * self.window_size, C)  # nW*B, window_size*window_size, C
+            x_windows = window_partition(x, self.window_size)             # nW*B, ws, ws, C
+        x_windows = x_windows.view(-1, self.window_size * self.window_size, C)  # nW*B, ws*ws, C
 
         # W-MSA/SW-MSA
         attn_windows = self.attn(x_windows, mask=self.attn_mask)  # nW*B, window_size*window_size, C
 
-        # merge windows
+        # merge windows + reverse cyclic shift (fused CUDA kernel when available)
         attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
-        shifted_x = window_reverse(attn_windows, self.window_size, H, W)  # B H' W' C
-
-        # reverse cyclic shift
         if self.shift_size > 0:
-            x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
+            if not self.fused_window_process:
+                shifted_x = window_reverse(attn_windows, self.window_size, H, W)  # B H' W' C
+                x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
+            else:
+                x = WindowProcessReverse.apply(attn_windows, B, H, W, C, self.shift_size, self.window_size)
         else:
-            x = shifted_x
+            x = window_reverse(attn_windows, self.window_size, H, W)
         x = x.view(B, H * W, C)
         x = shortcut + self.drop_path(self.norm1(x))
 
@@ -367,7 +382,7 @@ class BasicLayer(nn.Module):
     def __init__(self, dim, input_resolution, depth, num_heads, window_size,
                  mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0.,
                  drop_path=0., norm_layer=nn.LayerNorm, downsample=None, use_checkpoint=False,
-                 pretrained_window_size=0):
+                 pretrained_window_size=0, fused_window_process=False):
 
         super().__init__()
         self.dim = dim
@@ -385,7 +400,8 @@ class BasicLayer(nn.Module):
                                  drop=drop, attn_drop=attn_drop,
                                  drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
                                  norm_layer=norm_layer,
-                                 pretrained_window_size=pretrained_window_size)
+                                 pretrained_window_size=pretrained_window_size,
+                                 fused_window_process=fused_window_process)
             for i in range(depth)])
 
         # patch merging layer

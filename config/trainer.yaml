@@ -7,12 +7,20 @@ optimizer:
   lr: 5e-4
   weight_decay: 1e-4
   betas: [0.9, 0.98]
+  # weight_decay_exclude_1d: true  # uncomment to exclude bias + LayerNorm from weight decay
 
 scheduler:
   _target_: ar_spectra.training.schedulers.InverseLR
   inv_gamma: 15000
   power: 0.5
   warmup: 0.997
+  # --- Alternative: step-based cosine with linear warmup (matches Swin Transformer) ---
+  # _target_: ar_spectra.training.schedulers.CosineLRWithWarmup
+  # total_steps: 200000   # set to trainer.epochs * steps_per_epoch
+  # warmup_steps: 10000
+  # min_lr: 1.0e-6
+  # warmup_lr_init: 1.0e-7
+  # interval: step        # makes Lightning call scheduler.step() every batch
 
 trainer:
   precision: 32-true

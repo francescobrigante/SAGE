@@ -88,7 +88,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
     def __init__(
         self,
         autoencoder: AutoEncoder,
-        sample_rate=48000,
+        sample_rate=44100,
         loss_config: Optional[dict] = None,
         eval_loss_config: Optional[dict] = None,
         lr: float = 1e-4,
@@ -212,28 +212,70 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             warn(f"scheduler: missing '_target_', using fallback {default_sched['_target_']}")
             sched_spec = default_sched
 
+        # --- Weight decay exclusion (opt-in via `weight_decay_exclude_1d: true` in YAML) ---
+        # Excludes 1-D params (LayerNorm/BN scale+bias) and all .bias from weight decay.
+        # Universal good practice for any transformer — not Swin-specific.
+        wd_exclude = opt_spec.pop("weight_decay_exclude_1d", False)
+        weight_decay = opt_spec.get("weight_decay", 0.0)
+
+        def _build_param_groups(model: torch.nn.Module):
+            if not wd_exclude:
+                return list(model.parameters())
+            decay, no_decay = [], []
+            for name, p in model.named_parameters():
+                if not p.requires_grad:
+                    continue
+                if p.ndim == 1 or name.endswith(".bias"):
+                    no_decay.append(p)
+                else:
+                    decay.append(p)
+            return [
+                {"params": decay, "weight_decay": weight_decay},
+                {"params": no_decay, "weight_decay": 0.0},
+            ]
+
+        # --- Scheduler interval (opt-in via `interval: step` in YAML) ---
+        # Pop before hydra_instantiate so it is not forwarded to the scheduler class.
+        sched_interval = sched_spec.pop("interval", "epoch")
+
         # Create optimizers via Hydra instantiate
-        gen_params = list(self.autoencoder.parameters())
-        opt_gen = hydra_instantiate(opt_spec, params=gen_params, _convert_="all")
+        opt_gen = hydra_instantiate(opt_spec, params=_build_param_groups(self.autoencoder), _convert_="all")
 
         opt_disc = None
         if self.use_disc and self.discriminator is not None:
-            opt_disc = hydra_instantiate(opt_spec, params=self.discriminator.parameters(), _convert_="all")
+            opt_disc = hydra_instantiate(opt_spec, params=_build_param_groups(self.discriminator), _convert_="all")
 
-        # Create schedulers via Hydra instantiate (optimizer passed as positional arg)
+        # Create schedulers via Hydra instantiate
         sched_gen = hydra_instantiate(sched_spec, optimizer=opt_gen, _convert_="all") if sched_spec else None
         sched_disc = hydra_instantiate(sched_spec, optimizer=opt_disc, _convert_="all") if (sched_spec and opt_disc is not None) else None
 
-        ok(f"Optimizer: {opt_spec['_target_']}, Scheduler: {sched_spec['_target_']}", prefix="TRAINER")
+        ok(
+            f"Optimizer: {opt_spec['_target_']} (wd_exclude_1d={wd_exclude}), "
+            f"Scheduler: {sched_spec['_target_']} (interval={sched_interval})",
+            prefix="TRAINER",
+        )
 
-        if self.use_disc and opt_disc is not None:
-            if sched_gen is not None and sched_disc is not None:
-                return [opt_gen, opt_disc], [sched_gen, sched_disc]
-            return [opt_gen, opt_disc]
+        # --- Build Lightning return value ---
+        # Step-based: return dict format so Lightning calls scheduler.step() every batch.
+        # Epoch-based (default): return list format, unchanged from before.
+        if sched_interval == "step":
+            def _lr_cfg(sched):
+                return {"scheduler": sched, "interval": "step", "frequency": 1}
+            if self.use_disc and opt_disc is not None and sched_disc is not None:
+                return (
+                    {"optimizer": opt_gen, "lr_scheduler": _lr_cfg(sched_gen)},
+                    {"optimizer": opt_disc, "lr_scheduler": _lr_cfg(sched_disc)},
+                )
+            return {"optimizer": opt_gen, "lr_scheduler": _lr_cfg(sched_gen)}
         else:
-            if sched_gen is not None:
-                return [opt_gen], [sched_gen]
-            return [opt_gen]
+            if self.use_disc and opt_disc is not None:
+                if sched_gen is not None and sched_disc is not None:
+                    return [opt_gen, opt_disc], [sched_gen, sched_disc]
+                return [opt_gen, opt_disc]
+            else:
+                if sched_gen is not None:
+                    return [opt_gen], [sched_gen]
+                return [opt_gen]
     def forward(self, reals):
         enc_out = self.engine.autoencoder.encode(reals, return_info=True)
         latents = enc_out[0] if isinstance(enc_out, tuple) else enc_out

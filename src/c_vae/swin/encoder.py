@@ -74,17 +74,19 @@ class SwinEncoder(AbstractEncoder):
         attn_drop_rate: float = 0.0,
         drop_path_rate: float = 0.1,
         use_checkpoint: bool = False,
+        fused_window_process: bool = False,
     ) -> None:
         # AbstractEncoder stores input_size (= in_channels) and is_complex
         super().__init__(input_size=in_channels, is_complex=False)
 
-        self.embed_dim = embed_dim          # base channel width (doubles per merge)
-        self.depths = list(depths)          # blocks per stage, e.g. [2, 2, 4, 2]
-        self.num_heads = list(num_heads)    # attention heads per stage
-        self.window_size = window_size      # local window size (must divide all grids)
-        self.patch_size = patch_size        # PatchEmbed Conv2d kernel/stride
-        self.dimension = dimension          # total output channels (ptp × lc)
-        self.num_stages = len(depths)       # number of hierarchical stages (4)
+        self.embed_dim = embed_dim                          # base channel width (doubles per merge)
+        self.depths = list(depths)                          # blocks per stage, e.g. [2, 2, 4, 2]
+        self.num_heads = list(num_heads)                    # attention heads per stage
+        self.window_size = window_size                      # local window size (must divide all grids)
+        self.patch_size = patch_size                        # PatchEmbed Conv2d kernel/stride
+        self.dimension = dimension                          # total output channels (ptp × lc)
+        self.num_stages = len(depths)                       # number of hierarchical stages (4)
+        self.fused_window_process = fused_window_process    # use fused CUDA kernel (CUDA only)
 
         # Total spatial downsampling:
         #   patch_size (4) × 2^(num_stages-1 merge steps) (8) = 32
@@ -148,6 +150,7 @@ class SwinEncoder(AbstractEncoder):
                 # PatchMerging after every stage except the last
                 downsample=PatchMerging if i < self.num_stages - 1 else None,
                 use_checkpoint=use_checkpoint,
+                fused_window_process=fused_window_process,
             )
             self.stages.append(stage)
             block_idx += depths[i]
