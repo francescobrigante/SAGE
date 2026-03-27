@@ -69,12 +69,13 @@ loss_config:
     stft_mse:
       config:
         reduction: mean
-    mrstft:
-      config:
-        max_loss_clamp: 100.0     # bounds explosive spikes from near-zero bins
+    # mrstft block intentionally absent by default — add it to instantiate the loss:
+    # mrstft:
+    #   config:
+    #     max_loss_clamp: 100.0
     weights:
       stft_mse: 1.0
-      mrstft: 0.0         # disabled by default; override to 1.0 to activate
+      mrstft: 0.0         # disabled by default; add mrstft: block above to activate
   mrmel:
     weights:
       mrmel: 0.3
