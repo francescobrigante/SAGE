@@ -6,6 +6,15 @@ __pycache__/
 
 CLAUDE.md
 MSc-thesis/
+*.ipynb
+EXPERIMENTS.md
+
+*.csv
+plots/
+Swin-Transformer-main/
+
+tests/
+src/c_vae/swin/others/
 
 .DS_Store
 .wandb/
@@ -14,3 +23,4 @@ MSc-thesis/
 runs/
 
 *.ckpt
+.gitignore
