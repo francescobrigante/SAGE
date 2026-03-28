@@ -4,7 +4,7 @@ device: ${config:DEFAULT_DEVICE}
 
 optimizer:
   _target_: torch.optim.AdamW
-  lr: 5e-4
+  lr: 3e-4
   weight_decay: 1e-4
   betas: [0.9, 0.98]
   # weight_decay_exclude_1d: true  # uncomment to exclude bias + LayerNorm from weight decay
@@ -77,10 +77,11 @@ loss_config:
     stft_mse:
       config:
         reduction: mean
-    # mrstft block intentionally absent by default — add it to instantiate the loss:
-    # mrstft:
-    #   config:
-    #     max_loss_clamp: 100.0
+    mrstft:
+      config:
+        max_loss_clamp: 20.0     # bounds explosive spikes from near-zero bins
+        log_mag: true             # log-magnitude L1 on each resolution
+        factor_log_mag: 1.0
     weights:
       stft_mse: 1.0
       mrstft: 0.0         # disabled by default; add mrstft: block above to activate
@@ -89,6 +90,7 @@ loss_config:
       mrmel: 0.3
     config:
       n_mels: [128, 128, 128]
+      # n_mels: [128, 64, 32]
       window_lengths: [2048, 1024, 512]
       pow: 2.0            # exponent for power spectrogram (1.0 = mag, 2.0 = power)
       log_weight: 1.0

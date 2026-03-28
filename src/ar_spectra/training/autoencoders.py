@@ -32,7 +32,7 @@ from ..utils.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 from .engine import AutoencoderEngine  
 from ..models.autoencoder import AutoEncoder
 from ..models.inference import encode_audio as inference_encode_audio, decode_audio as inference_decode_audio
-from ar_spectra.utils.console import ok, warn, log_metric, log_point_cloud, log_image, log_audio, logger_project_name
+from ar_spectra.utils.console import ok, warn, log_metric, log_histogram, log_point_cloud, log_image, log_audio, logger_project_name
 from ar_spectra.utils.audio import trim_to_shortest
 
 def _save_audio_with_fallback(path: str, wav_chxn: torch.Tensor, sr: int) -> bool:
@@ -158,6 +158,8 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         self._log_accum_disc: Dict[str, float] = {}
         self._log_accum_gen_count = 0
         self._log_accum_disc_count = 0
+        # Accumulate per-channel KL tensors for histogram logging.
+        self._log_accum_kl_per_channel: list = []
 
     # Accessori utili in callback esistenti
     @property
@@ -286,13 +288,14 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         if self.kl_annealing_epochs <= 0:
             return
         epoch = self.current_epoch
-        if epoch > self.kl_annealing_epochs:
-            return  # warmup complete; weight already at target
         kl_module = self.engine.loss_manager.get_kl_loss_module()
         if kl_module is None:
             return
-        annealed = self.kl_beta_target * min(epoch / self.kl_annealing_epochs, 1.0)
-        kl_module.update_weight(annealed)
+        if epoch > self.kl_annealing_epochs:
+            annealed = self.kl_beta_target
+        else:
+            annealed = self.kl_beta_target * min(epoch / self.kl_annealing_epochs, 1.0)
+            kl_module.update_weight(annealed)
         self.log("train/kl_weight", annealed, on_epoch=True, prog_bar=False)
 
     def training_step(self, batch, batch_idx):
@@ -377,6 +380,14 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                 if self._log_accum_gen_count > 0:
                     for key, value in self._log_accum_gen.items():
                         log_dict[key] = value / self._log_accum_gen_count
+                # Per-channel KL diagnostics: active units count + ratio + histogram
+                if self._log_accum_kl_per_channel:
+                    kl_per_ch = torch.stack(self._log_accum_kl_per_channel).mean(dim=0)
+                    au = int((kl_per_ch > 0.1).sum().item())
+                    log_dict["train/active_units"] = au
+                    log_dict["train/active_units_ratio"] = au / kl_per_ch.shape[0]
+                    log_histogram(self.logger, "train/kl_per_channel", kl_per_ch, step=int(self.global_step))
+                    self._log_accum_kl_per_channel = []
                 self.log_dict(log_dict, prog_bar=True, on_step=True)
                 self._log_accum_gen = {}
                 self._log_accum_gen_count = 0
@@ -385,6 +396,10 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             self._log_accum_gen["train/loss"] = self._log_accum_gen.get("train/loss", 0.0) + gen_loss.detach().item()
             self._log_accum_gen["train/latent_std"] = self._log_accum_gen.get("train/latent_std", 0.0) + stats["latent_std"].detach().item()
             self._log_accum_gen["train/data_std"] = self._log_accum_gen.get("train/data_std", 0.0) + stats["data_std"].detach().item()
+
+            # Per-channel KL: accumulate for histogram flush at optimizer step
+            if "kl_per_channel" in out["loss_info"]:
+                self._log_accum_kl_per_channel.append(out["loss_info"]["kl_per_channel"].cpu())
 
             # breakdown gen
             for name, value in out["gen_breakdown"].items():

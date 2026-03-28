@@ -13,7 +13,7 @@ EXPERIMENTS.md
 plots/
 Swin-Transformer-main/
 
-tests/
+# tests/
 src/c_vae/swin/others/
 
 .DS_Store
