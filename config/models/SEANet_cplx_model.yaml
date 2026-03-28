@@ -63,3 +63,4 @@ model:
     _target_: c_vae.bottleneck.ComplexVAEBottleneck
     proper: false                       # must match parameters_to_predict: 2 → proper, 3 → improper
     apply_cholesky_constraints: false   # explicit: use tanh+softplus barrier mode (default)
+    apply_spectral_parameterization: false

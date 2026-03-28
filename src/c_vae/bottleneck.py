@@ -55,27 +55,29 @@ def reparametrize(mu: torch.Tensor, sigma: torch.Tensor, c: torch.Tensor | None 
     return mu + K_R * eps_R + 1j * (K_I * eps_I)
 
 
-def get_proper_kl(mu: torch.Tensor, gamma: torch.Tensor) -> torch.Tensor:
+def get_proper_kl(mu: torch.Tensor, gamma: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
     KL divergence for the proper (C=0) posterior CN(μ, diag(γ), 0) vs CN(0, I, 0):
         D_KL = Σᵢ (γᵢ + |μᵢ|² - 1 - log γᵢ)
 
     Returns:
-        KL divergence scalar (summed over m, averaged over batch and spatial dims)
+        kl_scalar:   KL divergence scalar (summed over m, averaged over batch and spatial dims)
+        kl_per_dim:  per-element KL tensor, shape (B, m, ...)
     """
     mu_x2 = mu.real**2 + mu.imag**2
     log_gamma = torch.log(gamma)
     kl_per_dim = gamma + mu_x2 - 1.0 - log_gamma
-    return kl_per_dim.sum(dim=1).mean()
+    return kl_per_dim.sum(dim=1).mean(), kl_per_dim
 
 
-def get_kl(mu: torch.Tensor, sigma: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+def get_kl(mu: torch.Tensor, sigma: torch.Tensor, c: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Closed-form KL divergence (Nakashika 2020):
         D_KL = μ^H μ  +  Σ_k [ σ_k - 1 - 1/2*log(σ_k² - |c_k|²) ]
 
     Returns:
-        KL divergence scalar (summed over m, averaged over batch and spatial dims)
+        kl_scalar:   KL divergence scalar (summed over m, averaged over batch and spatial dims)
+        kl_per_dim:  per-element KL tensor, shape (B, m, ...)
     """
     # μ^H μ = |μ|² elementwise
     mu_x2 = mu.real**2 + mu.imag**2
@@ -84,14 +86,14 @@ def get_kl(mu: torch.Tensor, sigma: torch.Tensor, c: torch.Tensor) -> torch.Tens
     gap1 = (sigma - c.abs()).clamp(min=SMALL_EPSILON)   # σ - |c|
     gap2 =  sigma + c.abs()                             # σ + |c|,  no clamp needed
     log_det = torch.log(gap1) + torch.log(gap2)         # log(σ² - |c|²)
-    
+
     kl_per_dim = mu_x2 + sigma - 1.0 - 0.5 * log_det
-    return kl_per_dim.sum(dim=1).mean()
+    return kl_per_dim.sum(dim=1).mean(), kl_per_dim
 
 
 
 
-def get_cholesky_kl(mu: torch.Tensor, l11: torch.Tensor, l21: torch.Tensor, l22: torch.Tensor) -> torch.Tensor:
+def get_cholesky_kl(mu: torch.Tensor, l11: torch.Tensor, l21: torch.Tensor, l22: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
     KL divergence in Cholesky factor space, used in Mode B (apply_cholesky_constraints=True).
     Substituting σ = l₁₁² + l₂₁² + l₂₂² and σ² - |c|² = 4·l₁₁²·l₂₂² into get_kl gives:
@@ -110,12 +112,13 @@ def get_cholesky_kl(mu: torch.Tensor, l11: torch.Tensor, l21: torch.Tensor, l22:
         l22: second diagonal Cholesky factor = K_I, must be > 0
 
     Returns:
-        KL divergence scalar
+        kl_scalar:   KL divergence scalar
+        kl_per_dim:  per-element KL tensor, shape (B, m, ...)
     """
     mu_x2 = mu.real**2 + mu.imag**2
 
-    kl_per_dim = l11**2 + l21**2 + l22**2 - 1.0 - torch.log(2.0 * l11) - torch.log(l22)
-    return (mu_x2 + kl_per_dim).sum(dim=1).mean()
+    kl_per_dim = mu_x2 + l11**2 + l21**2 + l22**2 - 1.0 - torch.log(2.0 * l11) - torch.log(l22)
+    return kl_per_dim.sum(dim=1).mean(), kl_per_dim
 
 
 class ComplexVAEBottleneck(VAEBottleneck):
@@ -171,8 +174,8 @@ class ComplexVAEBottleneck(VAEBottleneck):
 
             slot_2 = x[:, m:]
             sigma = F.softplus(slot_2.real) + SMALL_EPSILON
-            c     = None             
-            kl    = get_proper_kl(mu, sigma)
+            c     = None
+            kl, kl_per_dim = get_proper_kl(mu, sigma)
 
         # ────────────────────────────────── Improper mode (Spectral) ──────────────────────────────────
         # ⚠ YAML: set model.parameters_to_predict=3 and model.bottleneck.apply_spectral_parameterization=true
@@ -207,13 +210,10 @@ class ComplexVAEBottleneck(VAEBottleneck):
             slot_2 = x[:, m:2*m]
             slot_3 = x[:, 2*m:]
 
-            # sigma  = torch.exp(slot_2.real)
-            # c      = slot_3
-
             sigma  = F.softplus(slot_2.real) + SMALL_EPSILON
             c_mag = slot_3.abs()
-            c = sigma * torch.tanh(c_mag) * slot_3 / (c_mag + SMALL_EPSILON) 
-            kl     = get_kl(mu, sigma, c)
+            c = sigma * torch.tanh(c_mag) * slot_3 / (c_mag + SMALL_EPSILON)
+            kl, kl_per_dim = get_kl(mu, sigma, c)
 
         # ────────────────────────────────── Improper mode (Cholesky) ──────────────────────────────────
         # ⚠ YAML: set model.parameters_to_predict=3 and model.bottleneck.apply_cholesky_constraints=true
@@ -234,10 +234,22 @@ class ComplexVAEBottleneck(VAEBottleneck):
             # Key identity: σ² - |c|² = 4·l₁₁²·l₂₂² > 0
             sigma = l11**2 + l21**2 + l22**2
             c = torch.complex(l11**2 - l21**2 - l22**2, 2.0 * l11 * l21)
-            kl = get_cholesky_kl(mu, l11, l21, l22)
+            kl, kl_per_dim = get_cholesky_kl(mu, l11, l21, l22)
+
+        # Per-channel KL diagnostics: average over batch and spatial dims → shape (m,)
+        # Used to detect posterior collapse (active units where KL_j > 0.1)
+        kl_diag_dims = tuple([0] + list(range(2, kl_per_dim.dim())))
+        kl_per_channel     = kl_per_dim.detach().mean(dim=kl_diag_dims)       # (m,) — m = true latent channels (not encoder slots)
+        active_units       = int((kl_per_channel > 0.1).sum().item())
+        active_units_ratio = active_units / m                                 # fraction in [0,1] over m latent dimensions
 
         z = reparametrize(mu, sigma, c)
-        info = {"kl": kl}
+        info = {
+            "kl": kl,
+            "kl_per_channel":     kl_per_channel,
+            "active_units":       active_units,
+            "active_units_ratio": active_units_ratio,
+        }
         return (z, info) if return_info else z
 
     # decode() inherited from VAEBottleneck

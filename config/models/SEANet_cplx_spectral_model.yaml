@@ -6,10 +6,6 @@
 #   data.model_channels=2 data.demo.istft_params.cac=false
 # Reason: complex encoder expects complex tensors (not real CAC-split tensors)
 #
-# Spectral parameterization:
-#   σ = λ₁ + λ₂,  c = (λ₁ − λ₂)e^{2iθ}
-#   slot_2.real → λ₁ (softplus), slot_2.imag → λ₂ (softplus), slot_3.real → θ (free)
-#   σ > |c| guaranteed by construction (triangle inequality), no clamping needed.
 
 model:
   # ── single source of truth ──────────────────────────────────────────
