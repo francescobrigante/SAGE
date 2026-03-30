@@ -38,7 +38,11 @@ Optional arguments:
 	--cdpam-chunk INT     Chunk size in samples for CDPAM (default: 0 -> full clip).
 	--csv-dir PATH        Directory where metric CSV/log files will be stored (default: <output-dir>/metrics).
 	--skip-cdpam          Skip CDPAM computation.
-	--skip-fad            Skip FAD computation.
+	--skip-fad            Skip FAD (fadtk) computation.
+	--skip-clap           Skip CLAP-LAION cosine score.
+	--skip-fad-gudgud     Skip FAD (gudgud96) computation.
+	--clap-model STR      CLAP flavour(s): music|audio|both (default: both).
+	--fad-gudgud-model STR  Backbone for FAD gudgud96: vggish|pann|clap-music|clap-audio|encodec (default: vggish).
 	--max-files INT       Max number of files to process during inference (default: DEFAULT_MAX_FILES from config.py).
 	--help                Show this message.
 EOF
@@ -131,6 +135,10 @@ CDPAM_CHUNK=0
 CSV_DIR=""
 SKIP_CDPAM=false
 SKIP_FAD=false
+SKIP_CLAP=false
+SKIP_FAD_GUDGUD=false
+CLAP_MODEL="both"
+FAD_GUDGUD_MODEL="vggish"
 MAX_FILES="${DEFAULT_MAX_FILES:-0}"
 
 while [[ $# -gt 0 ]]; do
@@ -183,6 +191,22 @@ while [[ $# -gt 0 ]]; do
 			SKIP_FAD=true
 			shift
 			;;
+		--skip-clap)
+			SKIP_CLAP=true
+			shift
+			;;
+		--skip-fad-gudgud)
+			SKIP_FAD_GUDGUD=true
+			shift
+			;;
+		--clap-model)
+			CLAP_MODEL="$2"
+			shift 2
+			;;
+		--fad-gudgud-model)
+			FAD_GUDGUD_MODEL="$2"
+			shift 2
+			;;
 		--max-files)
 			MAX_FILES="$2"
 			shift 2
@@ -230,8 +254,8 @@ fi
 
 CSV_DIR="$(resolve_path "$CSV_DIR")"
 
-if [[ -z "$METRICS_ENV" ]] && ( ! $SKIP_CDPAM || ! $SKIP_FAD ); then
-	warn "Warning: no metrics virtualenv specified. CDPAM and FAD will run in the current environment."
+if [[ -z "$METRICS_ENV" ]] && ( ! $SKIP_CDPAM || ! $SKIP_FAD || ! $SKIP_CLAP || ! $SKIP_FAD_GUDGUD ); then
+	warn "Warning: no metrics virtualenv specified. CDPAM, FAD, CLAP, and FAD-gudgud will run in the current environment."
 fi
 
 if [[ ! -d "$TARGET_DIR" ]]; then
@@ -314,6 +338,16 @@ SPECTRAL_CMD+=(--csv_out "$CSV_DIR/spectral.csv")
 info "Computing spectral metrics"
 run_in_env "$MAIN_ENV" "${SPECTRAL_CMD[@]}"
 
+if ! $SKIP_CLAP; then
+	declare -a CLAP_CMD=(python "$PROJECT_ROOT/tests/compute_clap_score.py" \
+		--target-dir "$TARGET_DIR" \
+		--preds-dir "$OUTPUT_DIR" \
+		--model "$CLAP_MODEL" \
+		--csv_out "$CSV_DIR/clap_score.csv")
+	info "Computing CLAP-LAION cosine score"
+	run_in_env "${METRICS_ENV:-$MAIN_ENV}" "${CLAP_CMD[@]}" | tee "$CSV_DIR/clap_score.txt"
+fi
+
 if ! $SKIP_CDPAM; then
 	declare -a CDPAM_CMD=(python "$PROJECT_ROOT/tests/compute_cdpam.py" --target-dir "$TARGET_DIR" --preds-dir "$OUTPUT_DIR" --device "$CDPAM_DEVICE")
 	if [[ -n "$CLI_EXT" ]]; then
@@ -327,12 +361,21 @@ if ! $SKIP_CDPAM; then
 	run_in_env "${METRICS_ENV:-$MAIN_ENV}" "${CDPAM_CMD[@]}"
 fi
 
+if ! $SKIP_FAD_GUDGUD; then
+	declare -a FAD_GUDGUD_CMD=(python "$PROJECT_ROOT/tests/compute_fad_gudgud.py" \
+		--target-dir "$TARGET_DIR" \
+		--preds-dir "$OUTPUT_DIR" \
+		--model "$FAD_GUDGUD_MODEL")
+	info "Computing FAD (gudgud96)"
+	run_in_env "${METRICS_ENV:-$MAIN_ENV}" "${FAD_GUDGUD_CMD[@]}" | tee "$CSV_DIR/fad_gudgud.txt"
+fi
+
 if ! $SKIP_FAD; then
 	declare -a FAD_CMD=(python "$PROJECT_ROOT/tests/compute_fad.py" --target-dir "$TARGET_DIR" --preds-dir "$OUTPUT_DIR")
 	if [[ "$MAX_FILES" -gt 0 ]]; then
 		FAD_CMD+=(--max-files "$MAX_FILES")
 	fi
-	info "Computing FAD"
+	info "Computing FAD (fadtk)"
 	run_in_env "${METRICS_ENV:-$MAIN_ENV}" "${FAD_CMD[@]}" | tee "$CSV_DIR/fad.txt"
 fi
 

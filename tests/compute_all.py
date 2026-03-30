@@ -85,7 +85,16 @@ def main():
     
     # Skipping steps
     parser.add_argument("--skip-cdpam", action="store_true", help="Skip CDPAM computation.")
-    parser.add_argument("--skip-fad", action="store_true", help="Skip FAD computation.")
+    parser.add_argument("--skip-fad", action="store_true", help="Skip FAD (fadtk) computation.")
+    parser.add_argument("--skip-clap", action="store_true", help="Skip CLAP-LAION cosine score.")
+    parser.add_argument("--skip-fad-gudgud", action="store_true", help="Skip FAD (gudgud96) computation.")
+
+    # Model selection for new steps
+    parser.add_argument("--clap-model", default="both", choices=["music", "audio", "both"],
+                        help="CLAP flavour(s) to compute (default: both).")
+    parser.add_argument("--fad-gudgud-model", default="vggish",
+                        choices=["vggish", "pann", "clap-music", "clap-audio", "encodec"],
+                        help="Backbone for FAD gudgud96 (default: vggish).")
 
     args = parser.parse_args()
 
@@ -145,7 +154,19 @@ def main():
     run_command(spectral_cmd, args.main_env)
 
     # ==========================
-    # 3. CDPAM
+    # 3. CLAP SCORE
+    # ==========================
+    if not args.skip_clap:
+        log_info("Computing CLAP-LAION cosine score")
+        clap_cmd = ["python", str(PROJECT_ROOT / "tests/compute_clap_score.py"),
+                    "--target-dir", str(args.target_dir),
+                    "--preds-dir", str(args.output_dir),
+                    "--model", args.clap_model,
+                    "--csv_out", str(csv_dir / "clap_score.csv")]
+        run_command(clap_cmd, args.metrics_env or args.main_env)
+
+    # ==========================
+    # 4. CDPAM
     # ==========================
     if not args.skip_cdpam:
         log_info("Computing CDPAM")
@@ -160,15 +181,26 @@ def main():
         run_command(cdpam_cmd, args.metrics_env or args.main_env)
 
     # ==========================
-    # 4. FAD
+    # 5. FAD GUDGUD
+    # ==========================
+    if not args.skip_fad_gudgud:
+        log_info("Computing FAD (gudgud96)")
+        fad_gudgud_cmd = ["python", str(PROJECT_ROOT / "tests/compute_fad_gudgud.py"),
+                          "--target-dir", str(args.target_dir),
+                          "--preds-dir", str(args.output_dir),
+                          "--model", args.fad_gudgud_model]
+        run_command(fad_gudgud_cmd, args.metrics_env or args.main_env)
+
+    # ==========================
+    # 6. FAD FADTK
     # ==========================
     if not args.skip_fad:
-        log_info("Computing FAD")
-        fad_cmd = ["python", str(PROJECT_ROOT / "tests/compute_fad.py"), 
-                   "--target-dir", str(args.target_dir), 
+        log_info("Computing FAD (fadtk)")
+        fad_cmd = ["python", str(PROJECT_ROOT / "tests/compute_fad.py"),
+                   "--target-dir", str(args.target_dir),
                    "--preds-dir", str(args.output_dir)]
         if args.max_files > 0: fad_cmd.extend(["--max-files", str(args.max_files)])
-        
+
         # Run directly to terminal to preserve perfect tqdm progress bars
         run_command(fad_cmd, args.metrics_env or args.main_env)
 
