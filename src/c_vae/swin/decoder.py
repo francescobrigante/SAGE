@@ -78,7 +78,7 @@ class PatchExpand(nn.Module):
         return x
 
     def extra_repr(self) -> str:
-        return f"input_resolution={self.input_resolution}, dim={self.dim}→{self.out_dim}"
+        return f"input_resolution={self.input_resolution}, dim={self.dim}->{self.out_dim}"
 
 
 # --------------------------------------------------------------------------- #

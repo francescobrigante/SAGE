@@ -59,7 +59,7 @@ def embed_and_stats(fad: fadtk.FrechetAudioDistance, files: list[Path], desc: st
 parser = ArgumentParser(description="Compute Frechet Audio Distance using fadtk")
 parser.add_argument("--target-dir", type=str, default=str(DATA_PATH), required=False, help="Path to the target/reference audio directory")
 parser.add_argument("--preds-dir", type=str, default=str(RUNS_DIR / "inference"), required=False, help="Path to the predicted/generated audio directory")
-parser.add_argument("--model", type=str, default="vggish", choices=["vggish", "clap-laion"], help="Embedding model to use for FAD (default: vggish)")
+parser.add_argument("--model", type=str, default="vggish", choices=["vggish", "clap-laion", "clap-laion-audio", "mert"], help="Embedding model to use for FAD (default: vggish)")
 parser.add_argument("--max-files", type=int, default=-1, help="Limit number of target files used (default: all)")
 
 args = parser.parse_args()
@@ -74,6 +74,12 @@ info(f"Embedding model:       {args.model}")
 if args.model == "clap-laion":
     from fadtk.model_loader import CLAPLaionModel
     model_loader = CLAPLaionModel("music")
+elif args.model == "mert":
+    from fadtk.model_loader import MERTModel
+    model_loader = MERTModel(size='v1-95M', layer=12)
+elif args.model == "clap-laion-audio":
+    from fadtk.model_loader import CLAPLaionModel
+    model_loader = CLAPLaionModel("audio")
 else:
     model_loader = VGGishModel()
 
