@@ -5,13 +5,14 @@
 #   latent_channels         → decoder input channels
 #   parameters_to_predict   → encoder output multiplier (= 2 for real VAEBottleneck)
 #   encoder.dimension       = parameters_to_predict × latent_channels (via mul resolver)
+#   swin.*                  → shared hyperparams referenced by both encoder and decoder
 
 model:
-  # ── single source of truth ─────────────────────────────────────────────
-  latent_channels: 64          # latent space depth  →  (B, 64, 32, 4)
+  # ── latent space ────────────────────────────────────────────────────────────
+  latent_channels: 64          # latent space depth  →  (B, 64, 128)
   parameters_to_predict: 2     # real VAEBottleneck: mu + log_var
-  # ───────────────────────────────────────────────────────────────────────
 
+  # ── autoencoder wrapper ──────────────────────────────────────────────────────
   autoencoder:
     return_latent: false
     pre_transform:
@@ -23,37 +24,52 @@ model:
         alpha: 0.65
         beta: 0.35
 
-  encoder:
-    _target_: c_vae.swin.encoder.SwinEncoder
-    in_channels: 4                    # stereo CAC float STFT (cac=true: real_L, imag_L, real_R, imag_R)
-    embed_dim: 48                     # base token width (doubles per PatchMerging)
-    depths: [2, 2, 4, 2]              # SwinBlocks per stage
-    num_heads: [3, 6, 12, 24]         # attention heads per stage
-    window_size: 8                    # divides all stage grids cleanly
-    patch_size: 4                     # Conv2d kernel/stride for PatchEmbed
-    dimension: ${mul:${models.model.parameters_to_predict},${models.model.latent_channels}}
-    mlp_ratio: 4.0
-    drop_rate: 0.0
-    attn_drop_rate: 0.0
-    drop_path_rate: 0.1
-    use_checkpoint: false
-    fused_window_process: true        # whether to use cuda kernels 
-
-  decoder:
-    _target_: c_vae.swin.decoder.SwinDecoder
-    channels: ${models.model.latent_channels}   # latent input depth
-    in_channels: 4                              # reconstruction output channels (CAC: real_L, imag_L, real_R, imag_R)
-    embed_dim: 48                               # smallest stage width (last stage + PatchUnembed)
-    depths: [2, 4, 2, 2]                        # reversed encoder depths
-    num_heads: [24, 12, 6, 3]                   # reversed encoder heads
-    window_size: 8
-    patch_size: 4
-    mlp_ratio: 4.0
-    drop_rate: 0.0
-    attn_drop_rate: 0.0
-    drop_path_rate: 0.1
-    use_checkpoint: false
-
+  # ── bottleneck ───────────────────────────────────────────────────────────────
   bottleneck:
     _target_: ar_spectra.models.bottlenecks.VAEBottleneck
     parameters_to_predict: ${models.model.parameters_to_predict}
+
+  # ── shared Swin hyperparameters ─────────────────────────────────────────────
+  swin:
+    embed_dim: 48              # base token width (doubles per PatchMerging)
+    window_size: 8             # divides all stage grids cleanly
+    patch_size: 4              # Conv2d / ConvTranspose2d kernel/stride
+    mlp_ratio: 4.0             # FFN hidden-dim multiplier
+    drop_rate: 0.0
+    attn_drop_rate: 0.0
+    drop_path_rate: 0.1
+    use_checkpoint: false
+    # depths / num_heads stay per-module: decoder = reverse(encoder)
+
+  # ── encoder ─────────────────────────────────────────────────────────────────
+  encoder:
+    _target_: c_vae.swin.encoder.SwinEncoder
+    in_channels: 4                    # stereo CAC float STFT (real_L, imag_L, real_R, imag_R)
+    embed_dim: ${models.model.swin.embed_dim}
+    depths: [2, 2, 4, 2]
+    num_heads: [3, 6, 12, 24]
+    window_size: ${models.model.swin.window_size}
+    patch_size: ${models.model.swin.patch_size}
+    dimension: ${mul:${models.model.parameters_to_predict},${models.model.latent_channels}}
+    mlp_ratio: ${models.model.swin.mlp_ratio}
+    drop_rate: ${models.model.swin.drop_rate}
+    attn_drop_rate: ${models.model.swin.attn_drop_rate}
+    drop_path_rate: ${models.model.swin.drop_path_rate}
+    use_checkpoint: ${models.model.swin.use_checkpoint}
+    fused_window_process: true
+
+  # ── decoder ─────────────────────────────────────────────────────────────────
+  decoder:
+    _target_: c_vae.swin.decoder.SwinDecoder
+    channels: ${models.model.latent_channels}
+    in_channels: 4
+    embed_dim: ${models.model.swin.embed_dim}
+    depths: [2, 4, 2, 2]             # reversed encoder depths — must stay explicit
+    num_heads: [24, 12, 6, 3]        # reversed encoder heads  — must stay explicit
+    window_size: ${models.model.swin.window_size}
+    patch_size: ${models.model.swin.patch_size}
+    mlp_ratio: ${models.model.swin.mlp_ratio}
+    drop_rate: ${models.model.swin.drop_rate}
+    attn_drop_rate: ${models.model.swin.attn_drop_rate}
+    drop_path_rate: ${models.model.swin.drop_path_rate}
+    use_checkpoint: ${models.model.swin.use_checkpoint}

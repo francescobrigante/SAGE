@@ -6,8 +6,8 @@ __pycache__/
 
 CLAUDE.md
 MSc-thesis/
-# *.ipynb
-EXPERIMENTS.md
+*.ipynb
+*.md
 
 *.csv
 plots/

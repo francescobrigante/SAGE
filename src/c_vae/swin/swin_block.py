@@ -1,0 +1,234 @@
+# ===============================================================
+# Swin Transformer V2: atomic computation block.
+# Contains Mlp (2-layer FFN) and SwinTransformerBlock
+# (W-MSA / SW-MSA + FFN with pre-norm residuals).
+# Optional fused CUDA window kernels are loaded at import time.
+# ===============================================================
+
+import torch
+import torch.nn as nn
+import torch.utils.checkpoint as checkpoint
+from timm.layers import DropPath, to_2tuple
+
+from ar_spectra.utils.console import ok, warn
+from .windowing import window_partition, window_reverse
+from .attention import WindowAttention
+
+# -----------------------------------------------------------------
+# Optional fused CUDA window kernels
+# -----------------------------------------------------------------
+try:
+    from .cuda_kernels import WindowProcess, WindowProcessReverse, FUSED_WINDOW_AVAILABLE
+    ok("Fused CUDA window-process kernels loaded.", prefix="CUDA")
+except (ImportError, ModuleNotFoundError):
+    WindowProcess = None
+    WindowProcessReverse = None
+    FUSED_WINDOW_AVAILABLE = False
+    warn("Fused CUDA window kernels unavailable: using torch.roll + window_partition.", prefix="CUDA")
+
+
+# --------------------------------------------------------------------------
+# Mlp
+# --------------------------------------------------------------------------
+
+class Mlp(nn.Module):
+    """Two-layer MLP with GELU activation (FFN inside SwinTransformerBlock).
+
+    Args:
+        in_features: Input channel dimension.
+        hidden_features: Hidden layer width (defaults to in_features).
+        out_features: Output width (defaults to in_features).
+        act_layer: Activation class. Default: nn.GELU.
+        drop: Dropout rate applied after each linear layer.
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        hidden_features: int = None,
+        out_features: int = None,
+        act_layer=nn.GELU,
+        drop: float = 0.0,
+    ) -> None:
+        
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = act_layer()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.fc1(x)    # (*, hidden_features)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.fc2(x)    # (*, out_features)
+        x = self.drop(x)
+        return x
+
+
+# --------------------------------------------------------------------------
+# SwinTransformerBlock
+# --------------------------------------------------------------------------
+
+class SwinTransformerBlock(nn.Module):
+    """Swin Transformer V2 block: pre-norm W-MSA or SW-MSA + FFN with residuals.
+
+    Even-indexed blocks within a stage use W-MSA (shift_size = 0);
+    odd-indexed blocks use SW-MSA (shift_size = window_size//2).
+
+    Args:
+        dim: Token channel dimension.
+        input_resolution: (H, W) spatial grid for this stage.
+        num_heads: Number of attention heads.
+        window_size: Local window size; clamped to min(input_resolution) when the
+            grid is smaller than the window (e.g. at the deepest stage).
+        shift_size: Cyclic shift offset -> 0 = W-MSA, window_size // 2 = SW-MSA.
+        mlp_ratio: FFN hidden-dim multiplier.
+        qkv_bias: Learnable bias on Q and V projections.
+        drop: Dropout rate on FFN outputs and projections.
+        attn_drop: Dropout rate on attention weights.
+        drop_path: Stochastic depth rate for this block.
+        act_layer: FFN activation. Default: nn.GELU.
+        norm_layer: Normalisation class. Default: nn.LayerNorm.
+        pretrained_window_size: Window size used in pre-training (Log-CPB normalisation).
+        fused_window_process: Use fused CUDA kernel for roll+partition (CUDA only).
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        input_resolution,
+        num_heads: int,
+        window_size: int = 7,
+        shift_size: int = 0,
+        mlp_ratio: float = 4.0,
+        qkv_bias: bool = True,
+        drop: float = 0.0,
+        attn_drop: float = 0.0,
+        drop_path: float = 0.0,
+        act_layer=nn.GELU,
+        norm_layer=nn.LayerNorm,
+        pretrained_window_size: int = 0,
+        fused_window_process: bool = False,
+    ) -> None:
+        
+        super().__init__()
+        self.dim = dim
+        self.input_resolution = input_resolution
+        self.num_heads = num_heads
+        self.window_size = window_size
+        self.shift_size = shift_size
+        self.mlp_ratio = mlp_ratio
+        # Only enable fused kernel when the CUDA extension was successfully loaded
+        self.fused_window_process = fused_window_process and FUSED_WINDOW_AVAILABLE
+
+        # Clamp window size when the grid is smaller (e.g. deepest decoder stage)
+        if min(self.input_resolution) <= self.window_size:
+            self.shift_size = 0
+            self.window_size = min(self.input_resolution)
+        assert 0 <= self.shift_size < self.window_size, "shift_size must be in [0, window_size)"
+
+        self.norm1 = norm_layer(dim)
+        self.attn = WindowAttention(
+            dim,
+            window_size=to_2tuple(self.window_size),
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            attn_drop=attn_drop,
+            proj_drop=drop,
+            pretrained_window_size=to_2tuple(pretrained_window_size),
+        )
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        self.mlp = Mlp(
+            in_features=dim,
+            hidden_features=int(dim * mlp_ratio),
+            act_layer=act_layer,
+            drop=drop,
+        )
+
+        # Pre-compute SW-MSA attention mask once and register as a non-parameter buffer.
+        # The mask uses -100.0 for cross-region pairs so softmax -> 0 after exp.
+        if self.shift_size > 0:
+            H, W = self.input_resolution
+            img_mask = torch.zeros((1, H, W, 1))                       # (1, H, W, 1)
+            h_slices = (
+                slice(0, -self.window_size), slice(-self.window_size, -self.shift_size), slice(-self.shift_size, None)
+            )
+            w_slices = (
+                slice(0, -self.window_size), slice(-self.window_size, -self.shift_size), slice(-self.shift_size, None)
+            )
+            
+            cnt = 0
+            for h in h_slices:
+                for w in w_slices:
+                    img_mask[:, h, w, :] = cnt
+                    cnt += 1
+            mask_windows = window_partition(img_mask, self.window_size)  # (nW, ws, ws, 1)
+            mask_windows = mask_windows.view(-1, self.window_size * self.window_size)
+            attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+            attn_mask = attn_mask.masked_fill(attn_mask != 0, -100.0).masked_fill(attn_mask == 0, 0.0)
+        else:
+            attn_mask = None
+            
+        self.register_buffer("attn_mask", attn_mask)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply W-MSA or SW-MSA + FFN with pre-norm residual connections.
+
+        Args:
+            x: (B, H*W, C)
+
+        Returns:
+            (B, H*W, C)
+        """
+        H, W = self.input_resolution
+        B, L, C = x.shape                                              # (B, H*W, C)
+        assert L == H * W, f"token count {L} != H*W = {H*W}"
+
+        shortcut = x
+        x = x.view(B, H, W, C)                                        # (B, H, W,  C)
+
+        # Cyclic shift + window partition
+        if self.shift_size > 0:
+            # not cuda
+            if not self.fused_window_process:
+                shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
+                x_windows = window_partition(shifted_x, self.window_size)    # (nW * B, ws, ws, C)
+            # cuda
+            else:
+                x_windows = WindowProcess.apply(x, B, H, W, C, -self.shift_size, self.window_size)
+                
+        else:
+            x_windows = window_partition(x, self.window_size)         # (nW * B, ws, ws, C)
+            
+        x_windows = x_windows.view(-1, self.window_size * self.window_size, C)  # (nW * B, ws², C)
+
+        # W-MSA / SW-MSA
+        attn_windows = self.attn(x_windows, mask=self.attn_mask)      # (nW * B, ws², C)
+
+        # Reverse window partition + reverse cyclic shift 
+        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
+        if self.shift_size > 0:
+            if not self.fused_window_process:
+                shifted_x = window_reverse(attn_windows, self.window_size, H, W)  # (B, H, W, C)
+                x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
+            else:
+                x = WindowProcessReverse.apply(attn_windows, B, H, W, C, self.shift_size, self.window_size)
+        else:
+            x = window_reverse(attn_windows, self.window_size, H, W)  # (B, H, W, C)
+        x = x.view(B, H * W, C)                                       # (B, H*W, C)
+
+        # Pre-norm residuals 
+        x = shortcut + self.drop_path(self.norm1(x))                  # (B, H*W, C)
+        x = x + self.drop_path(self.norm2(self.mlp(x)))               # (B, H*W, C)
+        return x
+
+    def extra_repr(self) -> str:
+        return (
+            f"dim={self.dim}, input_resolution={self.input_resolution}, "
+            f"num_heads={self.num_heads}, window_size={self.window_size}, "
+            f"shift_size={self.shift_size}, mlp_ratio={self.mlp_ratio}"
+        )

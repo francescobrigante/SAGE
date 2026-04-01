@@ -19,17 +19,13 @@ _SRC = "/Users/francesco/Desktop/C-VAE/src"
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from c_vae.swin.swin_transformer_v2 import (
-    BasicLayer,
-    PatchEmbed,
-    PatchMerging,
-    SwinTransformerBlock,
-    WindowAttention,
-    window_partition,
-    window_reverse,
-)
+from c_vae.swin.windowing import window_partition, window_reverse
+from c_vae.swin.attention import WindowAttention
+from c_vae.swin.swin_block import SwinTransformerBlock
+from c_vae.swin.patches import PatchEmbed, PatchMerging, PatchExpand
+from c_vae.swin.swin_stage import SwinStage as BasicLayer
 from c_vae.swin.encoder import SwinEncoder
-from c_vae.swin.decoder import SwinDecoder, PatchExpand
+from c_vae.swin.decoder import SwinDecoder
 from ar_spectra.models.autoencoder import AutoEncoder
 from ar_spectra.models.bottlenecks import VAEBottleneck
 
@@ -296,28 +292,28 @@ def test_u10_merge_expand_grid_roundtrip():
 
 
 # ---------------------------------------------------------------------------
-# U11 — Full encoder: (B, 2, 1024, 128) → (B, 128, 32, 4)
+# U11 — Full encoder: (B, 4, 1024, 128) → (B, 128, 128)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.slow
 def test_u11_encoder_shape(enc_full):
-    """SwinEncoder maps (B, 4, 1024, 128) → (B, 128, 32, 4) with feature_shape info."""
+    """SwinEncoder maps (B, 4, 1024, 128) → (B, 128, 128) with feature_shape info."""
     x = torch.randn(B, 4, 1024, 128)
     with torch.no_grad():
         latents, info = enc_full(x)
-    assert latents.shape == (B, DIMENSION, 32, 4), f"Got {latents.shape}"
+    assert latents.shape == (B, DIMENSION, 128), f"Got {latents.shape}"
     assert info.get("feature_shape") == (32, 4), f"feature_shape: {info.get('feature_shape')}"
     assert not torch.isnan(latents).any(), "NaN in encoder output"
 
 
 # ---------------------------------------------------------------------------
-# U12 — Full decoder: (B, 64, 32, 4) → (B, 2, 1024, 128)
+# U12 — Full decoder: (B, 64, 128) → (B, 4, 1024, 128)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.slow
 def test_u12_decoder_shape(dec_full):
-    """SwinDecoder maps (B, 64, 32, 4) → (B, 4, 1024, 128)."""
-    z = torch.randn(B, LATENT_CH, 32, 4)
+    """SwinDecoder maps (B, 64, 128) → (B, 4, 1024, 128)."""
+    z = torch.randn(B, LATENT_CH, 128)
     with torch.no_grad():
         out = dec_full(z)
     assert out.shape == (B, 4, 1024, 128), f"Got {out.shape}"
@@ -345,8 +341,8 @@ def test_i1_autoencoder_forward(ae_mini, enc_mini):
         latents, enc_info, bn_info = ae_mini.encode(x, return_info=True)
         recon = ae_mini.decode(latents, encoder_info=enc_info)
 
-    # After bottleneck, spatial grid unchanged; channels halved (ptp=2 → /2)
-    assert latents.shape == (B, _MINI_LC, 32, 4), (
+    # After bottleneck, sequence unchanged; channels halved (ptp=2 → /2)
+    assert latents.shape == (B, _MINI_LC, 128), (
         f"Latent shape wrong: {latents.shape}"
     )
     assert recon.shape == (B, 4, 1024, 128), f"Recon shape wrong: {recon.shape}"
@@ -419,7 +415,7 @@ def test_i5_freq_crop(enc_mini):
     x = torch.randn(B, 4, 1025, 128)    # raw CAC STFT output (cac=true)
     with torch.no_grad():
         latents, info = enc_mini(x)
-    assert latents.shape == (B, _MINI_DIM, 32, 4), (
-        f"Expected (B,{_MINI_DIM},32,4) after freq crop, got {latents.shape}"
+    assert latents.shape == (B, _MINI_DIM, 128), (
+        f"Expected (B,{_MINI_DIM},128) after freq crop, got {latents.shape}"
     )
     assert not torch.isnan(latents).any(), "NaN in latents after freq crop"
