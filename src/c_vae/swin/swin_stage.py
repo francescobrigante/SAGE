@@ -64,8 +64,9 @@ class SwinStage(nn.Module):
         use_checkpoint: bool = False,
         pretrained_window_size: int = 0,
         fused_window_process: bool = False,
+        is_complex: bool = False,
     ) -> None:
-        
+
         super().__init__()
         self.dim = dim
         self.input_resolution = input_resolution
@@ -85,15 +86,15 @@ class SwinStage(nn.Module):
                 drop=drop,
                 attn_drop=attn_drop,
                 drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
-                norm_layer=norm_layer,
                 pretrained_window_size=pretrained_window_size,
                 fused_window_process=fused_window_process,
+                is_complex=is_complex,
             )
             for i in range(depth)
         ])
 
         self.downsample = (
-            downsample(input_resolution, dim=dim, norm_layer=norm_layer)
+            downsample(input_resolution, dim=dim, norm_layer=norm_layer, is_complex=is_complex)
             if downsample is not None else None
         )
 
@@ -125,8 +126,14 @@ class SwinStage(nn.Module):
 
         Zeroing norm weights at init means residuals start as identity mappings,
         stabilising deep-network training. Called once after init_swin_weights.
+
+        TODO (Phase 6b): ComplexLayerNorm has a different weight structure (2×2
+        covariance entries). Implement complex-aware zero-init before training
+        with is_complex=True. See EXPERIMENTS.md for details.
         """
         for blk in self.blocks:
+            if not hasattr(blk.norm1, 'weight') or blk.norm1.weight is None:
+                continue   # ComplexLayerNorm — zero-init deferred to Phase 6b
             nn.init.constant_(blk.norm1.bias, 0)
             nn.init.constant_(blk.norm1.weight, 0)
             nn.init.constant_(blk.norm2.bias, 0)

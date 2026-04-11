@@ -3,10 +3,7 @@
 # Implements cosine attention with learnable per-head temperature
 # (logit_scale) and continuous relative position bias via a small
 # Log-CPB MLP on log-transformed coordinates.
-# No internal package dependencies.
 # ===============================================================
-
-#TODO explain w-MSA vs SW-MSA and how mask is used for cyclic shift in SW-MSA
 
 import math
 
@@ -14,10 +11,17 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from ar_spectra.blocks.conv.normed import NormLinear
 
 
 class WindowAttention(nn.Module):
     """Window-based multi-head self-attention (W-MSA / SW-MSA) with Swin V2 cosine bias.
+
+    Real path  (is_complex=False): standard cosine attention — F.normalize(q) @ F.normalize(k)ᵀ.
+    Complex path (is_complex=True): hermitian cosine — Re(q̂ · k̂*) where q̂ = q/|q|.
+        Attention scores are always real → softmax unchanged.
+        attn @ V is split into re/im to avoid mixed-dtype matmul.
+        cpb_mlp, logit_scale, and relative_position_bias always remain real.
 
     Args:
         dim: Token channel dimension.
@@ -28,6 +32,7 @@ class WindowAttention(nn.Module):
         proj_drop: Dropout rate on the output projection.
         pretrained_window_size: Window size used during pre-training for Log-CPB coordinate
             normalisation. None or [0, 0] falls back to window_size.
+        is_complex: If True, uses NormLinear with complex64 dtype and hermitian cosine attention.
     """
 
     def __init__(
@@ -39,8 +44,9 @@ class WindowAttention(nn.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         pretrained_window_size=None,
+        is_complex: bool = False,
     ) -> None:
-        
+
         super().__init__()
         if pretrained_window_size is None:
             pretrained_window_size = [0, 0]          # no pre-training transfer by default
@@ -49,8 +55,9 @@ class WindowAttention(nn.Module):
         self.window_size = window_size                                  # (Wh, Ww)
         self.pretrained_window_size = pretrained_window_size
         self.num_heads = num_heads
+        self.is_complex = is_complex
 
-        # Per-head learnable temperature, initialised to log(10) so scale ≈ 10 at start
+        # Per-head learnable temperature — always real (scalar, device-agnostic)
         self.logit_scale = nn.Parameter(
             torch.log(10 * torch.ones((num_heads, 1, 1))), requires_grad=True
         )
@@ -100,17 +107,24 @@ class WindowAttention(nn.Module):
         relative_position_index = relative_coords.sum(-1)              # (Wh*Ww, Wh*Ww)
         self.register_buffer("relative_position_index", relative_position_index)
 
-        # QKV projection, bias on Q and V only (Swin V2 convention, K has no bias)
-        self.qkv = nn.Linear(dim, dim * 3, bias=False)
+        # QKV projection — no bias here; Q and V biases are added separately (Swin V2 convention)
+        # NormLinear with norm='none' is mathematically identical to nn.Linear;
+        # is_complex=True sets dtype=complex64 on the weight matrix.
+        self.qkv = NormLinear(dim, dim * 3, bias=False, is_complex=is_complex)
+
+        # Q and V learnable biases (K bias = 0 per Swin V2).
+        # dtype matches token dtype so torch.cat() in forward is consistent.
+        _bias_dtype = torch.complex64 if is_complex else torch.float32
         if qkv_bias:
-            self.q_bias = nn.Parameter(torch.zeros(dim))
-            self.v_bias = nn.Parameter(torch.zeros(dim))
+            self.q_bias = nn.Parameter(torch.zeros(dim, dtype=_bias_dtype))
+            self.v_bias = nn.Parameter(torch.zeros(dim, dtype=_bias_dtype))
         else:
             self.q_bias = None
             self.v_bias = None
 
         self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)                                # output projection
+        # Output projection — bias=True (same as original nn.Linear default)
+        self.proj = NormLinear(dim, dim, bias=True, is_complex=is_complex)
         self.proj_drop = nn.Dropout(proj_drop)
         self.softmax = nn.Softmax(dim=-1)
 
@@ -126,7 +140,8 @@ class WindowAttention(nn.Module):
         """
         B_, N, C = x.shape                                             # (num_windows * B, N,  C)
 
-        # Build QKV bias (Q and V get bias, K does not — Swin V2)
+        # Build combined Q/V bias (K bias = 0 per Swin V2 convention).
+        # torch.zeros_like preserves dtype → works for both float32 and complex64.
         qkv_bias = None
         if self.q_bias is not None:
             qkv_bias = torch.cat((
@@ -135,12 +150,27 @@ class WindowAttention(nn.Module):
                 self.v_bias,
             ))
 
-        qkv = F.linear(input=x, weight=self.qkv.weight, bias=qkv_bias)   # (num_windows * B, N,  3C)
+        # Apply QKV projection then add bias separately (avoids accessing internal weight)
+        qkv = self.qkv(x)                                             # (num_windows * B, N,  3C)
+        if qkv_bias is not None:
+            qkv = qkv + qkv_bias
         qkv = qkv.reshape(B_, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]                             # each (num_windows * B, num_heads, N, C/num_heads)
 
-        # Cosine attention: Python float keeps clamp device-agnostic (MPS safe)
-        attn = F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1)  # (num_windows * B, num_heads, N, N)
+        # --- Attention scores (always real → softmax unchanged) ---
+        if self.is_complex:
+            # Hermitian cosine: score(i,j) = Re(q̂ᵢ · k̂ⱼ*) ∈ [−1, 1]
+            # Normalise by magnitude only — the phase pattern drives attention,
+            # not the energy. Phase-coherent token pairs (harmonics, transients)
+            # score high regardless of loudness.
+            q_norm = q / q.abs().clamp(min=1e-6)                      # (nW*B, h, N, D) complex
+            k_norm = k / k.abs().clamp(min=1e-6)                      # (nW*B, h, N, D) complex
+            attn = (q_norm @ k_norm.conj().transpose(-2, -1)).real    # (nW*B, h, N, N) float
+        else:
+            # Standard real cosine attention (Swin V2)
+            attn = F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1)  # (nW*B, h, N, N)
+
+        # logit_scale is always real (per-head temperature scalar)
         logit_scale = torch.clamp(self.logit_scale, max=math.log(1.0 / 0.01)).exp()
         attn = attn * logit_scale                                      # (num_windows * B, num_heads, N, N)
 
@@ -160,7 +190,14 @@ class WindowAttention(nn.Module):
         attn = self.softmax(attn)                                      # (num_windows * B, num_heads, N, N)
         attn = self.attn_drop(attn)
 
-        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)              # (num_windows * B, N,  C)
+        # attn is always real; V may be complex.
+        # PyTorch does not broadcast real @ complex automatically, so split re/im.
+        if self.is_complex:
+            x = torch.complex(attn @ v.real, attn @ v.imag)           # (nW*B, h, N, D) complex
+        else:
+            x = attn @ v                                               # (nW*B, h, N, D) float
+
+        x = x.transpose(1, 2).reshape(B_, N, C)                       # (num_windows * B, N,  C)
         x = self.proj(x)                                               # (num_windows * B, N,  C)
         x = self.proj_drop(x)                                          # (num_windows * B, N,  C)
         return x

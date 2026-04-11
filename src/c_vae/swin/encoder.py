@@ -9,10 +9,11 @@ from typing import Dict, List, Tuple
 import torch
 import torch.nn as nn
 
+from ar_spectra.blocks.conv.normed import NormLinear
 from ar_spectra.models.implementations.abstract_ae import AbstractEncoder
 from .swin_stage import SwinStage
 from .patches import PatchEmbed, PatchMerging
-from .utils import init_swin_weights
+from .utils import init_swin_weights, make_norm
 
 
 class SwinEncoder(AbstractEncoder):
@@ -75,10 +76,10 @@ class SwinEncoder(AbstractEncoder):
         drop_path_rate: float = 0.1,
         use_checkpoint: bool = False,
         fused_window_process: bool = False,
+        is_complex: bool = False,
     ) -> None:
-        
-        # AbstractEncoder stores input_size (= in_channels) and is_complex
-        super().__init__(input_size=in_channels, is_complex=False)
+
+        super().__init__(input_size=in_channels, is_complex=is_complex)
 
         self.embed_dim = embed_dim                          # base channel width (doubles per merge)
         self.depths = list(depths)                          # blocks per stage, e.g. [2, 2, 4, 2]
@@ -106,6 +107,7 @@ class SwinEncoder(AbstractEncoder):
             in_chans=in_channels,
             embed_dim=embed_dim,
             norm_layer=nn.LayerNorm,
+            is_complex=is_complex,
         )
 
         # Compute per-stage input grid dimensions (H,W) and channel widths
@@ -150,6 +152,7 @@ class SwinEncoder(AbstractEncoder):
                 downsample=PatchMerging if i < self.num_stages - 1 else None,
                 use_checkpoint=use_checkpoint,
                 fused_window_process=fused_window_process,
+                is_complex=is_complex,
             )
             self.stages.append(stage)
             block_idx += depths[i]
@@ -158,9 +161,9 @@ class SwinEncoder(AbstractEncoder):
         self._final_dim: int = stage_dims[-1]                            # 384
         self._final_resolution: Tuple[int, int] = stage_resolutions[-1]  # (32, 4)
 
-        # LayerNorm → Linear(384 → dimension)
-        self.norm = nn.LayerNorm(self._final_dim)
-        self.head = nn.Linear(self._final_dim, dimension)
+        # Final norm + projection to latent dimension
+        self.norm = make_norm(self._final_dim, is_complex)
+        self.head = NormLinear(self._final_dim, dimension, is_complex=is_complex)
 
         # Weight init
         self.apply(init_swin_weights)

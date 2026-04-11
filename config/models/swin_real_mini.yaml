@@ -45,6 +45,7 @@ model:
   encoder:
     _target_: c_vae.swin.encoder.SwinEncoder
     in_channels: 4                    # stereo CAC float STFT (real_L, imag_L, real_R, imag_R)
+    is_complex: false
     embed_dim: ${models.model.swin.embed_dim}
     depths: [2, 2, 4, 2]
     num_heads: [3, 6, 12, 24]
@@ -61,6 +62,7 @@ model:
   # ── decoder ─────────────────────────────────────────────────────────────────
   decoder:
     _target_: c_vae.swin.decoder.SwinDecoder
+    is_complex: false
     channels: ${models.model.latent_channels}
     in_channels: 4
     embed_dim: ${models.model.swin.embed_dim}

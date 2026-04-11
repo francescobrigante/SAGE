@@ -10,10 +10,11 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 
+from ar_spectra.blocks.conv.normed import NormLinear
 from ar_spectra.models.implementations.abstract_ae import AbstractDecoder
 from .swin_stage import SwinStage
 from .patches import PatchExpand, PatchUnembed
-from .utils import init_swin_weights
+from .utils import init_swin_weights, make_norm
 
 
 class SwinDecoder(AbstractDecoder):
@@ -65,8 +66,9 @@ class SwinDecoder(AbstractDecoder):
         attn_drop_rate: float = 0.0,
         drop_path_rate: float = 0.1,
         use_checkpoint: bool = False,
+        is_complex: bool = False,
     ) -> None:
-        super().__init__(channels=channels, is_complex=False)
+        super().__init__(channels=channels, is_complex=is_complex)
 
         self.input_size = channels          # alias for AutoEncoder dimension-check compatibility
         self.embed_dim = embed_dim          # smallest channel width
@@ -97,15 +99,15 @@ class SwinDecoder(AbstractDecoder):
         self._stage_dims = stage_dims
         self._stage_resolutions = stage_resolutions
 
-        # Input projection: latent_channels to largest stage dim
-        # (B, T, latent_channels=64) -> (B, T, stage_dims[0]=384)
-        self.input_proj = nn.Linear(channels, stage_dims[0])
+        # Input projection: latent_channels → largest stage dim
+        # (B, T, latent_channels=64) → (B, T, stage_dims[0]=384)
+        self.input_proj = NormLinear(channels, stage_dims[0], is_complex=is_complex)
 
         # Stochastic depth
         total_blocks = sum(depths)
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, total_blocks)]
 
-        # Swin stages
+        # Swin stages + PatchExpand upsamplers
         self.stages = nn.ModuleList()
         self.patch_expands = nn.ModuleList()
         block_idx = 0
@@ -124,29 +126,29 @@ class SwinDecoder(AbstractDecoder):
                 norm_layer=nn.LayerNorm,
                 downsample=None,     # no spatial downsampling in the decoder
                 use_checkpoint=use_checkpoint,
+                is_complex=is_complex,
             )
             self.stages.append(stage)
             block_idx += depths[i]
 
-            # Add patch expand
             if i < self.num_stages - 1:
                 self.patch_expands.append(
                     PatchExpand(
                         input_resolution=stage_resolutions[i],
                         dim=stage_dims[i],
                         norm_layer=nn.LayerNorm,
+                        is_complex=is_complex,
                     )
                 )
 
-        # Normalise final token dim (48)
-        self.norm = nn.LayerNorm(stage_dims[-1])
-
-        # PatchUnembed
+        # Final norm + PatchUnembed
+        self.norm = make_norm(stage_dims[-1], is_complex)
         self.patch_unembed = PatchUnembed(
             input_resolution=stage_resolutions[-1],   # (256, 32) final token grid
             embed_dim=stage_dims[-1],                 # 48
             out_channels=in_channels,                 # 4 (stereo CAC STFT)
             patch_size=patch_size,                    # 4
+            is_complex=is_complex,
         )
 
         # Weight init
