@@ -7,12 +7,14 @@
 
 import torch
 import torch.nn as nn
-import torch.utils.checkpoint as checkpoint
-from timm.layers import DropPath, to_2tuple
+from timm.layers import to_2tuple
 
 from ar_spectra.utils.console import ok, warn
+from ar_spectra.blocks.conv.normed import NormLinear
+from ar_spectra.blocks.activations import get_activation
 from .windowing import window_partition, window_reverse
 from .attention import WindowAttention
+from .utils import make_norm, make_drop_path
 
 # -----------------------------------------------------------------
 # Optional fused CUDA window kernels
@@ -34,12 +36,18 @@ except (ImportError, ModuleNotFoundError):
 class Mlp(nn.Module):
     """Two-layer MLP with GELU activation (FFN inside SwinTransformerBlock).
 
+    With is_complex=False uses nn.Linear + nn.GELU (identical to original).
+    With is_complex=True uses NormLinear(is_complex=True) + CGeLU (split GELU:
+    applies gelu independently to real and imaginary parts — shape-agnostic,
+    no extra parameters, standard for complex transformers).
+
     Args:
         in_features: Input channel dimension.
         hidden_features: Hidden layer width (defaults to in_features).
         out_features: Output width (defaults to in_features).
-        act_layer: Activation class. Default: nn.GELU.
+        act_layer: Activation class used when is_complex=False. Default: nn.GELU.
         drop: Dropout rate applied after each linear layer.
+        is_complex: If True, switches to NormLinear + CGeLU.
     """
 
     def __init__(
@@ -49,15 +57,24 @@ class Mlp(nn.Module):
         out_features: int = None,
         act_layer=nn.GELU,
         drop: float = 0.0,
+        is_complex: bool = False,
     ) -> None:
-        
+
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        self.fc1 = nn.Linear(in_features, hidden_features)
-        self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        self.drop = nn.Dropout(drop)
+        self.is_complex = is_complex
+
+        if is_complex:
+            self.fc1 = NormLinear(in_features, hidden_features, is_complex=True)
+            self.act = get_activation("CGeLU", is_complex=True)
+            self.fc2 = NormLinear(hidden_features, out_features, is_complex=True)
+        else:
+            self.fc1 = nn.Linear(in_features, hidden_features)
+            self.act = act_layer()
+            self.fc2 = nn.Linear(hidden_features, out_features)
+
+        self.drop = nn.Dropout(drop)   # works on complex64 natively (shared real mask)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.fc1(x)    # (*, hidden_features)
@@ -109,11 +126,11 @@ class SwinTransformerBlock(nn.Module):
         attn_drop: float = 0.0,
         drop_path: float = 0.0,
         act_layer=nn.GELU,
-        norm_layer=nn.LayerNorm,
         pretrained_window_size: int = 0,
         fused_window_process: bool = False,
+        is_complex: bool = False,
     ) -> None:
-        
+
         super().__init__()
         self.dim = dim
         self.input_resolution = input_resolution
@@ -121,8 +138,20 @@ class SwinTransformerBlock(nn.Module):
         self.window_size = window_size
         self.shift_size = shift_size
         self.mlp_ratio = mlp_ratio
-        # Only enable fused kernel when the CUDA extension was successfully loaded
-        self.fused_window_process = fused_window_process and FUSED_WINDOW_AVAILABLE
+        self.is_complex = is_complex
+
+        # Fused CUDA kernels (roll + window_partition in one pass) are float32-only.
+        # For complex inputs we always use the unfused torch.roll path.
+        # TODO (future): the kernels operate on pure memory (no arithmetic), so they
+        # could support complex64 via a view trick:
+        #   x_f = x.view(torch.float32)          # (B, H, W, 2C) float32
+        #   out_f = WindowProcess.apply(x_f, B, H, W, 2*C, shift, ws)
+        #   out   = out_f.view(torch.complex64)   # (nW*B, ws, ws, C) complex64
+        # Needs testing before enabling.
+        if is_complex:
+            self.fused_window_process = False
+        else:
+            self.fused_window_process = fused_window_process and FUSED_WINDOW_AVAILABLE
 
         # Clamp window size when the grid is smaller (e.g. deepest decoder stage)
         if min(self.input_resolution) <= self.window_size:
@@ -130,7 +159,7 @@ class SwinTransformerBlock(nn.Module):
             self.window_size = min(self.input_resolution)
         assert 0 <= self.shift_size < self.window_size, "shift_size must be in [0, window_size)"
 
-        self.norm1 = norm_layer(dim)
+        self.norm1 = make_norm(dim, is_complex)
         self.attn = WindowAttention(
             dim,
             window_size=to_2tuple(self.window_size),
@@ -139,14 +168,18 @@ class SwinTransformerBlock(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
             pretrained_window_size=to_2tuple(pretrained_window_size),
+            is_complex=is_complex,
         )
-        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.norm2 = norm_layer(dim)
+        # ComplexSafeDropPath when is_complex=True, timm DropPath otherwise.
+        # Both are nn.Identity when drop_path == 0.
+        self.drop_path = make_drop_path(drop_path, is_complex)
+        self.norm2 = make_norm(dim, is_complex)
         self.mlp = Mlp(
             in_features=dim,
             hidden_features=int(dim * mlp_ratio),
             act_layer=act_layer,
             drop=drop,
+            is_complex=is_complex,
         )
 
         # Pre-compute SW-MSA attention mask once and register as a non-parameter buffer.

@@ -74,7 +74,7 @@ def test_get_kl_non_negative():
     """get_kl should be >= 0 for valid (sigma > |c|) inputs."""
     sigma, c = _make_valid_sigma_c()
     mu = _make_mu()
-    kl = get_kl(mu, sigma, c)
+    kl, _ = get_kl(mu, sigma, c)
     assert kl.item() >= 0.0, f"KL should be non-negative, got {kl.item()}"
 
 
@@ -88,7 +88,7 @@ def test_get_kl_at_prior_mode_a():
     mu = torch.zeros(*shape, dtype=torch.cfloat)
     sigma = torch.ones(*shape)
     c = torch.zeros(*shape, dtype=torch.cfloat)
-    kl = get_kl(mu, sigma, c)
+    kl, _ = get_kl(mu, sigma, c)
     assert abs(kl.item()) < 1e-5, f"KL at prior should be ~0, got {kl.item()}"
 
 
@@ -104,7 +104,7 @@ def test_get_cholesky_kl_at_prior():
     l11 = torch.full(shape, val)
     l21 = torch.zeros(*shape)
     l22 = torch.full(shape, val)
-    kl = get_cholesky_kl(mu, l11, l21, l22)
+    kl, _ = get_cholesky_kl(mu, l11, l21, l22)
     assert abs(kl.item()) < 1e-5, f"Cholesky KL at prior should be ~0, got {kl.item()}"
 
 
@@ -197,7 +197,7 @@ def test_get_kl_barrier_near_constraint():
     c_i = torch.zeros(*shape)
     c = torch.complex(c_r, c_i)
 
-    kl = get_kl(mu, sigma, c)
+    kl, _ = get_kl(mu, sigma, c)
     assert not torch.isnan(kl), "KL must not be NaN near constraint boundary"
     assert kl.item() > 0.0, f"KL near constraint boundary should be large positive, got {kl.item()}"
     # Barrier should make KL substantially large (log(sigma^2 - |c|^2) → -inf as |c| → sigma)
@@ -273,8 +273,8 @@ def test_kl_increases_with_mu_magnitude():
     mu_small = torch.complex(torch.full(shape, 0.1), torch.zeros(*shape))
     mu_large = torch.complex(torch.full(shape, 5.0), torch.zeros(*shape))
 
-    kl_small = get_kl(mu_small, sigma, c)
-    kl_large = get_kl(mu_large, sigma, c)
+    kl_small, _ = get_kl(mu_small, sigma, c)
+    kl_large, _ = get_kl(mu_large, sigma, c)
 
     assert kl_large.item() > kl_small.item(), (
         "KL must increase with mu magnitude"
@@ -300,8 +300,8 @@ def test_kl_consistency_cholesky_vs_direct():
     sigma = l11**2 + l21**2 + l22**2
     c = torch.complex(l11**2 - l21**2 - l22**2, 2.0 * l11 * l21)
 
-    kl_direct = get_kl(mu, sigma, c)
-    kl_cholesky = get_cholesky_kl(mu, l11, l21, l22)
+    kl_direct, _ = get_kl(mu, sigma, c)
+    kl_cholesky, _ = get_cholesky_kl(mu, l11, l21, l22)
 
     assert torch.isclose(kl_direct, kl_cholesky, rtol=1e-4), (
         f"get_kl={kl_direct.item():.6f} and get_cholesky_kl={kl_cholesky.item():.6f} "
@@ -321,7 +321,7 @@ def test_get_cholesky_kl_non_negative():
     l22 = torch.rand(*shape).abs() + 0.1
     mu = _make_mu(shape)
 
-    kl = get_cholesky_kl(mu, l11, l21, l22)
+    kl, _ = get_cholesky_kl(mu, l11, l21, l22)
     assert kl.item() >= 0.0, f"Cholesky KL should be non-negative, got {kl.item()}"
 
 
@@ -393,5 +393,5 @@ def test_get_proper_kl_non_negative():
     shape = (2, 4, 8, 16)
     mu = _make_mu(shape)
     gamma = torch.rand(*shape).abs() + 0.1 # Strictly positive variance
-    kl = get_proper_kl(mu, gamma)
+    kl, _ = get_proper_kl(mu, gamma)
     assert kl.item() >= 0.0, f"Proper KL should be non-negative, got {kl.item()}"

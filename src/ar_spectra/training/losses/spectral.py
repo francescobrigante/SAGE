@@ -132,10 +132,10 @@ class ComplexSpectralConvergence(nn.Module):
         diff_flat = (S_gt - S_hat).reshape(batch*channels, -1)
         gt_flat = S_gt.reshape(batch*channels, -1)
         
-        # MPS note: torch.linalg.norm on complex tensors is unsupported on MPS.
-        # MPS-safe equivalent (mathematically identical): diff_flat.abs() / gt_flat.abs()
-        num = torch.linalg.norm(diff_flat, ord=2, dim=1)
-        den = torch.linalg.norm(gt_flat, ord=2, dim=1).clamp_min(self.eps)
+        # MPS-safe: torch.linalg.norm on complex is unsupported on MPS.
+        # .abs() first is mathematically identical: ||z||₂ = ||z.abs()||₂ = sqrt(Σ|zᵢ|²)
+        num = torch.linalg.norm(diff_flat.abs(), ord=2, dim=1)
+        den = torch.linalg.norm(gt_flat.abs(), ord=2, dim=1).clamp_min(self.eps)
         
         sc = num / den  
         

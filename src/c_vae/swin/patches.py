@@ -12,6 +12,9 @@ from typing import Tuple
 import torch
 import torch.nn as nn
 from timm.layers import to_2tuple
+from ar_spectra.blocks.conv.normed import NormLinear
+from ar_spectra.blocks.conv.causal import SConv2d, SConvTranspose2d
+from c_vae.swin.utils import make_norm
 
 
 # --------------------------------------------------------------------------- #
@@ -21,12 +24,18 @@ from timm.layers import to_2tuple
 class PatchEmbed(nn.Module):
     """Map a 2-D spectrogram to a flat sequence of patch tokens via strided Conv2d.
 
+    With is_complex=False uses nn.Conv2d (float32); with is_complex=True uses
+    SConv2d(is_complex=True) which operates on complex64 tensors.
+    kernel_size == stride == patch_size → zero padding, non-overlapping patches.
+
     Args:
         img_size: (H, W) of the input spectrogram (or a single int for square).
         patch_size: kernel size = stride of the Conv2d (non-overlapping patches).
         in_chans: Input channels (2 = stereo STFT, 4 = CAC format).
         embed_dim: Output token dimension.
-        norm_layer: Optional normalisation applied after projection.
+        norm_layer: Norm constructor used when is_complex=False. Ignored when
+            is_complex=True (make_norm is used instead).
+        is_complex: If True, uses SConv2d + ComplexLayerNorm.
     """
 
     def __init__(
@@ -36,21 +45,28 @@ class PatchEmbed(nn.Module):
         in_chans: int = 3,
         embed_dim: int = 96,
         norm_layer=None,
+        is_complex: bool = False,
     ) -> None:
-        
+
         super().__init__()
         img_size = to_2tuple(img_size)
         patch_size = to_2tuple(patch_size)
         patches_resolution = [img_size[0] // patch_size[0], img_size[1] // patch_size[1]]
-        self.img_size = img_size                             # (H, W) of expected input
-        self.patch_size = patch_size                         # (ph, pw) kernel and stride
-        self.patches_resolution = patches_resolution        # (H/ph, W/pw) token grid
-        self.num_patches = patches_resolution[0] * patches_resolution[1] # total tokens per sample = (H/ph) * (W/pw)
+        self.img_size = img_size                              # (H, W) of expected input
+        self.patch_size = patch_size                          # (ph, pw) kernel and stride
+        self.patches_resolution = patches_resolution          # (H/ph, W/pw) token grid
+        self.num_patches = patches_resolution[0] * patches_resolution[1]  # total tokens
         self.in_chans = in_chans
         self.embed_dim = embed_dim
+        self.is_complex = is_complex
 
-        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
-        self.norm = norm_layer(embed_dim) if norm_layer is not None else None
+        if is_complex:
+            self.proj = SConv2d(in_chans, embed_dim, kernel_size=patch_size,
+                                stride=patch_size, is_complex=True)
+            self.norm = make_norm(embed_dim, is_complex=True) if norm_layer is not None else None
+        else:
+            self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+            self.norm = norm_layer(embed_dim) if norm_layer is not None else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -82,11 +98,15 @@ class PatchUnembed(nn.Module):
     Exact inverse of PatchEmbed: accepts the same token format (B, num_patches, embed_dim)
     and internally reshapes to 2-D spatial before applying ConvTranspose2d.
 
+    With is_complex=False uses nn.ConvTranspose2d; with is_complex=True uses
+    SConvTranspose2d(is_complex=True). kernel_size == stride → zero padding trim.
+
     Args:
         input_resolution: (H, W) token grid (= PatchEmbed.patches_resolution).
         embed_dim: Input token channel dimension (= encoder embed_dim).
         out_channels: Output spectrogram channels (2 = stereo STFT, 4 = CAC).
         patch_size: Kernel = stride of ConvTranspose2d (must match PatchEmbed).
+        is_complex: If True, uses SConvTranspose2d(is_complex=True).
     """
 
     def __init__(
@@ -95,14 +115,23 @@ class PatchUnembed(nn.Module):
         embed_dim: int,
         out_channels: int,
         patch_size: int,
+        is_complex: bool = False,
     ) -> None:
-        
+
         super().__init__()
         self.input_resolution = input_resolution   # (H, W) token grid
         self.embed_dim = embed_dim
-        self.conv = nn.ConvTranspose2d(
-            embed_dim, out_channels, kernel_size=patch_size, stride=patch_size
-        )
+        self.is_complex = is_complex
+
+        if is_complex:
+            self.conv = SConvTranspose2d(
+                embed_dim, out_channels, kernel_size=patch_size, stride=patch_size,
+                is_complex=True,
+            )
+        else:
+            self.conv = nn.ConvTranspose2d(
+                embed_dim, out_channels, kernel_size=patch_size, stride=patch_size,
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -130,10 +159,16 @@ class PatchMerging(nn.Module):
     then projects 4C -> 2C via a bias-free linear layer.
     Applied at the end of encoder stages 0-2.
 
+    The geometric concat/scatter operations are dtype-agnostic (work on both
+    float32 and complex64); only the learnable layers switch via is_complex.
+
     Args:
         input_resolution: (H, W) grid before downsampling.
         dim: Input channel dimension C; output will be 2C.
-        norm_layer: Normalisation applied after the linear reduction.
+        norm_layer: Fallback norm constructor used when is_complex=False.
+            Ignored when is_complex=True (make_norm is used instead).
+        is_complex: If True, uses NormLinear(is_complex=True) and
+            ComplexLayerNorm; if False, uses plain nn.Linear + norm_layer.
     """
 
     def __init__(
@@ -141,13 +176,20 @@ class PatchMerging(nn.Module):
         input_resolution: Tuple[int, int],
         dim: int,
         norm_layer=nn.LayerNorm,
+        is_complex: bool = False,
     ) -> None:
-        
+
         super().__init__()
         self.input_resolution = input_resolution
         self.dim = dim
-        self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)     # 4C -> 2C
-        self.norm = norm_layer(2 * dim)
+        self.is_complex = is_complex
+
+        if is_complex:
+            self.reduction = NormLinear(4 * dim, 2 * dim, bias=False, is_complex=True)  # 4C -> 2C
+            self.norm = make_norm(2 * dim, is_complex=True)
+        else:
+            self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)                   # 4C -> 2C
+            self.norm = norm_layer(2 * dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -194,7 +236,10 @@ class PatchExpand(nn.Module):
     Args:
         input_resolution: (H, W) grid before upsampling.
         dim: Input channel dimension 2C; output will be C = dim // 2.
-        norm_layer: Normalisation applied to the output tokens.
+        norm_layer: Fallback norm constructor used when is_complex=False.
+            Ignored when is_complex=True (make_norm is used instead).
+        is_complex: If True, uses NormLinear(is_complex=True) and
+            ComplexLayerNorm; if False, uses plain nn.Linear + norm_layer.
     """
 
     def __init__(
@@ -202,15 +247,21 @@ class PatchExpand(nn.Module):
         input_resolution: Tuple[int, int],
         dim: int,
         norm_layer=nn.LayerNorm,
+        is_complex: bool = False,
     ) -> None:
-        
+
         super().__init__()
         self.input_resolution = input_resolution   # (H, W) before expansion
         self.dim = dim                             # input channels (2C)
         self.out_dim = dim // 2                   # output channels (C)
+        self.is_complex = is_complex
 
-        self.expand = nn.Linear(dim, 2 * dim, bias=False)   # 2C -> 4C
-        self.norm = norm_layer(self.out_dim)
+        if is_complex:
+            self.expand = NormLinear(dim, 2 * dim, bias=False, is_complex=True)  # 2C -> 4C
+            self.norm = make_norm(self.out_dim, is_complex=True)
+        else:
+            self.expand = nn.Linear(dim, 2 * dim, bias=False)                   # 2C -> 4C
+            self.norm = norm_layer(self.out_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

@@ -8,10 +8,11 @@ CLAUDE.md
 MSc-thesis/
 *.ipynb
 *.md
-
 *.csv
 plots/
 Swin-Transformer-main/
+*.sh
+*.ps1
 
 src/c_vae/swin/others/
 
@@ -21,7 +22,5 @@ src/c_vae/swin/others/
 .lightning_profiler/
 runs/
 
-*.sh
-*.ps1
 
 *.ckpt
