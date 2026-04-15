@@ -49,14 +49,22 @@ def get_python_exe(env_path=None):
         
     return str(python_exe)
 
-def run_command(cmd, env_path=None):
-    """Executes a subprocess command safely."""
+def run_command(cmd, env_path=None, critical=True):
+    """Executes a subprocess command safely.
+
+    Args:
+        critical: if True (default), exit the process on failure; if False, log
+                  the error and return the exit code so the pipeline can continue.
+    """
     cmd[0] = get_python_exe(env_path)
     try:
         subprocess.run(cmd, check=True)
+        return 0
     except subprocess.CalledProcessError as e:
         log_err(f"Command failed with exit code {e.returncode}")
-        sys.exit(e.returncode)
+        if critical:
+            sys.exit(e.returncode)
+        return e.returncode
     except KeyboardInterrupt:
         log_err("\nInterrupted by user. Exiting...")
         sys.exit(130)
@@ -73,6 +81,8 @@ def main():
     parser.add_argument("--csv-dir", type=Path, help="Directory where metric CSV/log files will be stored.")
     parser.add_argument("--extensions", type=str, help="Comma-separated extensions (e.g. wav,mp3).")
     parser.add_argument("--max-files", type=int, default=DEFAULT_MAX_FILES, help="Max files to process (inference).")
+    parser.add_argument("--batch-size", type=int, default=16, help="Batch size for all evaluation steps.")
+    parser.add_argument("--cache-dir", type=Path, help="Shared directory for target embeddings cache.")
     
     # Virtualenvs
     parser.add_argument("--main-env", type=Path, help="Virtualenv for inference and spectral metrics.")
@@ -92,9 +102,12 @@ def main():
     # Model selection for new steps
     parser.add_argument("--clap-model", default="both", choices=["music", "audio", "both"],
                         help="CLAP flavour(s) to compute (default: both).")
-    parser.add_argument("--fad-gudgud-model", default="vggish",
+    parser.add_argument("--fad-model", default="mert",
+                        choices=["vggish", "clap-laion", "clap-laion-audio", "mert"],
+                        help="Backbone for FAD fadtk (default: mert).")
+    parser.add_argument("--fad-gudgud-model", default="clap-audio",
                         choices=["vggish", "pann", "clap-music", "clap-audio", "encodec"],
-                        help="Backbone for FAD gudgud96 (default: vggish).")
+                        help="Backbone for FAD gudgud96 (default: clap-audio).")
 
     args = parser.parse_args()
 
@@ -145,11 +158,13 @@ def main():
     # 2. SPECTRAL METRICS
     # ==========================
     log_info("Computing spectral metrics")
-    spectral_cmd = ["python", str(PROJECT_ROOT / "tests/compute_spectral.py"), 
+    spectral_cmd = ["python", str(PROJECT_ROOT / "evaluation/compute_spectral.py"), 
                     "--target-dir", str(args.target_dir), 
                     "--preds-dir", str(args.output_dir),
-                    "--csv_out", str(csv_dir / "spectral.csv")]
+                    "--csv_out", str(csv_dir / "spectral.csv"),
+                    "--batch-size", str(args.batch_size)]
     if cli_ext: spectral_cmd.extend(["--extensions", cli_ext])
+    if args.max_files > 0: spectral_cmd.extend(["--max-files", str(args.max_files)])
     
     run_command(spectral_cmd, args.main_env)
 
@@ -158,11 +173,14 @@ def main():
     # ==========================
     if not args.skip_clap:
         log_info("Computing CLAP-LAION cosine score")
-        clap_cmd = ["python", str(PROJECT_ROOT / "tests/compute_clap_score.py"),
+        clap_cmd = ["python", str(PROJECT_ROOT / "evaluation/compute_clap_score.py"),
                     "--target-dir", str(args.target_dir),
                     "--preds-dir", str(args.output_dir),
                     "--model", args.clap_model,
-                    "--csv_out", str(csv_dir / "clap_score.csv")]
+                    "--csv_out", str(csv_dir / "clap_score.csv"),
+                    "--batch-size", str(args.batch_size)]
+        if args.cache_dir: clap_cmd.extend(["--cache-dir", str(args.cache_dir)])
+        if args.max_files > 0: clap_cmd.extend(["--max-files", str(args.max_files)])
         run_command(clap_cmd, args.metrics_env or args.main_env)
 
     # ==========================
@@ -170,39 +188,47 @@ def main():
     # ==========================
     if not args.skip_cdpam:
         log_info("Computing CDPAM")
-        cdpam_cmd = ["python", str(PROJECT_ROOT / "tests/compute_cdpam.py"), 
+        cdpam_cmd = ["python", str(PROJECT_ROOT / "evaluation/compute_cdpam.py"), 
                      "--target-dir", str(args.target_dir), 
                      "--preds-dir", str(args.output_dir), 
                      "--device", args.cdpam_device,
-                     "--csv_out", str(csv_dir / "cdpam.csv")]
+                     "--csv_out", str(csv_dir / "cdpam.csv"),
+                     "--batch-size", str(args.batch_size)]
         if cli_ext: cdpam_cmd.extend(["--extensions", cli_ext])
         if args.cdpam_chunk > 0: cdpam_cmd.extend(["--chunk_size", str(args.cdpam_chunk)])
+        if args.max_files > 0: cdpam_cmd.extend(["--max-files", str(args.max_files)])
         
         run_command(cdpam_cmd, args.metrics_env or args.main_env)
 
     # ==========================
-    # 5. FAD GUDGUD
+    # 5. FAD GUDGUD (clap-audio)
     # ==========================
     if not args.skip_fad_gudgud:
-        log_info("Computing FAD (gudgud96)")
-        fad_gudgud_cmd = ["python", str(PROJECT_ROOT / "tests/compute_fad_gudgud.py"),
+        log_info("Computing FAD (gudgud96 / clap-audio)")
+        fad_gudgud_cmd = ["python", str(PROJECT_ROOT / "evaluation/compute_fad_gudgud.py"),
                           "--target-dir", str(args.target_dir),
                           "--preds-dir", str(args.output_dir),
-                          "--model", args.fad_gudgud_model]
-        run_command(fad_gudgud_cmd, args.metrics_env or args.main_env)
+                          "--model", args.fad_gudgud_model,
+                          "--csv_out", str(csv_dir / "fad_gudgud.csv"),
+                          "--batch-size", str(args.batch_size)]
+        if args.cache_dir: fad_gudgud_cmd.extend(["--cache-dir", str(args.cache_dir)])
+        if args.max_files > 0: fad_gudgud_cmd.extend(["--max-files", str(args.max_files)])
+        run_command(fad_gudgud_cmd, args.metrics_env or args.main_env, critical=False)
 
     # ==========================
-    # 6. FAD FADTK
+    # 6. FAD FADTK (mert)
     # ==========================
     if not args.skip_fad:
-        log_info("Computing FAD (fadtk)")
-        fad_cmd = ["python", str(PROJECT_ROOT / "tests/compute_fad.py"),
+        log_info("Computing FAD (fadtk / mert)")
+        fad_cmd = ["python", str(PROJECT_ROOT / "evaluation/compute_fad.py"),
                    "--target-dir", str(args.target_dir),
-                   "--preds-dir", str(args.output_dir)]
+                   "--preds-dir", str(args.output_dir),
+                   "--model", args.fad_model,
+                   "--csv_out", str(csv_dir / "fad_mert.csv"),
+                   "--batch-size", str(args.batch_size)]
+        if args.cache_dir: fad_cmd.extend(["--cache-dir", str(args.cache_dir)])
         if args.max_files > 0: fad_cmd.extend(["--max-files", str(args.max_files)])
-
-        # Run directly to terminal to preserve perfect tqdm progress bars
-        run_command(fad_cmd, args.metrics_env or args.main_env)
+        run_command(fad_cmd, args.metrics_env or args.main_env, critical=False)
 
 
 if __name__ == "__main__":

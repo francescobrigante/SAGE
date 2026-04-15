@@ -22,7 +22,6 @@ except ImportError:
     wandb = None
 
 from .run_config import _is_rank0
-from .aeiou import pca_point_cloud
 
 def ok(msg: str, prefix: str = "") -> None:
     prefix_str = f"[[bold cyan]{prefix}[/bold cyan]] " if prefix else ""
@@ -112,6 +111,7 @@ def log_point_cloud(logger, key, tokens, caption=None):
     if not _is_rank0_local():
         return
     try:
+        from .aeiou import pca_point_cloud  # lazy: pulls torchaudio/umap/plotly only when needed
         if WandbLogger is not None and isinstance(logger, WandbLogger):
             point_cloud = pca_point_cloud(tokens)
             logger.experiment.log({key: point_cloud})

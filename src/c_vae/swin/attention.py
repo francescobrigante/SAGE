@@ -165,7 +165,9 @@ class WindowAttention(nn.Module):
             # score high regardless of loudness.
             q_norm = q / q.abs().clamp(min=1e-6)                      # (nW*B, h, N, D) complex
             k_norm = k / k.abs().clamp(min=1e-6)                      # (nW*B, h, N, D) complex
-            attn = (q_norm @ k_norm.conj().transpose(-2, -1)).real    # (nW*B, h, N, N) float
+            # Re(A @ conj(B)ᵀ) = Re(A)@Re(B)ᵀ + Im(A)@Im(B)ᵀ
+            # 2 real SGEMM instead of 1 complex ZGEMM (≡ 4 SGEMM) → 2× faster here.
+            attn = q_norm.real @ k_norm.real.mT + q_norm.imag @ k_norm.imag.mT  # (nW*B, h, N, N) float
         else:
             # Standard real cosine attention (Swin V2)
             attn = F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1)  # (nW*B, h, N, N)

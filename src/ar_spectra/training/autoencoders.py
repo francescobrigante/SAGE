@@ -161,6 +161,10 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         # Accumulate per-channel KL tensors for histogram logging.
         self._log_accum_kl_per_channel: list = []
 
+        # Make the model DDP-compatible if it contains ComplexFloat parameters
+        from ar_spectra.utils.complex_ddp import make_complex_model_ddp_compatible
+        make_complex_model_ddp_compatible(self.engine)
+
     # Accessori utili in callback esistenti
     @property
     def autoencoder(self):
@@ -227,7 +231,13 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             for name, p in model.named_parameters():
                 if not p.requires_grad:
                     continue
-                if p.ndim == 1 or name.endswith(".bias"):
+                # make_complex_model_ddp_compatible stores formerly-1D complex params as
+                # 2-D float32 tensors with a "_real_view" suffix (view_as_real adds 1 dim).
+                # Treat them the same as 1-D params for weight-decay exclusion so that the
+                # complex model sees the same optimisation regime as its real counterpart.
+                local_name = name.rsplit(".", 1)[-1]  # param name within its module
+                is_complex_ddp_1d = p.ndim == 2 and local_name.endswith("_real_view")
+                if p.ndim == 1 or name.endswith(".bias") or is_complex_ddp_1d:
                     no_decay.append(p)
                 else:
                     decay.append(p)

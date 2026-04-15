@@ -140,18 +140,12 @@ class SwinTransformerBlock(nn.Module):
         self.mlp_ratio = mlp_ratio
         self.is_complex = is_complex
 
-        # Fused CUDA kernels (roll + window_partition in one pass) are float32-only.
-        # For complex inputs we always use the unfused torch.roll path.
-        # TODO (future): the kernels operate on pure memory (no arithmetic), so they
-        # could support complex64 via a view trick:
-        #   x_f = x.view(torch.float32)          # (B, H, W, 2C) float32
-        #   out_f = WindowProcess.apply(x_f, B, H, W, 2*C, shift, ws)
-        #   out   = out_f.view(torch.complex64)   # (nW*B, ws, ws, C) complex64
-        # Needs testing before enabling.
-        if is_complex:
-            self.fused_window_process = False
-        else:
-            self.fused_window_process = fused_window_process and FUSED_WINDOW_AVAILABLE
+        # Fused CUDA kernels (roll + window_partition in one pass) work for both real
+        # and complex inputs. For complex64, forward() reinterprets the tensor as
+        # float32 (B,H,W,2C) before calling the kernel and casts back to complex64
+        # afterward — safe because the kernel is pure memory scatter/gather with no
+        # arithmetic, and complex64 is stored as interleaved float32 pairs in memory.
+        self.fused_window_process = fused_window_process and FUSED_WINDOW_AVAILABLE
 
         # Clamp window size when the grid is smaller (e.g. deepest decoder stage)
         if min(self.input_resolution) <= self.window_size:
@@ -230,10 +224,17 @@ class SwinTransformerBlock(nn.Module):
             if not self.fused_window_process:
                 shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
                 x_windows = window_partition(shifted_x, self.window_size)    # (nW * B, ws, ws, C)
-            # cuda
+            # cuda — complex64: reinterpret as float32 (B,H,W,2C), run kernel, cast back.
+            # Safe because the kernel is pure memory scatter/gather (no arithmetic) and
+            # complex64 is stored as interleaved float32 pairs, so Re/Im pairing is preserved.
+            elif self.is_complex:
+                x_f = x.view(torch.float32)                                  # (B, H, W, 2C) float32
+                out_f = WindowProcess.apply(x_f, B, H, W, 2 * C, -self.shift_size, self.window_size)
+                x_windows = out_f.view(torch.complex64)                      # (nW * B, ws, ws, C)
+            # cuda — real float32: pass tensor directly
             else:
                 x_windows = WindowProcess.apply(x, B, H, W, C, -self.shift_size, self.window_size)
-                
+
         else:
             x_windows = window_partition(x, self.window_size)         # (nW * B, ws, ws, C)
             
@@ -242,12 +243,19 @@ class SwinTransformerBlock(nn.Module):
         # W-MSA / SW-MSA
         attn_windows = self.attn(x_windows, mask=self.attn_mask)      # (nW * B, ws², C)
 
-        # Reverse window partition + reverse cyclic shift 
+        # Reverse window partition + reverse cyclic shift
         attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
         if self.shift_size > 0:
+            # not cuda
             if not self.fused_window_process:
                 shifted_x = window_reverse(attn_windows, self.window_size, H, W)  # (B, H, W, C)
                 x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
+            # cuda — complex64 view trick (same rationale as forward path above)
+            elif self.is_complex:
+                aw_f = attn_windows.view(torch.float32)                      # (nW * B, ws, ws, 2C)
+                out_f = WindowProcessReverse.apply(aw_f, B, H, W, 2 * C, self.shift_size, self.window_size)
+                x = out_f.view(torch.complex64)                              # (B, H, W, C)
+            # cuda — real float32
             else:
                 x = WindowProcessReverse.apply(attn_windows, B, H, W, C, self.shift_size, self.window_size)
         else:
