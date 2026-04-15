@@ -124,8 +124,9 @@ class SwinDecoder(AbstractDecoder):
                 attn_drop=attn_drop_rate,
                 drop_path=dpr[block_idx: block_idx + depths[i]],
                 norm_layer=nn.LayerNorm,
-                downsample=None,     # no spatial downsampling in the decoder
+                downsample=None,          # no spatial downsampling in the decoder
                 use_checkpoint=use_checkpoint,
+                fused_window_process=True,  # always request fused kernel; actual gate is FUSED_WINDOW_AVAILABLE
                 is_complex=is_complex,
             )
             self.stages.append(stage)

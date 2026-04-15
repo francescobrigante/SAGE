@@ -39,6 +39,7 @@ OmegaConf.register_new_resolver("config", lambda key: getattr(config, key))
 OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
 from ar_spectra.training.callbacks import DatasetEpochSetter, ModelInfoLogger
+from ar_spectra.utils.model_info import log_compression_stats
 
 class WandbConfigLogger:
     """Utility per caricare l'intera cartella di configurazione Hydra su W&B.
@@ -420,8 +421,17 @@ def main(cfg: DictConfig):
     )
 
     ok(f"{req_accelerator}", prefix="DEVICE")
+    
+    # Extracts and visualizes latent shape and compression rate
+    if _is_rank0():
+        log_compression_stats(wrapper, train_dl, console)
+
+    ckpt_path = OmegaConf.select(cfg, "ckpt_path", default=None)
+    if ckpt_path:
+        ok(f"Resuming from checkpoint: {ckpt_path}", prefix="TRAINER")
+
     try:
-        trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl)
+        trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl, ckpt_path=ckpt_path)
     except KeyboardInterrupt:
         warn("Training interrupted by user (Ctrl+C). Exiting gracefully...", prefix="TRAINER")
         sys._exit(0)

@@ -1,0 +1,69 @@
+#!/bin/bash
+# ============================================================
+# Swin Complex VAE - 4-stage, x64, 50 epochs, 2 GPUs DDP (A100)
+#
+# Hardware: 1 Nodo, 2 GPU
+# DDP (DistributedDataParallel) taglia il dataset in due:
+#   6400 campioni / 2 GPU = 3200 campioni a testa.
+#   3200 campioni / 16 batch_size = ~200 batch per rango per epoca!
+# Steps totali = 50 epoche * 200 batch = 10000 step attesi.
+# Run Time atteso: ~3-4 ore
+# ============================================================
+
+#SBATCH --job-name=train_cplx_ddp
+#SBATCH --account=IscrC_AHNetBio
+#SBATCH --partition=boost_usr_prod
+#SBATCH --qos=boost_qos_lprod
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=2            # DDP: 1 task per GPU
+#SBATCH --gres=gpu:2                   # Alloca 2x A100 (64GB)
+#SBATCH --cpus-per-task=8
+#SBATCH --mem-per-cpu=16G
+#SBATCH --time=0-12:00:00
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
+
+mkdir -p logs
+mkdir -p checkpoints/cplx_x64_ddp
+
+module load profile/deeplrn cineca-ai/4.3.0
+
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export NCCL_DEBUG=INFO
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export WANDB_MODE=offline
+export WANDB_TAGS="$SLURM_JOB_NAME"
+export WANDB_DIR=$WORK/C-VAE/.wandb_cache
+mkdir -p $WORK/C-VAE/.wandb_cache
+
+cd $WORK/C-VAE
+source $WORK/.envs/c_vae/bin/activate
+
+echo "============================================================"
+echo "Starting COMPLEX-VAL training on 2 GPUs (DDP)"
+echo "============================================================"
+
+# Calcolo Scheduler: 50 epoche * 200 batch (perchè dimezzato dal DDP) = 10000 total_steps
+# Warmup: 5% di 10000 = 500 step
+
+srun python train.py \
+    models=swin_cplx_4s_x64 \
+    data.train_dataset.cac=false \
+    data.eval_dataset.cac=false \
+    data.demo.istft_params.cac=false \
+    data.model_channels=2 \
+    trainer.trainer.epochs=50 \
+    trainer.trainer.kl_annealing_epochs=10 \
+    trainer.loss_config.bottleneck.weights.kl=1e-5 \
+    trainer.scheduler.total_steps=10000 \
+    trainer.scheduler.warmup_steps=500 \
+    trainer.optimizer.lr=1e-4 \
+    trainer.optimizer.weight_decay=0.05 \
+    "+trainer.optimizer.weight_decay_exclude_1d=true" \
+    trainer.trainer.clip_grad_norm=5.0 \
+    trainer.loss_config.mrmel.weights.mrmel=0.3 \
+    trainer.trainer.ckpt_dir=checkpoints/cplx_x64_ddp \
+    trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
+    trainer.trainer.strategy=ddp \
+    trainer.wandb.use_wandb=true \
+    trainer.wandb.name=TEST_cplx_x64_2GPU  # <--- CAMBIA QUI IL NOME VISIBILE SU W&B
