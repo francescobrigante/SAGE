@@ -299,6 +299,22 @@ def batch_embed_files(fad, files: List[Path], batch_size: int = 16, cache_dir: P
         is_mert = isinstance(fad.ml, _MERTModel)
     except ImportError:
         is_mert = "mert" in model_name.lower()
+        
+    if is_mert and hasattr(fad.ml.model.encoder, "pos_conv_embed"):
+        m_conv = fad.ml.model.encoder.pos_conv_embed.conv
+        # Monkey-patch PyTorch >= 2.2 parametrization missing keys:
+        if hasattr(m_conv, "parametrizations"):
+            try:
+                from huggingface_hub import hf_hub_download
+                ckpt_path = hf_hub_download(fad.ml.huggingface_id, 'pytorch_model.bin')
+                state_dict = torch.load(ckpt_path, map_location='cpu')
+                if "encoder.pos_conv_embed.conv.weight_g" in state_dict:
+                    with torch.no_grad():
+                        m_conv.parametrizations.weight.original0.copy_(state_dict["encoder.pos_conv_embed.conv.weight_g"])
+                        m_conv.parametrizations.weight.original1.copy_(state_dict["encoder.pos_conv_embed.conv.weight_v"])
+                    info(f"MERT pos_conv_embed weights monkey-patched for PyTorch >= 2.x compatibility.")
+            except Exception as e:
+                warn(f"Failed to monkey-patch MERT pos_conv_embed: {e}")
 
     if not is_clap and not is_mert:
         # Generic per-file path for VGGish and any future model
