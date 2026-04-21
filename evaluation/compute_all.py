@@ -161,8 +161,7 @@ def main():
     spectral_cmd = ["python", str(PROJECT_ROOT / "evaluation/compute_spectral.py"), 
                     "--target-dir", str(args.target_dir), 
                     "--preds-dir", str(args.output_dir),
-                    "--csv_out", str(csv_dir / "spectral.csv"),
-                    "--batch-size", str(args.batch_size)]
+                    "--csv_out", str(csv_dir / "spectral.csv")]
     if cli_ext: spectral_cmd.extend(["--extensions", cli_ext])
     if args.max_files > 0: spectral_cmd.extend(["--max-files", str(args.max_files)])
     
@@ -192,10 +191,8 @@ def main():
                      "--target-dir", str(args.target_dir), 
                      "--preds-dir", str(args.output_dir), 
                      "--device", args.cdpam_device,
-                     "--csv_out", str(csv_dir / "cdpam.csv"),
-                     "--batch-size", str(args.batch_size)]
+                     "--csv_out", str(csv_dir / "cdpam.csv")]
         if cli_ext: cdpam_cmd.extend(["--extensions", cli_ext])
-        if args.cdpam_chunk > 0: cdpam_cmd.extend(["--chunk_size", str(args.cdpam_chunk)])
         if args.max_files > 0: cdpam_cmd.extend(["--max-files", str(args.max_files)])
         
         run_command(cdpam_cmd, args.metrics_env or args.main_env)

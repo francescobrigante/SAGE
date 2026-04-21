@@ -195,22 +195,45 @@ def _collect_metrics(metrics_dir: Path, stem: str, ckpt_path: Path, exit_code: i
 # ---------------------------------------------------------------------------
 
 def _write_summary(records: list[dict], out_path: Path) -> None:
+    """Upsert rows into summary.csv — safe for concurrent parallel jobs (fcntl lock)."""
     if not records:
         return
-    # Union all keys, preserving insertion order
-    all_keys: list[str] = []
-    seen: set[str] = set()
-    for rec in records:
-        for k in rec:
-            if k not in seen:
-                all_keys.append(k)
-                seen.add(k)
+    import fcntl
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=all_keys, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(records)
-    ok(f"Summary → {out_path}  ({len(records)} checkpoint(s))")
+    lock_path = out_path.with_suffix(".lock")
+    with open(lock_path, "w") as lock_f:
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        try:
+            # Read existing rows
+            existing: dict[str, dict] = {}
+            existing_keys: list[str] = []
+            if out_path.exists():
+                with open(out_path, newline="") as f:
+                    reader = csv.DictReader(f)
+                    existing_keys = list(reader.fieldnames or [])
+                    for row in reader:
+                        existing[row["checkpoint"]] = dict(row)
+
+            # Upsert: overwrite matching checkpoint rows, append new ones
+            for rec in records:
+                existing[rec["checkpoint"]] = rec
+
+            # Union all keys
+            all_keys: list[str] = list(existing_keys)
+            seen: set[str] = set(all_keys)
+            for rec in existing.values():
+                for k in rec:
+                    if k not in seen:
+                        all_keys.append(k)
+                        seen.add(k)
+
+            with open(out_path, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=all_keys, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(existing.values())
+        finally:
+            fcntl.flock(lock_f, fcntl.LOCK_UN)
+    ok(f"Summary → {out_path}  ({len(existing)} checkpoint(s))")
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +247,8 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument("--checkpoints-dir", type=Path, default=PROJECT_ROOT / "checkpoints",
                    help="Directory to search recursively for .ckpt files.")
+    p.add_argument("--checkpoint", type=Path, default=None,
+                   help="Path to a single .ckpt file. Overrides --checkpoints-dir.")
     p.add_argument("--target-dir", type=str, default=str(DATA_PATH),
                    help="Reference audio directory (FMA-small test split).")
     p.add_argument("--eval-root", type=Path, default=RUNS_DIR / "eval",
@@ -258,7 +283,13 @@ def main() -> None:
     summary_csv = args.summary_csv or (args.eval_root / "summary.csv")
 
     # Discover checkpoints
-    ckpt_paths = sorted(args.checkpoints_dir.rglob("*.ckpt"))
+    if args.checkpoint is not None:
+        if not args.checkpoint.is_file():
+            err(f"Checkpoint not found: {args.checkpoint}")
+            sys.exit(1)
+        ckpt_paths = [args.checkpoint]
+    else:
+        ckpt_paths = sorted(args.checkpoints_dir.rglob("*.ckpt"))
     if not ckpt_paths:
         err(f"No .ckpt files found under {args.checkpoints_dir}")
         sys.exit(1)
