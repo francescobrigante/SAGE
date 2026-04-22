@@ -8,7 +8,7 @@ import types
 import torch.nn as nn
 
 from .relu  import (
-    CELU, ModReLUScalar, ModReLU2d, ModReLU1d, ModReLU2dPerFreq,
+    CELU, ModReLU, ModReLU2d, ModReLU1d, ModReLU2dPerFreq,
     CReLU, zReLU, CardioidActivation, CPReLU, SplitReLU, magReLU,
 )
 from .gelu  import ComplexGELU1d, ComplexGELU2d, CGeLU
@@ -67,7 +67,7 @@ sys.modules["eulero.nn"] = _this
 
 __all__ = [
     # relu
-    "CELU", "ModReLUScalar", "ModReLU2d", "ModReLU1d", "ModReLU2dPerFreq",
+    "CELU", "ModReLU", "ModReLU2d", "ModReLU1d", "ModReLU2dPerFreq",
     "CReLU", "zReLU", "CardioidActivation", "CPReLU", "SplitReLU", "magReLU",
     # gelu
     "ComplexGELU1d", "ComplexGELU2d", "CGeLU",

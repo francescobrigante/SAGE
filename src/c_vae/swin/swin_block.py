@@ -37,9 +37,8 @@ class Mlp(nn.Module):
     """Two-layer MLP with GELU activation (FFN inside SwinTransformerBlock).
 
     With is_complex=False uses nn.Linear + nn.GELU (identical to original).
-    With is_complex=True uses NormLinear(is_complex=True) + CGeLU (split GELU:
-    applies gelu independently to real and imaginary parts — shape-agnostic,
-    no extra parameters, standard for complex transformers).
+    With is_complex=True uses NormLinear(is_complex=True) + a phase-equivariant
+    complex activation (default: ComplexGELU1d — gate on |x|, phase preserved).
 
     Args:
         in_features: Input channel dimension.
@@ -47,7 +46,10 @@ class Mlp(nn.Module):
         out_features: Output width (defaults to in_features).
         act_layer: Activation class used when is_complex=False. Default: nn.GELU.
         drop: Dropout rate applied after each linear layer.
-        is_complex: If True, switches to NormLinear + CGeLU.
+        is_complex: If True, switches to NormLinear + complex activation.
+        complex_activation: Name of the complex activation (eulero.nn registry).
+            Default ``"ComplexGELU1d"`` (phase-equivariant). Use ``"CGeLU"`` to
+            reproduce the legacy split-GELU behaviour (ablation only).
     """
 
     def __init__(
@@ -58,6 +60,7 @@ class Mlp(nn.Module):
         act_layer=nn.GELU,
         drop: float = 0.0,
         is_complex: bool = False,
+        complex_activation: str = "ComplexGELU1d",
     ) -> None:
 
         super().__init__()
@@ -67,7 +70,7 @@ class Mlp(nn.Module):
 
         if is_complex:
             self.fc1 = NormLinear(in_features, hidden_features, is_complex=True)
-            self.act = get_activation("CGeLU", is_complex=True)
+            self.act = get_activation(complex_activation, is_complex=True, channels=hidden_features)
             self.fc2 = NormLinear(hidden_features, out_features, is_complex=True)
         else:
             self.fc1 = nn.Linear(in_features, hidden_features)
@@ -111,6 +114,8 @@ class SwinTransformerBlock(nn.Module):
         norm_layer: Normalisation class. Default: nn.LayerNorm.
         pretrained_window_size: Window size used in pre-training (Log-CPB normalisation).
         fused_window_process: Use fused CUDA kernel for roll+partition (CUDA only).
+        complex_activation: Name of the phase-equivariant complex activation used in Mlp
+            when is_complex=True. Default ``"ComplexGELU1d"``. Passed to eulero.nn registry.
     """
 
     def __init__(
@@ -129,6 +134,7 @@ class SwinTransformerBlock(nn.Module):
         pretrained_window_size: int = 0,
         fused_window_process: bool = False,
         is_complex: bool = False,
+        complex_activation: str = "ComplexGELU1d",
     ) -> None:
 
         super().__init__()
@@ -174,6 +180,7 @@ class SwinTransformerBlock(nn.Module):
             act_layer=act_layer,
             drop=drop,
             is_complex=is_complex,
+            complex_activation=complex_activation,
         )
 
         # Pre-compute SW-MSA attention mask once and register as a non-parameter buffer.

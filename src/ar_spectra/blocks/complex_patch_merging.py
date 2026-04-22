@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from typing import Tuple
-from ar_spectra.blocks.normalization import ComplexLayerNorm
+from ar_spectra.blocks.normalization.complex import ComplexLayerNorm
 from ar_spectra.blocks.conv import SConv2d
 
 class PatchMergingLinearComplex(nn.Module):

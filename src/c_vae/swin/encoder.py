@@ -77,6 +77,7 @@ class SwinEncoder(AbstractEncoder):
         use_checkpoint: bool = False,
         fused_window_process: bool = False,
         is_complex: bool = False,
+        complex_activation: str = "ComplexGELU1d",
     ) -> None:
 
         super().__init__(input_size=in_channels, is_complex=is_complex)
@@ -153,6 +154,7 @@ class SwinEncoder(AbstractEncoder):
                 use_checkpoint=use_checkpoint,
                 fused_window_process=fused_window_process,
                 is_complex=is_complex,
+                complex_activation=complex_activation,
             )
             self.stages.append(stage)
             block_idx += depths[i]

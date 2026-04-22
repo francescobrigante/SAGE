@@ -67,6 +67,7 @@ class SwinDecoder(AbstractDecoder):
         drop_path_rate: float = 0.1,
         use_checkpoint: bool = False,
         is_complex: bool = False,
+        complex_activation: str = "ComplexGELU1d",
     ) -> None:
         super().__init__(channels=channels, is_complex=is_complex)
 
@@ -128,6 +129,7 @@ class SwinDecoder(AbstractDecoder):
                 use_checkpoint=use_checkpoint,
                 fused_window_process=True,  # always request fused kernel; actual gate is FUSED_WINDOW_AVAILABLE
                 is_complex=is_complex,
+                complex_activation=complex_activation,
             )
             self.stages.append(stage)
             block_idx += depths[i]

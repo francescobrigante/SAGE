@@ -44,6 +44,7 @@ model:
     attn_drop_rate: 0.0
     drop_path_rate: 0.1
     use_checkpoint: false
+    complex_activation: ComplexGELU1d   # phase-equivariant gate on |x|; use CGeLU to reproduce split baseline
 
   # ── encoder ─────────────────────────────────────────────────────────────────
   encoder:
@@ -61,7 +62,9 @@ model:
     attn_drop_rate: ${models.model.swin.attn_drop_rate}
     drop_path_rate: ${models.model.swin.drop_path_rate}
     use_checkpoint: ${models.model.swin.use_checkpoint}
+    complex_activation: ${models.model.swin.complex_activation}
     fused_window_process: true
+    complex_activation: ${models.model.swin.complex_activation}
 
   # ── decoder ─────────────────────────────────────────────────────────────────
   decoder:

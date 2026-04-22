@@ -12,7 +12,7 @@ from ar_spectra.blocks.attention.standard import MultiHeadedAttention, RelPositi
 from ar_spectra.blocks.conv import SConv2d, SConvTranspose2d
 from ar_spectra.blocks.complex_patch_merging import ConvPatchDownsampleComplex, ConvPatchUpsampleComplex
 from ar_spectra.blocks.embeddings import ComplexScaledPositionalEncoding
-from ar_spectra.blocks.normalization import ComplexLayerNorm
+from ar_spectra.blocks.normalization.complex import ComplexLayerNorm
 from ar_spectra.blocks.activations import get_activation
 from ar_spectra.models.implementations.abstract_ae import AbstractEncoder, AbstractDecoder
 from ar_spectra.models.implementations.SeaNET_AE import SEANetResnetBlock2d
