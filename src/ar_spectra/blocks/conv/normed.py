@@ -6,8 +6,10 @@ from torch.nn import functional as F
 from torch.nn.utils import spectral_norm
 from torch.nn.utils.parametrizations import weight_norm
 
-from ..normalization import (ConvLayerNorm, ComplexWeightNorm, ComplexConvLayerNorm2d, 
-                   ComplexConvLayerNorm1d, ComplexGroupNorm, ComplexBatchNorm2d, ComplexBatchNorm1d)
+from ..normalization.real import ConvLayerNorm
+from ..normalization.complex import (ComplexWeightNorm, ComplexConvLayerNorm2d,
+                                     ComplexConvLayerNorm1d, ComplexGroupNorm,
+                                     ComplexBatchNorm2d, ComplexBatchNorm1d)
 
 CONV_NORMALIZATIONS = frozenset(['none', 'weight_norm', 'spectral_norm',
                                  'time_layer_norm', 'layer_norm', 'time_group_norm', 

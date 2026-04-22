@@ -25,32 +25,44 @@ class CELU(nn.Module):
 
 # ── Complex modReLU family ────────────────────────────────────────────────────
 
-class ModReLUScalar(nn.Module):
-    """modReLU with a single learnable scalar bias.
+class ModReLU(nn.Module):
+    """modReLU (Arjovsky 2016) with per-channel learnable bias — phase-equivariant.
 
-    Definition::
-        y = ReLU(|x| + b) * x / (|x| + eps), with b ∈ ℝ
+    Definition (per Arjovsky et al., "Unitary Evolution Recurrent Neural Networks")::
+
+        y = ReLU(|x| + b_c) * x / (|x| + eps)
+
+    where b_c is a per-channel scalar bias (one per output channel).
 
     Properties:
-    - Phase equivariant: only the magnitude is gated; phase is preserved.
-    - Works for complex inputs of arbitrary shape via broadcasting.
+    - Phase-equivariant: ``arg(y) == arg(x)`` — only the magnitude is gated,
+      the phase angle is preserved exactly.
+    - Per-channel threshold: different channels can suppress or pass different
+      magnitude scales independently, unlike a global scalar bias.
+
+    Param shape: ``(1, 1, channels)`` — designed for channels-last token sequences
+    ``(B, L, C)`` as used by Swin Transformer MLP blocks.
 
     Args:
-        init_bias: Initial value of the scalar bias b.
-        eps: Denominator stabilizer for |x|.
-        enforce_negative: If True, constrains b ≤ 0 to avoid large positive shifts.
+        channels: Number of output channels (= hidden_features in Mlp).
+        init_bias: Initial value of all per-channel biases.
+        eps: Denominator stabilizer to avoid division by zero at |x|=0.
+        enforce_negative: If True, b = -|b_free| ≤ 0, preventing large
+            positive bias values that would gate nothing. Default True.
     """
 
-    def __init__(self, init_bias: float = -0.05, eps: float = 1e-8, enforce_negative: bool = True):
+    def __init__(self, channels: int, init_bias: float = -0.05, eps: float = 1e-8,
+                 enforce_negative: bool = True):
         super().__init__()
         self.eps = eps
         self.enforce_negative = enforce_negative
-        self.b_free = nn.Parameter(torch.tensor(init_bias, dtype=torch.float32))
+        # (1, 1, C) broadcasts over (B, L, C) — channels-last token sequences
+        self.b_free = nn.Parameter(torch.full((1, 1, channels), init_bias, dtype=torch.float32))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not torch.is_complex(x):
-            raise TypeError("ModReLUScalar expects a complex-valued tensor.")
-        b = (-abs(self.b_free) if self.enforce_negative else self.b_free).to(x.real.dtype)
+            raise TypeError("ModReLU expects a complex-valued tensor of shape (B, L, C).")
+        b = (-self.b_free.abs() if self.enforce_negative else self.b_free).to(x.real.dtype)
         mag = x.abs()
         gate = F.relu(mag + b) / (mag + self.eps)
         return x * gate

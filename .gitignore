@@ -14,6 +14,7 @@ plots/
 Swin-Transformer-main/
 *.sh
 *.ps1
+tests/
 
 
 src/c_vae/swin/cuda_kernels/build/

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn   
 from ar_spectra.blocks.attention.standard import MultiHeadedAttention
 from ar_spectra.blocks.embeddings import PositionalEncoding
-from ar_spectra.blocks.normalization import LayerNorm
+from ar_spectra.blocks.normalization.real import LayerNorm
 from ar_spectra.blocks.conv import Conv1dLinear
 from ar_spectra.blocks.conv import MultiLayeredConv1d
 from ar_spectra.utils.tensors import make_pad_mask

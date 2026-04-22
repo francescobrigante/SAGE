@@ -65,6 +65,7 @@ class SwinStage(nn.Module):
         pretrained_window_size: int = 0,
         fused_window_process: bool = False,
         is_complex: bool = False,
+        complex_activation: str = "ComplexGELU1d",
     ) -> None:
 
         super().__init__()
@@ -89,6 +90,7 @@ class SwinStage(nn.Module):
                 pretrained_window_size=pretrained_window_size,
                 fused_window_process=fused_window_process,
                 is_complex=is_complex,
+                complex_activation=complex_activation,
             )
             for i in range(depth)
         ])

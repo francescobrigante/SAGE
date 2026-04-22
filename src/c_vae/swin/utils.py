@@ -8,7 +8,7 @@
 import torch
 import torch.nn as nn
 from timm.layers import trunc_normal_, DropPath
-from ar_spectra.blocks.normalization.real import ComplexLayerNorm
+from ar_spectra.blocks.normalization.complex import ComplexLayerNorm
 
 
 def make_norm(dim: int, is_complex: bool) -> nn.Module:

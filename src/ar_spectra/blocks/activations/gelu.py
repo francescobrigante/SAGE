@@ -1,5 +1,8 @@
 # =============================================================================
-# GELU-family activations for real and complex tensors (e.g., ComplexGELU, CGeLU).
+# GELU-family activations for real and complex tensors.
+# ComplexGELU2d: channels-first (B,C,H,W).
+# ComplexGELU1d: channels-last token sequences (B,L,C) — Swin MLP.
+# CGeLU: legacy split-GELU (phase-destroying), kept for ablation only.
 # =============================================================================
 from __future__ import annotations
 
@@ -40,7 +43,12 @@ class ComplexGELU2d(nn.Module):
 
 
 class ComplexGELU1d(nn.Module):
-    """Phase-equivariant GELU for 1-D sequences (B, C, L)."""
+    """Phase-equivariant GELU for channels-last token sequences (B, L, C).
+
+    ``y = x * g(|x|)`` where ``g(r) = 0.5(1 + erf((r - μ_c) / (√2 σ_c)))``
+    with per-channel learnable μ and log σ.  Param shape ``(1, 1, C)`` broadcasts
+    over Swin MLP token sequences ``(B, L, C)``.
+    """
 
     def __init__(self, channels: int, init_mu: float = 0.0,
                  init_log_sigma: float = 0.0, eps: float = 1e-8,
@@ -48,8 +56,9 @@ class ComplexGELU1d(nn.Module):
         super().__init__()
         self.eps = eps
         self.use_tanh_approx = use_tanh_approx
-        self.mu = nn.Parameter(torch.full((1, channels, 1), init_mu, dtype=torch.float32))
-        self.log_sigma = nn.Parameter(torch.full((1, channels, 1), init_log_sigma, dtype=torch.float32))
+        # (1, 1, C) — channels-last for (B, L, C) token sequences
+        self.mu = nn.Parameter(torch.full((1, 1, channels), init_mu, dtype=torch.float32))
+        self.log_sigma = nn.Parameter(torch.full((1, 1, channels), init_log_sigma, dtype=torch.float32))
 
     def _gate(self, r: torch.Tensor) -> torch.Tensor:
         mu = self.mu.to(r.dtype)
@@ -62,7 +71,7 @@ class ComplexGELU1d(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not torch.is_complex(x):
-            raise TypeError("ComplexGELU1d expects a complex tensor of shape (B, C, L).")
+            raise TypeError("ComplexGELU1d expects a complex tensor of shape (B, L, C).")
         return x * self._gate(x.abs())
 
 
