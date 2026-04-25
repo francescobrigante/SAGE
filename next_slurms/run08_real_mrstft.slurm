@@ -45,6 +45,12 @@ srun python train.py \
     trainer.trainer.clip_grad_norm=5.0 \
     trainer.trainer.ckpt_dir=checkpoints/run08_real_mrstft \
     trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
-    trainer.trainer.strategy=ddp \
+    trainer.trainer.strategy=ddp_find_unused_parameters_false \
+    trainer.trainer.precision="bf16-mixed" \
+    "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
     trainer.wandb.name=r08_real_mrstft
+# OPT (vs versione pre-speedup): aggiunte 3 flag perf
+#   strategy=ddp_find_unused_parameters_false  (era: strategy=ddp)
+#   precision="bf16-mixed"                     (era: 32-true default)
+#   +trainer.trainer.compile=true              (nuova: torch.compile opt-in)

@@ -51,6 +51,12 @@ srun python train.py \
     trainer.loss_config.mrmel.weights.mrmel=0.3 \
     trainer.trainer.ckpt_dir=checkpoints/run09_proper \
     trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
-    trainer.trainer.strategy=ddp \
+    trainer.trainer.strategy=ddp_find_unused_parameters_false \
+    trainer.trainer.precision="bf16-mixed" \
+    "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
     trainer.wandb.name=r09_cplx_ps8_proper
+# OPT (vs versione pre-speedup): aggiunte 3 flag perf
+#   strategy=ddp_find_unused_parameters_false  (era: strategy=ddp)
+#   precision="bf16-mixed"                     (era: 32-true default)
+#   +trainer.trainer.compile=true              (nuova: torch.compile opt-in)

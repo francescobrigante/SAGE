@@ -122,10 +122,10 @@ class WindowAttention(nn.Module):
             self.q_bias = None
             self.v_bias = None
 
-        self.attn_drop = nn.Dropout(attn_drop)
+        self.attn_drop = nn.Dropout(attn_drop) if attn_drop > 0.0 else nn.Identity()
         # Output projection — bias=True (same as original nn.Linear default)
         self.proj = NormLinear(dim, dim, bias=True, is_complex=is_complex)
-        self.proj_drop = nn.Dropout(proj_drop)
+        self.proj_drop = nn.Dropout(proj_drop) if proj_drop > 0.0 else nn.Identity()
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x: torch.Tensor, mask=None) -> torch.Tensor:
@@ -195,7 +195,12 @@ class WindowAttention(nn.Module):
         # attn is always real; V may be complex.
         # PyTorch does not broadcast real @ complex automatically, so split re/im.
         if self.is_complex:
-            x = torch.complex(attn @ v.real, attn @ v.imag)           # (nW*B, h, N, D) complex
+            # `torch.complex` does not accept bf16/half. Under autocast (bf16-mixed)
+            # the matmul output is bf16 → we upcast both parts to fp32 before
+            # rebuilding the complex tensor. With fp32 precision this is a no-op.
+            out_re = (attn @ v.real).to(torch.float32)
+            out_im = (attn @ v.imag).to(torch.float32)
+            x = torch.complex(out_re, out_im)                         # (nW*B, h, N, D) complex
         else:
             x = attn @ v                                               # (nW*B, h, N, D) float
 

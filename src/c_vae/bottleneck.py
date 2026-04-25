@@ -237,18 +237,16 @@ class ComplexVAEBottleneck(VAEBottleneck):
             kl, kl_per_dim = get_cholesky_kl(mu, l11, l21, l22)
 
         # Per-channel KL diagnostics: average over batch and spatial dims → shape (m,)
-        # Used to detect posterior collapse (active units where KL_j > 0.1)
+        # Used to detect posterior collapse (active units where KL_j > 0.1).
+        # `active_units` is computed lazily by the consumer to avoid a CUDA→CPU
+        # sync on every encode forward (was: `int(... .sum().item())`).
         kl_diag_dims = tuple([0] + list(range(2, kl_per_dim.dim())))
-        kl_per_channel     = kl_per_dim.detach().mean(dim=kl_diag_dims)       # (m,) — m = true latent channels (not encoder slots)
-        active_units       = int((kl_per_channel > 0.1).sum().item())
-        active_units_ratio = active_units / m                                 # fraction in [0,1] over m latent dimensions
+        kl_per_channel = kl_per_dim.detach().mean(dim=kl_diag_dims)           # (m,) — m = true latent channels
 
         z = reparametrize(mu, sigma, c)
         info = {
             "kl": kl,
-            "kl_per_channel":     kl_per_channel,
-            "active_units":       active_units,
-            "active_units_ratio": active_units_ratio,
+            "kl_per_channel": kl_per_channel,
         }
         return (z, info) if return_info else z
 

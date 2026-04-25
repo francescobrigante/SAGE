@@ -59,6 +59,25 @@ srun python train.py \
     trainer.loss_config.mrmel.weights.mrmel=0.3 \
     trainer.trainer.ckpt_dir=checkpoints/real_x64_ddp \
     trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
-    trainer.trainer.strategy=ddp \
+    trainer.trainer.strategy=ddp_find_unused_parameters_false \
+    trainer.trainer.precision="bf16-mixed" \
+    "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
     trainer.wandb.name=TEST_real_x64_2GPU  # <--- CAMBIA QUI IL NOME VISIBILE SU W&B
+# ─────────────────────────────────────────────────────────────────────────────
+#   trainer.trainer.strategy=ddp_find_unused_parameters_false
+#       Era: trainer.trainer.strategy=ddp (default Lightning, alias di
+#       ddp_find_unused_parameters_true). La variante _false skippa la scansione
+#       DDP dei parametri non usati ad ogni backward.
+#       Sicuro perché TUTTI i parametri Swin sono usati. Speedup ~5-10% per step.
+#   trainer.trainer.precision="bf16-mixed"
+#       Era: precision=32-true (default in trainer.yaml). Mixed precision bf16
+#       sui Tensor Cores A100. Sicuro sul real (parametri float32, autocast
+#       converte i matmul/conv in bf16 mantenendo accumulatori fp32). Speedup
+#       atteso ~30-60% sui matmul/conv (più del complex perché qui TUTTI gli
+#       op sono in float32 e quindi tutti accelerati dal cast bf16).
+#   +trainer.trainer.compile=true
+#       Attiva torch.compile(mode="reduce-overhead", dynamic=False) in train.py.
+#       CUDA Graphs sicure perché input shape è fissa (target_frames=128, F=1024).
+#       Speedup atteso ~10-30%; fallback eager con log se compile fallisce.
+# ─────────────────────────────────────────────────────────────────────────────

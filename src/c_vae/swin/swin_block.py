@@ -77,7 +77,9 @@ class Mlp(nn.Module):
             self.act = act_layer()
             self.fc2 = nn.Linear(hidden_features, out_features)
 
-        self.drop = nn.Dropout(drop)   # works on complex64 natively (shared real mask)
+        # Skip the Dropout module entirely when drop=0 — even if F.dropout has a
+        # fast-path for p=0, this removes the module from the autograd graph too.
+        self.drop = nn.Dropout(drop) if drop > 0.0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.fc1(x)    # (*, hidden_features)

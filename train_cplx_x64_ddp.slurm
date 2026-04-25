@@ -64,6 +64,27 @@ srun python train.py \
     trainer.loss_config.mrmel.weights.mrmel=0.3 \
     trainer.trainer.ckpt_dir=checkpoints/cplx_x64_ddp \
     trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
-    trainer.trainer.strategy=ddp \
+    trainer.trainer.strategy=ddp_find_unused_parameters_false \
+    trainer.trainer.precision="bf16-mixed" \
+    "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
     trainer.wandb.name=TEST_cplx_x64_2GPU  # <--- CAMBIA QUI IL NOME VISIBILE SU W&B
+# ─────────────────────────────────────────────────────────────────────────────
+#   trainer.trainer.strategy=ddp_find_unused_parameters_false
+#       Era: trainer.trainer.strategy=ddp (default Lightning, alias di
+#       ddp_find_unused_parameters_true). La variante _false skippa la scansione
+#       DDP dei parametri non usati ad ogni backward.
+#       Sicuro perché TUTTI i parametri Swin sono usati. Speedup ~5-10% per step.
+#   trainer.trainer.precision="bf16-mixed"
+#       Era: precision=32-true (default in trainer.yaml). Mixed precision bf16
+#       sui Tensor Cores A100. Sul complex i parametri NormLinear/SConv2d
+#       restano in complex64 (autocast non tocca i complex), ma le matmul
+#       reali nel path attention vengono fatte in bf16: il fix .to(float32)
+#       prima di torch.complex(...) in src/c_vae/swin/attention.py garantisce
+#       la correttezza. Speedup atteso ~20-40% (minore del real perché il
+#       grosso dei matmul resta in complex64).
+#   +trainer.trainer.compile=true
+#       Attiva torch.compile(mode="reduce-overhead", dynamic=False) in train.py.
+#       CUDA Graphs sicure perché input shape è fissa (target_frames=128, F=1024).
+#       Speedup atteso ~10-30%; fallback eager con log se compile fallisce.
+# ─────────────────────────────────────────────────────────────────────────────
