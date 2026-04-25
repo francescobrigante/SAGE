@@ -39,7 +39,8 @@ OmegaConf.register_new_resolver("config", lambda key: getattr(config, key))
 OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
 from ar_spectra.training.callbacks import DatasetEpochSetter, ModelInfoLogger
-from ar_spectra.utils.model_info import log_compression_stats
+from ar_spectra.utils.model_info import log_compression_stats, extract_model_config
+from ar_spectra.utils.config_guards import check_cac_consistency
 
 class WandbConfigLogger:
     """Utility per caricare l'intera cartella di configurazione Hydra su W&B.
@@ -232,6 +233,30 @@ def main(cfg: DictConfig):
     # ─────────────────────────────────────────────────────────────────────────
     model_cfg = OmegaConf.to_container(cfg.models.model, resolve=True)
     autoencoder = AutoEncoder.from_config(model_cfg)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Config guard: complex model + cac=True is a silent training failure
+    # ─────────────────────────────────────────────────────────────────────────
+    _is_complex_model = bool(model_cfg.get("encoder", {}).get("is_complex", False))
+    check_cac_consistency(
+        is_complex_model=_is_complex_model,
+        train_cac=bool(cfg.data.train_dataset.get("cac", False)),
+        eval_cac=bool(cfg.data.eval_dataset.get("cac", False)) if cfg.data.get("eval_dataset") else None,
+        demo_cac=bool((cfg.data.get("demo") or {}).get("istft_params", {}).get("cac", False)),
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Parameter count — logged immediately so login-node quick-kills still see it
+    # ─────────────────────────────────────────────────────────────────────────
+    if _is_rank0():
+        _model_info = extract_model_config(autoencoder)
+        _n_params = _model_info["num_parameters_total"]
+        console.rule("[bold green]Model Budget[/bold green]")
+        console.print(f"   [cyan]Model:[/cyan]               {_model_info['class']}")
+        console.print(f"   [cyan]embed_dim:[/cyan]           {model_cfg.get('swin', {}).get('embed_dim', 'n/a')}")
+        console.print(f"   [cyan]is_complex:[/cyan]          {model_cfg.get('encoder', {}).get('is_complex', False)}")
+        console.print(f"   [cyan]Total scalar params:[/cyan] [bold yellow]{_n_params:,}[/bold yellow]  ({_n_params / 1e6:.2f}M)")
+        console.rule()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Channel configuration (from data config - must be set manually)

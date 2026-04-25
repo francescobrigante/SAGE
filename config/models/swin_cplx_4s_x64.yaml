@@ -64,7 +64,6 @@ model:
     use_checkpoint: ${models.model.swin.use_checkpoint}
     complex_activation: ${models.model.swin.complex_activation}
     fused_window_process: true
-    complex_activation: ${models.model.swin.complex_activation}
 
   # ── decoder ─────────────────────────────────────────────────────────────────
   decoder:

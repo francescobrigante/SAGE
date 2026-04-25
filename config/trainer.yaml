@@ -44,7 +44,7 @@ trainer:
   accumulate_grad_batches: 1
   strategy: auto
   num_gpus: 1
-  clip_grad_norm: 1.0               # swin uses 5.0
+  clip_grad_norm: 5.0               # Swin V2 default; complex nets need more headroom (ComplexLayerNorm + hermitian attention)
   kl_annealing_epochs: 20
   terminate_on_nan: true
   detect_anomaly: false

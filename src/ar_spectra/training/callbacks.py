@@ -12,17 +12,15 @@ from ar_spectra.utils.model_info import extract_model_config
 console = Console()
 
 class DatasetEpochSetter(Callback):
-    """Sets the epoch number in the dataset at the start of each epoch."""
+    """Sets the epoch number on the train dataset only, to vary random crops across epochs.
+    Val dataset is intentionally kept at epoch=0 (fixed seed) so val metrics are
+    comparable across epochs — the same segments are always evaluated.
+    """
     def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if trainer.train_dataloader is not None:
             dl = trainer.train_dataloader
             if hasattr(dl, "dataset") and hasattr(dl.dataset, "set_epoch"):
                 dl.dataset.set_epoch(trainer.current_epoch)
-        
-        if trainer.val_dataloaders is not None:
-            for dl in trainer.val_dataloaders:
-                if hasattr(dl, "dataset") and hasattr(dl.dataset, "set_epoch"):
-                    dl.dataset.set_epoch(trainer.current_epoch)
 
 class ModelInfoLogger(pl.Callback):
     """Log model info and structure at the beginning of training.

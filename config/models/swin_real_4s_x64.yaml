@@ -30,7 +30,7 @@ model:
 
   # ── shared Swin hyperparameters ─────────────────────────────────────────────
   swin:
-    embed_dim: 64               # head_dim=16 at all stages with num_heads=[4,8,16,32]
+    embed_dim: 92               # head_dim=23 at all stages; measured 50.76M vs cplx_64 49.25M → 3.1% diff ✓
     window_size: 8
     patch_size: 4
     mlp_ratio: 4.0
