@@ -72,7 +72,7 @@ class ModelInfoLogger(pl.Callback):
                 run.config.update({"model_info": info_dict}, allow_val_change=True)
                 # Log structure as preformatted text
                 run.log(
-                    {"model/structure": model_cfg["repr"]},
+                    {"model/structure": info_dict["repr"]},
                     step=int(getattr(trainer, "global_step", 0)),
                     commit=False,  # do not create a new step yet
                 )

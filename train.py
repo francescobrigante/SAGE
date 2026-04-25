@@ -6,9 +6,16 @@ from pathlib import Path
 import sys
 import os
 from typing import Dict, List
+import torch
 import torch.profiler as torch_profiler
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer, seed_everything
+
+# A100 / Ampere optimizations: TF32 on Tensor Cores for fp32 matmul + cuDNN
+# autotune for the fixed-shape convs (PatchEmbed input is stable (B,2|4,1024,128)).
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.benchmark = True
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, TQDMProgressBar
 from pytorch_lightning.loggers import WandbLogger, TensorBoardLogger
 from pytorch_lightning.profilers import PyTorchProfiler
@@ -416,6 +423,24 @@ def main(cfg: DictConfig):
         has_complex_params = False
     if is_bf16 and has_complex_params:
         warn("bf16 + complex detected: convolutions will use torch.complex64 (complex-bfloat16 not supported).", prefix="TRAINER")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Optional torch.compile (off by default; opt-in via trainer.trainer.compile=true).
+    # Uses mode="reduce-overhead" (CUDA Graphs) — safe here because input shapes
+    # are fixed (target_frames=128, freq_bins=1024) and the alignment helpers
+    # in engine.py act as no-ops on this dataset. Falls back to eager on failure.
+    # ─────────────────────────────────────────────────────────────────────────
+    compile_model = bool(pl_trainer_cfg.get("compile", False))
+    if compile_model:
+        try:
+            wrapper.engine.autoencoder = torch.compile(
+                wrapper.engine.autoencoder,
+                mode="reduce-overhead",
+                dynamic=False,
+            )
+            ok("torch.compile applied to autoencoder (mode=reduce-overhead).", prefix="COMPILE")
+        except Exception as exc:
+            warn(f"torch.compile failed ({type(exc).__name__}: {exc}); continuing eager.", prefix="COMPILE")
 
     # ─────────────────────────────────────────────────────────────────────────
     # PyTorch Lightning Trainer

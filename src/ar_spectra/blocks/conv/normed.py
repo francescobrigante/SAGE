@@ -207,9 +207,10 @@ class NormConv1d(nn.Module):
         self.norm_type = norm
 
     def forward(self, x):
+        # Removed `torch.isnan(torch.sum(x)).any()` NaN guard — it forced a
+        # CUDA→CPU sync on every forward, breaking async kernel dispatch.
+        # Use `Trainer(detect_anomaly=True)` for NaN diagnostics instead.
         x = self.conv(x)
-        if torch.isnan(torch.sum(x)).any():
-            raise RuntimeError(f"NaN detected in NormConv1d forward pass. Layer: {self.conv}")
         x = self.norm(x)
         return x
 

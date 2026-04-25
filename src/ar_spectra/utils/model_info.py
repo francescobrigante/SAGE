@@ -49,6 +49,7 @@ from ar_spectra.utils.console import warn
 
 def log_compression_stats(wrapper, train_dl, console: Console) -> None:
     """esegue un dummy pass sul primo batch per loggare dinamicamente la compression rate."""
+    was_training = wrapper.training
     try:
         wrapper.eval()
         with torch.no_grad():
@@ -95,3 +96,6 @@ def log_compression_stats(wrapper, train_dl, console: Console) -> None:
 
     except Exception as e:
         warn(f"Impossibile calcolare latent shape dinamica: {e}", prefix="TRAINER")
+    finally:
+        if was_training:
+            wrapper.train()
