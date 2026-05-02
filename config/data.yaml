@@ -26,7 +26,7 @@ train_dataset:
 train_dataloader:
   batch_size: ${config:DEFAULT_BATCH_SIZE}
   num_workers: ${config:DEFAULT_NUM_WORKERS}
-  prefetch_factor: 2
+  prefetch_factor: 4
   pin_memory: true
   persistent_workers: true
   shuffle: true
@@ -57,7 +57,7 @@ eval_dataset:
 eval_dataloader:
   batch_size: ${config:DEFAULT_BATCH_SIZE}
   num_workers: ${config:DEFAULT_NUM_WORKERS}
-  prefetch_factor: 2
+  prefetch_factor: 4
   pin_memory: true
   persistent_workers: true
   shuffle: false

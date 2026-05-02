@@ -10,6 +10,7 @@ from typing import List, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
+from timm.layers import to_2tuple
 
 from .swin_block import SwinTransformerBlock
 
@@ -53,7 +54,7 @@ class SwinStage(nn.Module):
         input_resolution: Tuple[int, int],
         depth: int,
         num_heads: int,
-        window_size: int,
+        window_size: Union[int, Tuple[int, int]],
         mlp_ratio: float = 4.0,
         qkv_bias: bool = True,
         drop: float = 0.0,
@@ -74,14 +75,15 @@ class SwinStage(nn.Module):
         self.depth = depth
         self.use_checkpoint = use_checkpoint   # gradient checkpointing flag
 
-        # Even index = W-MSA (no shift), odd index = SW-MSA (cyclic shift window_size//2)
+        # Even index = W-MSA (no shift), odd index = SW-MSA (cyclic shift per dim)
+        wh, ww = to_2tuple(window_size)
         self.blocks = nn.ModuleList([
             SwinTransformerBlock(
                 dim=dim,
                 input_resolution=input_resolution,
                 num_heads=num_heads,
                 window_size=window_size,
-                shift_size=0 if (i % 2 == 0) else window_size // 2,
+                shift_size=(0, 0) if (i % 2 == 0) else (wh // 2, ww // 2),
                 mlp_ratio=mlp_ratio,
                 qkv_bias=qkv_bias,
                 drop=drop,

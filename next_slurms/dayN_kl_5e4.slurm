@@ -18,7 +18,11 @@
 
 mkdir -p logs checkpoints/dn4_kl5e4
 module load profile/deeplrn cineca-ai/4.3.0
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+# OMP=1: each DataLoader worker runs single-threaded STFT. Without this,
+# num_workers=8 workers × OMP=8 = 64 threads on 8 CPUs → context-switch thrashing.
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
 export NCCL_DEBUG=INFO
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export WANDB_MODE=offline

@@ -5,10 +5,11 @@
 # sequence and reconstructs (B, in_channels, 1024, 128)
 # ====================================================================
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+from timm.layers import to_2tuple
 
 from ar_spectra.blocks.conv.normed import NormLinear
 from ar_spectra.models.implementations.abstract_ae import AbstractDecoder
@@ -59,8 +60,8 @@ class SwinDecoder(AbstractDecoder):
         embed_dim: int = 48,         # smallest channel width (last stage + PatchUnembed)
         depths: List[int] = (2, 4, 2, 2),
         num_heads: List[int] = (24, 12, 6, 3),
-        window_size: int = 8,
-        patch_size: int = 4,
+        window_size: Union[int, Tuple[int, int]] = 8,
+        patch_size: Union[int, Tuple[int, int]] = 4,
         mlp_ratio: float = 4.0,
         drop_rate: float = 0.0,
         attn_drop_rate: float = 0.0,
@@ -76,7 +77,8 @@ class SwinDecoder(AbstractDecoder):
         self.depths = list(depths)          # blocks per stage, e.g. [2,4,2,2]
         self.num_heads = list(num_heads)    # attention heads per stage
         self.window_size = window_size
-        self.patch_size = patch_size
+        ps_h, ps_w = to_2tuple(patch_size)
+        self.patch_size: Tuple[int, int] = (ps_h, ps_w)
         self.num_stages = len(depths)       # 4
 
         # Stage channel dims
@@ -89,8 +91,8 @@ class SwinDecoder(AbstractDecoder):
         # Stage grid resolutions
         _freq_size = 1024
         _time_size = 128
-        base_h = _freq_size // patch_size // (2 ** (self.num_stages - 1))   # 32
-        base_w = _time_size // patch_size // (2 ** (self.num_stages - 1))   # 4
+        base_h = _freq_size // ps_h // (2 ** (self.num_stages - 1))   # e.g. 32 for ps_h=4
+        base_w = _time_size // ps_w // (2 ** (self.num_stages - 1))   # e.g.  4 for ps_w=4
         # e.g. stage_resolutions = [(32,4), (64,8), (128,16), (256,32)]
         stage_resolutions: List[Tuple[int, int]] = [
             (base_h * (2 ** i), base_w * (2 ** i))
@@ -150,7 +152,7 @@ class SwinDecoder(AbstractDecoder):
             input_resolution=stage_resolutions[-1],   # (256, 32) final token grid
             embed_dim=stage_dims[-1],                 # 48
             out_channels=in_channels,                 # 4 (stereo CAC STFT)
-            patch_size=patch_size,                    # 4
+            patch_size=(ps_h, ps_w),
             is_complex=is_complex,
         )
 

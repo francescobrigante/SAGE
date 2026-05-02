@@ -1,46 +1,40 @@
-# ===============================================================
-# Swin Transformer V2  window partition / reverse utilities.
-#
-# Used by SwinTransformerBlock to split feature maps
-# into non-overlapping local windows.
-# ===============================================================
+from typing import Tuple, Union
 
 import torch
+from timm.models.layers import to_2tuple
 
 
-def window_partition(x: torch.Tensor, window_size: int) -> torch.Tensor:
+def window_partition(x: torch.Tensor, window_size: Union[int, Tuple[int, int]]) -> torch.Tensor:
     """Partition a feature map into non-overlapping local windows.
 
     Args:
         x: Input tensor of shape ``(B, H, W, C)``.
-        window_size: Side length of each square window.
+        window_size: Side length(s) of each window — int for square, (wh, ww) for rect.
 
     Returns:
-        windows: ``(num_windows * B, window_size, window_size, C)``
+        windows: ``(num_windows * B, wh, ww, C)``
     """
-    B, H, W, C = x.shape                                                                # (B, H, W, C)
-    x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)      # (B, H/ws, ws, W/ws, ws, C)
-    windows = x.permute(0, 1, 3, 2, 4, 5).contiguous()                                  # (B, H/ws, W/ws, ws, ws, C)
-    # num_windows = (H // window_size) * (W // window_size)
-    windows = windows.view(-1, window_size, window_size, C)                             # (num_windows * B, ws, ws, C)
-    return windows
+    wh, ww = to_2tuple(window_size)
+    B, H, W, C = x.shape
+    x = x.view(B, H // wh, wh, W // ww, ww, C)
+    windows = x.permute(0, 1, 3, 2, 4, 5).contiguous()
+    return windows.view(-1, wh, ww, C)
 
 
-def window_reverse(windows: torch.Tensor, window_size: int, H: int, W: int) -> torch.Tensor:
+def window_reverse(windows: torch.Tensor, window_size: Union[int, Tuple[int, int]], H: int, W: int) -> torch.Tensor:
     """Reconstruct a feature map from local windows (inverse of ``window_partition``).
 
     Args:
-        windows: ``(num_windows * B, window_size, window_size, C)``
-        window_size: Side length of each square window.
+        windows: ``(num_windows * B, wh, ww, C)``
+        window_size: int or (wh, ww).
         H: Height of the original feature map.
         W: Width of the original feature map.
 
     Returns:
         x: ``(B, H, W, C)``
     """
-    B = int(windows.shape[0] / (H * W / window_size / window_size))
-    x = windows.view(B, H // window_size, W // window_size,
-                     window_size, window_size, -1)                    # (B, H/ws, W/ws, ws, ws, C)
-    x = x.permute(0, 1, 3, 2, 4, 5).contiguous()                      # (B, H/ws, ws, W/ws, ws, C)
-    x = x.view(B, H, W, -1)                                           # (B, H, W, C)
-    return x
+    wh, ww = to_2tuple(window_size)
+    B = int(windows.shape[0] / (H // wh * W // ww))
+    x = windows.view(B, H // wh, W // ww, wh, ww, -1)
+    x = x.permute(0, 1, 3, 2, 4, 5).contiguous()
+    return x.view(B, H, W, -1)
