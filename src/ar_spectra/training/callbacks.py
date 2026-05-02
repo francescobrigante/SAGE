@@ -3,6 +3,8 @@ from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from pytorch_lightning.loggers import WandbLogger
 import json
+import torch
+import copy
 from pathlib import Path
 from rich.console import Console
 
@@ -81,3 +83,80 @@ class ModelInfoLogger(pl.Callback):
                     run.save(str(out_path), base_path=str(base_dir))
             except Exception as e:
                 warn(f"ModelInfoLogger: W&B log skipped ({type(e).__name__}: {e})", prefix="TRAINER")
+
+class EMACallback(Callback):
+    """Exponential Moving Average (EMA) of model weights.
+    
+    Maintains a shadow copy of the autoencoder weights.
+    Swaps the EMA weights into the active model during validation so metrics
+    and audio demos are generated using the smoothed weights.
+    Injects the EMA state dict into the Lightning checkpoint automatically.
+    """
+    def __init__(self, decay: float = 0.9999):
+        super().__init__()
+        self.decay = decay
+        self.ema_state_dict = {}
+        self.original_state_dict = None
+
+    def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        model = getattr(pl_module, "autoencoder", None)
+        if model is None:
+            warn("EMACallback: autoencoder not found in pl_module. Disabling EMA.", prefix="EMA")
+            return
+            
+        ok(f"Initializing EMA model with decay={self.decay}...", prefix="EMA")
+        # Use a dict of detached tensors instead of deepcopy to survive torch.compile/DDP
+        self.ema_state_dict = {
+            k: v.clone().detach() for k, v in model.state_dict().items()
+        }
+
+    def on_train_batch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule, outputs, batch, batch_idx: int) -> None:
+        model = getattr(pl_module, "autoencoder", None)
+        if model is None or not self.ema_state_dict:
+            return
+            
+        decay = self.decay
+        with torch.no_grad():
+            for k, v in model.state_dict().items():
+                if k in self.ema_state_dict:
+                    ema_v = self.ema_state_dict[k]
+                    if v.dtype.is_floating_point or v.dtype.is_complex:
+                        ema_v.mul_(decay).add_(v.detach(), alpha=1.0 - decay)
+                    else:
+                        ema_v.copy_(v.detach())
+
+    def on_validation_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        model = getattr(pl_module, "autoencoder", None)
+        if model is None or not self.ema_state_dict:
+            return
+            
+        # Save original training weights in RAM
+        self.original_state_dict = {
+            k: v.clone().detach() for k, v in model.state_dict().items()
+        }
+        
+        # Load EMA weights into the active model for validation
+        model.load_state_dict(self.ema_state_dict)
+        
+        if getattr(self, "_logged_swap_in", False) is False:
+            ok("Swapped weights to EMA for validation metrics.", prefix="EMA")
+            self._logged_swap_in = True
+
+    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        model = getattr(pl_module, "autoencoder", None)
+        if model is None or self.original_state_dict is None:
+            return
+            
+        # Restore training weights
+        model.load_state_dict(self.original_state_dict)
+        self.original_state_dict = None
+        
+        if getattr(self, "_logged_swap_out", False) is False:
+            ok("Restored training weights after validation.", prefix="EMA")
+            self._logged_swap_out = True
+
+    def on_save_checkpoint(self, trainer: pl.Trainer, pl_module: pl.LightningModule, checkpoint: dict) -> None:
+        # Inject EMA weights cleanly into the checkpoint under 'ema_autoencoder.*'
+        if self.ema_state_dict:
+            for k, v in self.ema_state_dict.items():
+                checkpoint["state_dict"][f"ema_autoencoder.{k}"] = v

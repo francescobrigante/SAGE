@@ -45,7 +45,7 @@ import config
 OmegaConf.register_new_resolver("config", lambda key: getattr(config, key))
 OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
-from ar_spectra.training.callbacks import DatasetEpochSetter, ModelInfoLogger
+from ar_spectra.training.callbacks import DatasetEpochSetter, ModelInfoLogger, EMACallback
 from ar_spectra.utils.model_info import log_compression_stats, extract_model_config
 from ar_spectra.utils.config_guards import check_cac_consistency
 
@@ -206,10 +206,22 @@ def main(cfg: DictConfig):
     dl_cfg = OmegaConf.to_container(cfg.data.train_dataloader, resolve=True)
     num_workers = int(dl_cfg.get("num_workers", 8))
     
+    # Calculate per-GPU batch size from the global batch size
+    # Handle CPU case where num_gpus might be set to 0 in config
+    num_devices = int(cfg.trainer.trainer.get("num_gpus", 1))
+    num_devices = num_devices if num_devices > 0 else 1
+    
+    global_batch_size = int(dl_cfg.get("batch_size", 16))
+    per_device_batch_size = max(1, global_batch_size // num_devices)
+    
+    if _is_rank0():
+        if global_batch_size % num_devices != 0:
+            warn(f"Global batch size {global_batch_size} non divisibile per {num_devices} device. Batch size per-device arrotondato a {per_device_batch_size}.", prefix="DATA")
+        ok(f"Batch Size -> Globale: {global_batch_size} | Devices: {num_devices} | Per-Device: {per_device_batch_size}", prefix="DATA")
 
     train_dl = DataLoader(
         train_ds,
-        batch_size=int(dl_cfg.get("batch_size", 8)),
+        batch_size=per_device_batch_size,
         num_workers=num_workers,
         pin_memory=bool(dl_cfg.get("pin_memory", False)),
         shuffle=bool(dl_cfg.get("shuffle", True)),
@@ -223,9 +235,11 @@ def main(cfg: DictConfig):
     eval_dl = None
     if eval_ds is not None:
         dl_eval_cfg = OmegaConf.to_container(cfg.data.eval_dataloader, resolve=True)
+        eval_global_batch_size = int(dl_eval_cfg.get("batch_size", global_batch_size))
+        eval_per_device_batch_size = max(1, eval_global_batch_size // num_devices)
         eval_dl = DataLoader(
             eval_ds,
-            batch_size=int(dl_eval_cfg.get("batch_size", dl_cfg.get("batch_size", 8))),
+            batch_size=eval_per_device_batch_size,
             num_workers=num_workers,
             pin_memory=bool(dl_eval_cfg.get("pin_memory", False)),
             shuffle=bool(dl_eval_cfg.get("shuffle", False)),
@@ -379,6 +393,11 @@ def main(cfg: DictConfig):
         TQDMProgressBar(refresh_rate=1),
         DatasetEpochSetter(),
     ]
+
+    use_ema = bool(pl_trainer_cfg.get("use_ema", True))
+    ema_decay = float(pl_trainer_cfg.get("ema_decay", 0.9999))
+    if use_ema and ema_decay > 0:
+        callbacks.append(EMACallback(decay=ema_decay))
 
     # Validation demo callback
     demo_cfg = OmegaConf.to_container(cfg.data.get("demo", {}), resolve=True) or {}

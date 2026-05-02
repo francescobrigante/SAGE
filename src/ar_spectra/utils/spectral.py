@@ -25,16 +25,16 @@ def to_complex_spectrogram(X: torch.Tensor) -> torch.Tensor:
             raise ValueError(f"Channel dimension must be even for complex-as-channels. Got {C2}.")
         C = C2 // 2
         Xv = X.reshape(B, C, 2, F, T)
-        real = Xv[:, :, 0, :, :]
-        imag = Xv[:, :, 1, :, :]
+        real = Xv[:, :, 0, :, :].float()
+        imag = Xv[:, :, 1, :, :].float()
         return torch.complex(real, imag)
     elif X.ndim == 3:
         C2, F, T = X.shape
         if C2 % 2 != 0:
             raise ValueError(f"Channel dimension must be even for complex-as-channels. Got {C2}.")
         C = C2 // 2
-        Xv = X.reshape(C, 2, F, T) 
-        real = Xv[:, 0, :, :]
-        imag = Xv[:, 1, :, :]
+        Xv = X.reshape(C, 2, F, T)
+        real = Xv[:, 0, :, :].float()
+        imag = Xv[:, 1, :, :].float()
         return torch.complex(real, imag)
     raise ValueError("Unsupported spectrogram shape. Expected (..., C, F, T), (..., C, F, T, 2) or (B, 2C, F, T)/(2C, F, T).")

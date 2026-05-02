@@ -1,30 +1,24 @@
 #!/bin/bash
 # ============================================================
-# Swin Complex VAE - 4-stage, x64, 80 epochs, 1 GPU (A100)
-#
-# Hardware: 1 Nodo, 1 GPU
-# Dati: 6400 campioni -> ~400 batch per epoca (su singola GPU).
-# Steps totali = 80 epoche * 400 batch = 32000 step.
+# Run 1 — Activation Fix: ComplexGELU1d (phase-equivariant) — 120 ep
+# Identica a run01_cplx_actfix ma con 120 epoche invece di 80.
+# DDP 2×A100: 6400/2/16 = 200 step/ep, 120 ep → 24000 step
 # ============================================================
-
-#SBATCH --job-name=train_cplx
+#SBATCH --job-name=r01_actfix_120ep
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1            # Solo 1 GPU usata
-#SBATCH --gres=gpu:1                   # Alloca 1x A100 (64GB)
+#SBATCH --ntasks-per-node=2
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=16G
-#SBATCH --time=0-22:00:00
+#SBATCH --time=0-18:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-mkdir -p logs
-mkdir -p checkpoints/cplx_x64
-
+mkdir -p logs checkpoints/run01_actfix_120ep
 module load profile/deeplrn cineca-ai/4.3.0
-
 # OMP=1: each DataLoader worker runs single-threaded STFT. Without this,
 # num_workers=8 workers × OMP=8 = 64 threads on 8 CPUs → context-switch thrashing.
 export OMP_NUM_THREADS=1
@@ -36,16 +30,8 @@ export WANDB_MODE=offline
 export WANDB_TAGS="$SLURM_JOB_NAME"
 export WANDB_DIR=$WORK/C-VAE/.wandb_cache
 mkdir -p $WORK/C-VAE/.wandb_cache
-
 cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
-
-echo "============================================================"
-echo "Starting COMPLEX-Valued training on 1 GPU"
-echo "============================================================"
-
-# Calcolo Scheduler: 80 epoche * 400 batch (su 1 GPU) = 32000 total_steps
-# Warmup: 5% di 32000 = 1600 step
 
 srun python train.py \
     models=swin_cplx_4s_x64 \
@@ -53,18 +39,24 @@ srun python train.py \
     data.eval_dataset.cac=false \
     data.demo.istft_params.cac=false \
     data.model_channels=2 \
-    trainer.trainer.epochs=80 \
+    trainer.trainer.epochs=120 \
     trainer.trainer.kl_annealing_epochs=10 \
     trainer.loss_config.bottleneck.weights.kl=1e-5 \
-    trainer.scheduler.total_steps=32000 \
-    trainer.scheduler.warmup_steps=1600 \
+    trainer.scheduler.total_steps=24000 \
+    trainer.scheduler.warmup_steps=1200 \
     trainer.optimizer.lr=1e-4 \
     trainer.optimizer.weight_decay=0.05 \
     "+trainer.optimizer.weight_decay_exclude_1d=true" \
     trainer.trainer.clip_grad_norm=5.0 \
     trainer.loss_config.mrmel.weights.mrmel=0.3 \
-    trainer.trainer.ckpt_dir=checkpoints/cplx_x64 \
+    trainer.trainer.ckpt_dir=checkpoints/run01_actfix_120ep \
     trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
-    trainer.trainer.strategy=auto \
+    trainer.trainer.strategy=ddp_find_unused_parameters_true \
+    trainer.trainer.precision="bf16-mixed" \
+    "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
-    trainer.wandb.name=cplxKL1e-5  # <--- CAMBIA QUI IL NOME VISIBILE SU W&B
+    trainer.wandb.name=r01_cplx_actfix_120ep
+# OPT (vs versione pre-speedup): aggiunte 3 flag perf
+#   strategy=ddp_find_unused_parameters_true  (era: strategy=ddp)
+#   precision="bf16-mixed"                     (era: 32-true default)
+#   +trainer.trainer.compile=true              (nuova: torch.compile opt-in)

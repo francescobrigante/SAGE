@@ -4,10 +4,11 @@
 # and outputs (B, out_channels, H_lat*W_lat).
 # ===============================================================
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 import torch
 import torch.nn as nn
+from timm.layers import to_2tuple
 
 from ar_spectra.blocks.conv.normed import NormLinear
 from ar_spectra.models.implementations.abstract_ae import AbstractEncoder
@@ -67,8 +68,8 @@ class SwinEncoder(AbstractEncoder):
         embed_dim: int = 48,
         depths: List[int] = (2, 2, 4, 2),
         num_heads: List[int] = (3, 6, 12, 24),
-        window_size: int = 8,
-        patch_size: int = 4,
+        window_size: Union[int, Tuple[int, int]] = 8,
+        patch_size: Union[int, Tuple[int, int]] = 4,
         dimension: int = 128,       # parameters_to_predict * latent_channels
         mlp_ratio: float = 4.0,
         drop_rate: float = 0.0,
@@ -86,14 +87,20 @@ class SwinEncoder(AbstractEncoder):
         self.depths = list(depths)                          # blocks per stage, e.g. [2, 2, 4, 2]
         self.num_heads = list(num_heads)                    # attention heads per stage
         self.window_size = window_size                      # local window size (must divide all grids)
-        self.patch_size = patch_size                        # PatchEmbed Conv2d kernel/stride
         self.dimension = dimension                          # total output channels
         self.num_stages = len(depths)                       # number of hierarchical stages (4)
         self.fused_window_process = fused_window_process    # use fused CUDA kernel (CUDA only)
 
-        # Total spatial downsampling:
-        #   patch_size (=4) × 2^(merge steps = num_stages (=4) - 1 ) (=8) = 32
-        self.downsampling_ratio: int = patch_size * (2 ** (self.num_stages - 1))
+        # Normalise patch_size to a 2-tuple so all downstream code is uniform
+        ps_h, ps_w = to_2tuple(patch_size)
+        self.patch_size: Tuple[int, int] = (ps_h, ps_w)
+
+        # Total spatial downsampling ratio per dimension:
+        #   patch_size × 2^(num_stages − 1) merge steps
+        self.downsampling_ratio: Tuple[int, int] = (
+            ps_h * (2 ** (self.num_stages - 1)),
+            ps_w * (2 ** (self.num_stages - 1)),
+        )
 
         # STFT dimensions after freq crop; must be divisible by patch_size
         self._freq_size: int = 1024  # 1025 Nyquist bin is always zeroed, safe to drop
@@ -104,7 +111,7 @@ class SwinEncoder(AbstractEncoder):
         # ------------------------------------------------------------------------
         self.patch_embed = PatchEmbed(
             img_size=(self._freq_size, self._time_size),
-            patch_size=patch_size,
+            patch_size=(ps_h, ps_w),
             in_chans=in_channels,
             embed_dim=embed_dim,
             norm_layer=nn.LayerNorm,
@@ -112,8 +119,8 @@ class SwinEncoder(AbstractEncoder):
         )
 
         # Compute per-stage input grid dimensions (H,W) and channel widths
-        freq_g = self._freq_size // patch_size   # 256 after PatchEmbed
-        time_g = self._time_size // patch_size   # 32  after PatchEmbed
+        freq_g = self._freq_size // ps_h   # grid H after PatchEmbed
+        time_g = self._time_size // ps_w   # grid W after PatchEmbed
         
         # e.g. stage_resolutions = [(256,32), (128,16), (64,8), (32,4)]
         stage_resolutions: List[Tuple[int, int]] = []

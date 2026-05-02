@@ -254,8 +254,8 @@ class AutoEncoder(nn.Module):
         if Cx % 2 != 0:
             raise ValueError(f"_unpack_complex: channel count {Cx} is not even (not real/imag).")
         C = Cx // 2
-        real = S[:, :C]
-        imag = S[:, C:]
+        real = S[:, :C].float()
+        imag = S[:, C:].float()
         return torch.complex(real, imag)
 
     def _apply_pre_transform(self, tensor: torch.Tensor) -> torch.Tensor:

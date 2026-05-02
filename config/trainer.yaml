@@ -38,7 +38,8 @@ trainer:
   warmup_mode: adv
   encoder_freeze_on_warmup: false
   profiler_dir: lightning_profiler
-  val_check_interval: 0.5
+  val_check_interval: 1.0
+  check_val_every_n_epoch: 1
   limit_train_batches: 1.0
   limit_val_batches: 1.0
   accumulate_grad_batches: 1
@@ -80,12 +81,14 @@ loss_config:
         reduction: mean
     mrstft:
       config:
+        fft_sizes:  [2048, 1024, 512, 256, 128, 64]   # 6 risoluzioni SAO (32 omesso: instabile)
+        hop_sizes:  [512,  256,  128, 64,  32,  16]   # fft/4 — coerente con SAO
         max_loss_clamp: 20.0     # bounds explosive spikes from near-zero bins
         log_mag: true             # log-magnitude L1 on each resolution
         factor_log_mag: 1.0
     weights:
       stft_mse: 1.0
-      mrstft: 0.0         # disabled by default; add mrstft: block above to activate
+      mrstft: 0.0         # disabled by default; run07+ override a 1.0 via CLI
   mrmel:
     weights:
       mrmel: 0.3

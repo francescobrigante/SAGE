@@ -12,8 +12,8 @@ def _spectrogram_to_complex(S: torch.Tensor) -> torch.Tensor:
             raise ValueError(f"Expected even channels (2C) for CAC input, got {Cx}")
         C = Cx // 2
         Sview = S.view(B, C, 2, F, T)
-        real = Sview[:, :, 0, :, :]
-        imag = Sview[:, :, 1, :, :]
+        real = Sview[:, :, 0, :, :].float()
+        imag = Sview[:, :, 1, :, :].float()
         return torch.complex(real, imag)
     if S.dim() == 3:
         Cx, F, T = S.shape
@@ -21,8 +21,8 @@ def _spectrogram_to_complex(S: torch.Tensor) -> torch.Tensor:
             raise ValueError(f"Expected even channels (2C) for CAC input, got {Cx}")
         C = Cx // 2
         Sview = S.view(C, 2, F, T)
-        real = Sview[:, 0, :, :]
-        imag = Sview[:, 1, :, :]
+        real = Sview[:, 0, :, :].float()
+        imag = Sview[:, 1, :, :].float()
         return torch.complex(real, imag)
     raise ValueError(f"Unsupported spectrogram shape for CAC conversion: {tuple(S.shape)}")
 

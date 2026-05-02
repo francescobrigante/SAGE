@@ -19,7 +19,11 @@
 
 mkdir -p logs checkpoints/run08_real_mrstft
 module load profile/deeplrn cineca-ai/4.3.0
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+# OMP=1: each DataLoader worker runs single-threaded STFT. Without this,
+# num_workers=8 workers × OMP=8 = 64 threads on 8 CPUs → context-switch thrashing.
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
 export NCCL_DEBUG=INFO
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export WANDB_MODE=offline
@@ -30,7 +34,7 @@ cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
 srun python train.py \
-    models=swin_real_iso_x64 \
+    models=swin_real_4s_x64 \
     trainer.trainer.epochs=80 \
     trainer.trainer.kl_annealing_epochs=10 \
     trainer.loss_config.bottleneck.weights.kl=1e-5 \
@@ -45,12 +49,12 @@ srun python train.py \
     trainer.trainer.clip_grad_norm=5.0 \
     trainer.trainer.ckpt_dir=checkpoints/run08_real_mrstft \
     trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
-    trainer.trainer.strategy=ddp_find_unused_parameters_false \
+    trainer.trainer.strategy=ddp_find_unused_parameters_true \
     trainer.trainer.precision="bf16-mixed" \
     "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
     trainer.wandb.name=r08_real_mrstft
 # OPT (vs versione pre-speedup): aggiunte 3 flag perf
-#   strategy=ddp_find_unused_parameters_false  (era: strategy=ddp)
+#   strategy=ddp_find_unused_parameters_true  (era: strategy=ddp)
 #   precision="bf16-mixed"                     (era: 32-true default)
 #   +trainer.trainer.compile=true              (nuova: torch.compile opt-in)

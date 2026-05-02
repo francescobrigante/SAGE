@@ -19,46 +19,50 @@
 
 
 at::Tensor roll_and_window_partition_forward_cuda(
-    at::Tensor & input, 
-    //at::Tensor & output,
+    at::Tensor & input,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size);
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w);
 
 
 at::Tensor roll_and_window_partition_backward_cuda(
-    at::Tensor & grad_in, 
-    //at::Tensor & grad_out,
+    at::Tensor & grad_in,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size);
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w);
 
 
 at::Tensor window_merge_and_roll_forward_cuda(
-    at::Tensor & input, 
-    //at::Tensor & output,
+    at::Tensor & input,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size);
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w);
 
 at::Tensor window_merge_and_roll_backward_cuda(
-    at::Tensor & grad_in, 
-    //at::Tensor & grad_out,
+    at::Tensor & grad_in,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size);
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w);
 
 
 #define CHECK_CUDA(x) AT_ASSERTM(x.type().is_cuda(), #x " must be a CUDA tensor")
@@ -68,65 +72,69 @@ at::Tensor window_merge_and_roll_backward_cuda(
 
 
 at::Tensor roll_and_window_partition_forward(
-    at::Tensor & input, 
-    //at::Tensor & output,
+    at::Tensor & input,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size){
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w){
     CHECK_INPUT(input);
-    return roll_and_window_partition_forward_cuda(input, B, H, W, C, shift_size, window_size);
+    return roll_and_window_partition_forward_cuda(input, B, H, W, C, shift_h, shift_w, window_h, window_w);
 }
 
 
 at::Tensor roll_and_window_partition_backward(
-    at::Tensor & grad_in, 
-    //at::Tensor & grad_out,
+    at::Tensor & grad_in,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size){
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w){
     CHECK_INPUT(grad_in);
-    return roll_and_window_partition_backward_cuda(grad_in, B, H, W, C, shift_size, window_size);
+    return roll_and_window_partition_backward_cuda(grad_in, B, H, W, C, shift_h, shift_w, window_h, window_w);
 }
 
 
 at::Tensor window_merge_and_roll_forward(
-    at::Tensor & input, 
-    //at::Tensor & output,
+    at::Tensor & input,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size){
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w){
     CHECK_INPUT(input);
-    return window_merge_and_roll_forward_cuda(input, B, H, W, C, shift_size, window_size);
+    return window_merge_and_roll_forward_cuda(input, B, H, W, C, shift_h, shift_w, window_h, window_w);
 }
 
 
 at::Tensor window_merge_and_roll_backward(
-    at::Tensor & grad_in, 
-    //at::Tensor & grad_out,
+    at::Tensor & grad_in,
     const int B,
     const int H,
     const int W,
     const int C,
-    const int shift_size,
-    const int window_size){
+    const int shift_h,
+    const int shift_w,
+    const int window_h,
+    const int window_w){
     CHECK_INPUT(grad_in);
-    return window_merge_and_roll_backward_cuda(grad_in, B, H, W, C, shift_size, window_size);
+    return window_merge_and_roll_backward_cuda(grad_in, B, H, W, C, shift_h, shift_w, window_h, window_w);
 }
 
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("roll_and_window_partition_forward", &roll_and_window_partition_forward, "torch.roll and window_partition.");
-    m.def("roll_and_window_partition_backward", &roll_and_window_partition_backward, "torch.roll and window_partition.");
-    m.def("window_merge_and_roll_forward", &window_merge_and_roll_forward, "window merge and torch.roll.");
-    m.def("window_merge_and_roll_backward", &window_merge_and_roll_backward, "window merge and torch.roll.");
+    m.def("roll_and_window_partition_forward", &roll_and_window_partition_forward, "torch.roll and window_partition forward.");
+    m.def("roll_and_window_partition_backward", &roll_and_window_partition_backward, "torch.roll and window_partition backward.");
+    m.def("window_merge_and_roll_forward", &window_merge_and_roll_forward, "window merge and torch.roll forward.");
+    m.def("window_merge_and_roll_backward", &window_merge_and_roll_backward, "window merge and torch.roll backward.");
 }
