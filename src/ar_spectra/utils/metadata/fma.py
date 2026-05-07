@@ -25,6 +25,13 @@ from typing import Optional, List
 
 from config import FMA_METADATA
 
+# FMA subsets are hierarchical: medium includes small, large includes medium+small
+_SUBSET_HIERARCHY: dict[str, list[str]] = {
+    "small":  ["small"],
+    "medium": ["small", "medium"],
+    "large":  ["small", "medium", "large"],
+}
+
 @lru_cache(maxsize=1)
 def _load_tracks_df(csv_path: str):
     """Load and cache the FMA tracks DataFrame."""
@@ -61,9 +68,10 @@ def get_audio_files(
     # Filter by split
     mask = df[("set", "split")] == split
     
-    # Optionally filter by subset
+    # Optionally filter by subset (hierarchical: medium includes small, etc.)
     if subset is not None:
-        mask &= df[("set", "subset")] == subset
+        tiers = _SUBSET_HIERARCHY.get(subset, [subset])
+        mask &= df[("set", "subset")].isin(tiers)
     
     track_ids = df[mask].index.tolist()
     

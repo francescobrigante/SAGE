@@ -1,64 +1,75 @@
 #!/bin/bash
 # ============================================================
-# Run 6 — Depth Scaling: [2,2,6,2] → [2,2,18,2] (~68M)
-# Variabile isolata: depth skeleton (V2-Tiny → V2-Small)
-# DDP 2×A100: 16000 step, 800 warmup
+# Phase 8 — D_ps16x1_4s_mim15: identico a D_ps16x1_4s (LR=1e-4)
+# + MIM augmentation: zero-out random 15% dei patch input ad ogni
+# step di training (denoising-VAE). Disabilitato in validation.
+# Ipotesi: latente più context-aware → +probing F1 senza penalizzare SI-SDR.
+# Confronto fair vs D_ps16x1_4s (stesso LR, stessa loss, stesso budget).
 # ============================================================
-#SBATCH --job-name=r06_deep
+#SBATCH --job-name=p8_D_ps16x1_mim15
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=2
-#SBATCH --gres=gpu:2
+#SBATCH --ntasks-per-node=4
+#SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=8
-#SBATCH --mem-per-cpu=16G
-#SBATCH --time=0-18:00:00
+#SBATCH --mem-per-cpu=15G
+#SBATCH --time=2-00:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-mkdir -p logs checkpoints/run06_deep
+mkdir -p logs checkpoints/D_ps16x1_4s_mim15
 module load profile/deeplrn cineca-ai/4.3.0
-# OMP=1: each DataLoader worker runs single-threaded STFT. Without this,
-# num_workers=8 workers × OMP=8 = 64 threads on 8 CPUs → context-switch thrashing.
+
 export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export NCCL_DEBUG=INFO
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
-export WANDB_MODE=offline
+
+export http_proxy='http://login07:3150'
+export https_proxy='http://login07:3150'
+export WANDB_MODE=online
 export WANDB_TAGS="$SLURM_JOB_NAME"
 export WANDB_DIR=$WORK/C-VAE/.wandb_cache
 mkdir -p $WORK/C-VAE/.wandb_cache
+
+set -a
+source $WORK/C-VAE/.env
+set +a
+
 cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
 srun python train.py \
     models=swin_cplx_4s_x64 \
-    "models.model.encoder.depths=[2,2,18,2]" \
-    "models.model.decoder.depths=[2,18,2,2]" \
+    "models.model.swin.patch_size=[16,1]" \
+    "models.model.swin.window_size=[8,16]" \
+    models.model.swin.mim_mask_ratio=0.15 \
+    models.model.latent_channels=8 \
     data.train_dataset.cac=false \
     data.eval_dataset.cac=false \
     data.demo.istft_params.cac=false \
     data.model_channels=2 \
-    trainer.trainer.epochs=80 \
+    "data.train_dataset.custom_metadata_kwargs.subset=medium" \
+    "data.eval_dataset.custom_metadata_kwargs.subset=medium" \
+    trainer.trainer.epochs=97 \
     trainer.trainer.kl_annealing_epochs=10 \
     trainer.loss_config.bottleneck.weights.kl=1e-5 \
-    trainer.scheduler.total_steps=16000 \
-    trainer.scheduler.warmup_steps=800 \
+    trainer.loss_config.spectral.weights.stft_mse=0.0 \
+    trainer.loss_config.spectral.weights.mrstft=1.0 \
+    trainer.loss_config.mrmel.weights.mrmel=0.0 \
+    trainer.scheduler.total_steps=120000 \
+    trainer.scheduler.warmup_steps=6000 \
     trainer.optimizer.lr=1e-4 \
     trainer.optimizer.weight_decay=0.05 \
     "+trainer.optimizer.weight_decay_exclude_1d=true" \
     trainer.trainer.clip_grad_norm=5.0 \
-    trainer.loss_config.mrmel.weights.mrmel=0.3 \
-    trainer.trainer.ckpt_dir=checkpoints/run06_deep \
     trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
     trainer.trainer.strategy=ddp_find_unused_parameters_true \
     trainer.trainer.precision="bf16-mixed" \
     "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
-    trainer.wandb.name=r06_cplx_deep
-# OPT (vs versione pre-speedup): aggiunte 3 flag perf
-#   strategy=ddp_find_unused_parameters_true  (era: strategy=ddp)
-#   precision="bf16-mixed"                     (era: 32-true default)
-#   +trainer.trainer.compile=true              (nuova: torch.compile opt-in)
+    trainer.trainer.ckpt_dir=checkpoints/D_ps16x1_4s_mim15 \
+    trainer.wandb.name=D_ps16x1_4s_mim15

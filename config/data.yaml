@@ -1,6 +1,8 @@
 # Data & Demo configuration - Hydra instantiate API
 # Use _target_ for automatic instantiation via hydra.utils.instantiate
 
+fma_subset: medium
+
 train_dataset:
   _target_: dataloader.OnTheFlySTFTDataset
   audio_dir: ${config:DATA_PATH}
@@ -20,7 +22,7 @@ train_dataset:
   custom_metadata_module: src.ar_spectra.utils.metadata.fma
   custom_metadata_kwargs:
     split: training
-    subset: small
+    subset: ${data.fma_subset}
     metadata_csv: ${config:FMA_METADATA}
 
 train_dataloader:
@@ -51,7 +53,7 @@ eval_dataset:
   custom_metadata_module: src.ar_spectra.utils.metadata.fma
   custom_metadata_kwargs:
     split: validation
-    subset: small
+    subset: ${data.fma_subset}
     metadata_csv: ${config:FMA_METADATA}
 
 eval_dataloader:

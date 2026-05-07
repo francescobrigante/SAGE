@@ -14,7 +14,7 @@ from ar_spectra.blocks.conv.normed import NormLinear
 from ar_spectra.models.implementations.abstract_ae import AbstractEncoder
 from .swin_stage import SwinStage
 from .patches import PatchEmbed, PatchMerging
-from .utils import init_swin_weights, make_norm
+from .utils import init_swin_weights, make_norm, random_patch_mask
 
 
 class SwinEncoder(AbstractEncoder):
@@ -79,6 +79,8 @@ class SwinEncoder(AbstractEncoder):
         fused_window_process: bool = False,
         is_complex: bool = False,
         complex_activation: str = "ComplexGELU1d",
+        abs_pos_embed: bool = False,
+        mim_mask_ratio: float = 0.0,
     ) -> None:
 
         super().__init__(input_size=in_channels, is_complex=is_complex)
@@ -90,6 +92,7 @@ class SwinEncoder(AbstractEncoder):
         self.dimension = dimension                          # total output channels
         self.num_stages = len(depths)                       # number of hierarchical stages (4)
         self.fused_window_process = fused_window_process    # use fused CUDA kernel (CUDA only)
+        self.mim_mask_ratio = float(mim_mask_ratio)         # MIM-style augmentation: zero-out patches at training time only (0 = off)
 
         # Normalise patch_size to a 2-tuple so all downstream code is uniform
         ps_h, ps_w = to_2tuple(patch_size)
@@ -116,6 +119,7 @@ class SwinEncoder(AbstractEncoder):
             embed_dim=embed_dim,
             norm_layer=nn.LayerNorm,
             is_complex=is_complex,
+            abs_pos_embed=abs_pos_embed,
         )
 
         # Compute per-stage input grid dimensions (H,W) and channel widths
@@ -194,6 +198,11 @@ class SwinEncoder(AbstractEncoder):
 
         # freq crop from 1025 to 1024
         x = x[..., :self._freq_size, :]        # (B, 2, 1024, 128)
+        # MIM augmentation: zero-out random patches at training only.
+        # Disabled at eval/inference (self.training=False) and when mask_ratio=0.
+        # The reconstruction target in the engine is the unmasked input → denoising-VAE.
+        if self.training and self.mim_mask_ratio > 0.0:
+            x = random_patch_mask(x, self.patch_size, self.mim_mask_ratio)
         # PatchEmbed
         x = self.patch_embed(x)                # (B, 8192, 48)
         # 4 Swin Stages 

@@ -46,6 +46,7 @@ class PatchEmbed(nn.Module):
         embed_dim: int = 96,
         norm_layer=None,
         is_complex: bool = False,
+        abs_pos_embed: bool = False,
     ) -> None:
 
         super().__init__()
@@ -68,6 +69,17 @@ class PatchEmbed(nn.Module):
             self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
             self.norm = norm_layer(embed_dim) if norm_layer is not None else None
 
+        # Inter-window absolute position embedding (off by default).
+        # Shape is tied to (num_patches, embed_dim) — incompatible across patch_size/embed_dim changes.
+        if abs_pos_embed:
+            _real = torch.zeros(1, self.num_patches, embed_dim)
+            nn.init.trunc_normal_(_real, std=0.02)
+            if is_complex:
+                # PE modulates real part only; imaginary starts at 0 and is learned
+                self.pos_embed = nn.Parameter(torch.complex(_real, torch.zeros_like(_real)))
+            else:
+                self.pos_embed = nn.Parameter(_real)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -85,6 +97,8 @@ class PatchEmbed(nn.Module):
         x = x.flatten(2).transpose(1, 2)                             # (B, num_patches, embed_dim)
         if self.norm is not None:
             x = self.norm(x)
+        if hasattr(self, 'pos_embed'):
+            x = x + self.pos_embed
         return x
 
 

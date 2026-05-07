@@ -5,6 +5,7 @@ import torch.nn as nn
 from typing_extensions import Literal
 
 from ar_spectra.utils.spectral import to_complex_spectrogram
+from .signal import FIRFilter
 
 class ComplexMSE(nn.Module):
     def __init__(
@@ -246,6 +247,8 @@ class MultiResolutionSpectrogramLoss(nn.Module):
         apply_pre_transform: bool = False,
         pre_transform: Optional[Any] = None,
         max_loss_clamp: float = 0.0,
+        perceptual_weighting: bool = False,
+        sample_rate: Optional[float] = None,
     ):
         super().__init__()
         self.max_loss_clamp = max_loss_clamp   # 0.0 = disabled; bounds explosive spikes from near-zero bins
@@ -275,6 +278,15 @@ class MultiResolutionSpectrogramLoss(nn.Module):
         self.return_details = return_details
 
         self.sc_loss = ComplexSpectralConvergence(reduction='mean', eps=eps)
+
+        # A-weighting IIR pre-filter (same as SAO perceptual_weighting)
+        if perceptual_weighting:
+            if sample_rate is None:
+                raise ValueError("sample_rate is required when perceptual_weighting=True")
+            self._fir_filter: Optional[nn.Module] = FIRFilter(filter_type="aw", fs=int(sample_rate))
+        else:
+            self._fir_filter = None
+
         if apply_pre_transform and pre_transform is None:
             warnings.warn(
                 "apply_pre_transform=True but no pre_transform provided; disabling transform for MultiResolutionSpectrogramLoss.",
@@ -287,10 +299,12 @@ class MultiResolutionSpectrogramLoss(nn.Module):
     def _stft(self, x: torch.Tensor, n_fft: int, hop: int, win_len: int, window: torch.Tensor) -> torch.Tensor:
         B, C, T = x.shape
         x_flat = x.reshape(B * C, T)
+        # cuFFT does not support BFloat16 — cast to float32 for STFT, then restore dtype
+        orig_dtype = x_flat.dtype
         Z = torch.stft(
-            x_flat, n_fft=n_fft, hop_length=hop, win_length=win_len,
-            window=window, center=True, return_complex=True, pad_mode="reflect"
-        )
+            x_flat.float(), n_fft=n_fft, hop_length=hop, win_length=win_len,
+            window=window.float(), center=True, return_complex=True, pad_mode="reflect"
+        ).to(orig_dtype)
         _, F, TT = Z.shape
         return Z.view(B, C, F, TT)
 
@@ -305,6 +319,17 @@ class MultiResolutionSpectrogramLoss(nn.Module):
             wav_gt = wav_gt.unsqueeze(1)
         if wav_hat.shape != wav_gt.shape:
             raise ValueError(f"Shape mismatch: {wav_hat.shape} vs {wav_gt.shape}")
+
+        # A-weighting pre-filter — mirrors SAO's perceptual_weighting path exactly
+        if self._fir_filter is not None:
+            self._fir_filter.to(wav_hat.device)
+            B, C, T = wav_hat.shape
+            wav_hat_f, wav_gt_f = self._fir_filter(
+                wav_hat.reshape(B * C, 1, T),
+                wav_gt.reshape(B * C, 1, T),
+            )
+            wav_hat = wav_hat_f.reshape(B, C, -1)
+            wav_gt = wav_gt_f.reshape(B, C, -1)
 
         losses_per_res = []
         for n_fft, hop, win_len in zip(self.fft_sizes, self.hop_sizes, self.win_lengths):

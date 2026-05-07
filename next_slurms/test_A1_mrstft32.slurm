@@ -1,11 +1,13 @@
 #!/bin/bash
 # ============================================================
-# Phase 8 — Rect C1: PS=(16,4), Win=(8,4), 4 stage, latent 32×32
-# Grid: 64×32 → 32×16 → 16×8 → 8×4. Win (8,4): nH=nW=8 ✓
-# FC-ratio≈10 ✔ (più compresso di B1). loss=MRSTFT
-# FMA-medium, 4xA100, 100k steps, EMA β=0.9999
+# Phase 8 — ablation MRSTFT resolution: A1 + abs_pos_embed + n_fft=32
+# Identical to test_A1_abs_pe but MRSTFT extended to 7 resolutions:
+#   fft_sizes: [2048, 1024, 512, 256, 128, 64, 32]  (SAO full set)
+#   hop_sizes: [512,  256,  128, 64,  32,  16,  8]  (fft/4, 0.75 overlap)
+# max_loss_clamp=5.0 prevents spikes at n_fft=32 (17 freq bins, 0.7ms).
+# FMA-medium, 4xA100, 100k steps, EMA β=0.9999, loss=MRSTFT
 # ============================================================
-#SBATCH --job-name=p8_C1
+#SBATCH --job-name=test_A1_mrstft32
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -18,7 +20,7 @@
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-mkdir -p logs checkpoints/test_rect_C1
+mkdir -p logs checkpoints/test_A1_mrstft32
 module load profile/deeplrn cineca-ai/4.3.0
 
 export OMP_NUM_THREADS=1
@@ -43,9 +45,10 @@ source $WORK/.envs/c_vae/bin/activate
 
 srun python train.py \
     models=swin_cplx_4s_x64 \
-    "models.model.swin.patch_size=[16,4]" \
-    "models.model.swin.window_size=[8,4]" \
-    models.model.latent_channels=32 \
+    "models.model.swin.patch_size=[8,2]" \
+    "models.model.swin.window_size=[16,8]" \
+    models.model.latent_channels=8 \
+    models.model.swin.abs_pos_embed=true \
     data.train_dataset.cac=false \
     data.eval_dataset.cac=false \
     data.demo.istft_params.cac=false \
@@ -58,6 +61,8 @@ srun python train.py \
     trainer.loss_config.spectral.weights.stft_mse=0.0 \
     trainer.loss_config.spectral.weights.mrstft=1.0 \
     trainer.loss_config.mrmel.weights.mrmel=0.0 \
+    "trainer.loss_config.spectral.mrstft.config.fft_sizes=[2048,1024,512,256,128,64,32]" \
+    "trainer.loss_config.spectral.mrstft.config.hop_sizes=[512,256,128,64,32,16,8]" \
     trainer.scheduler.total_steps=120000 \
     trainer.scheduler.warmup_steps=6000 \
     trainer.optimizer.lr=1e-4 \
@@ -69,5 +74,5 @@ srun python train.py \
     trainer.trainer.precision="bf16-mixed" \
     "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
-    trainer.trainer.ckpt_dir=checkpoints/test_rect_C1 \
-    trainer.wandb.name=test_rect_C1
+    trainer.trainer.ckpt_dir=checkpoints/test_A1_mrstft32 \
+    trainer.wandb.name=test_A1_mrstft32

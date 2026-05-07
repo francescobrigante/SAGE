@@ -279,7 +279,7 @@ class SwinTransformerBlock(nn.Module):
             x = window_reverse(attn_windows, self.window_size, H, W)  # (B, H, W, C)
         x = x.view(B, H * W, C)                                       # (B, H*W, C)
 
-        # Pre-norm residuals
+        # Res-Post-LN (Swin V2): norm applied to branch output, residual added after
         x = shortcut + self.drop_path(self.norm1(x))                  # (B, H*W, C)
         x = x + self.drop_path(self.norm2(self.mlp(x)))               # (B, H*W, C)
         return x

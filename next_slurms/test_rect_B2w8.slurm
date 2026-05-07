@@ -57,14 +57,14 @@ srun python train.py \
     data.model_channels=2 \
     "data.train_dataset.custom_metadata_kwargs.subset=medium" \
     "data.eval_dataset.custom_metadata_kwargs.subset=medium" \
-    trainer.trainer.epochs=130 \
+    trainer.trainer.epochs=97 \
     trainer.trainer.kl_annealing_epochs=10 \
     trainer.loss_config.bottleneck.weights.kl=1e-5 \
     trainer.loss_config.spectral.weights.stft_mse=0.0 \
     trainer.loss_config.spectral.weights.mrstft=1.0 \
     trainer.loss_config.mrmel.weights.mrmel=0.0 \
-    trainer.scheduler.total_steps=100000 \
-    trainer.scheduler.warmup_steps=5000 \
+    trainer.scheduler.total_steps=120000 \
+    trainer.scheduler.warmup_steps=6000 \
     trainer.optimizer.lr=1e-4 \
     trainer.optimizer.weight_decay=0.05 \
     "+trainer.optimizer.weight_decay_exclude_1d=true" \
