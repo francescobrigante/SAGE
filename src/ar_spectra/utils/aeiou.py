@@ -214,12 +214,12 @@ def mel_spectrogram(waveform, power=2.0, sample_rate=44100, db=False, n_fft=2048
     return melspec
 
 def spectrogram_image(
-        spec, 
-        title=None, 
-        ylabel='freq_bin', 
-        aspect='auto', 
-        xmax=None, 
-        db_range=[35,120], 
+        spec,
+        title=None,
+        ylabel='freq_bin',
+        aspect='auto',
+        xmax=None,
+        db_range=[-80, 20],  # [-80, 20] covers normalized audio (amplitude 0.1–1.0); old [35,120] was wrong
         justimage=False,
         figsize=(5, 4), # size of plot (if justimage==False)
     ):
@@ -251,7 +251,7 @@ def spectrogram_image(
         im = im.crop((b,b, im.size[0]-b, im.size[1]-b))
     return im
 
-def audio_spectrogram_image(waveform, power=2.0, sample_rate=44100, print=print, db=False, db_range=[35,120], justimage=False, log=False, figsize=(5, 4)):
+def audio_spectrogram_image(waveform, power=2.0, sample_rate=44100, print=print, db=False, db_range=[-80, 20], justimage=False, log=False, figsize=(5, 4)):
     "Wrapper for calling above two routines at once, does Mel scale; Modified from PyTorch tutorial https://pytorch.org/tutorials/beginner/audio_feature_extractions_tutorial.html"
     melspec = mel_spectrogram(waveform, power=power, db=db, sample_rate=sample_rate, debug=log)
     melspec = melspec[0] # TODO: only left channel for now

@@ -158,8 +158,6 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         self._log_accum_disc: Dict[str, float] = {}
         self._log_accum_gen_count = 0
         self._log_accum_disc_count = 0
-        # Accumulate per-channel KL tensors for histogram logging.
-        self._log_accum_kl_per_channel: list = []
 
         # Make the model DDP-compatible if it contains ComplexFloat parameters
         from ar_spectra.utils.complex_ddp import make_complex_model_ddp_compatible
@@ -390,14 +388,6 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                 if self._log_accum_gen_count > 0:
                     for key, value in self._log_accum_gen.items():
                         log_dict[key] = value / self._log_accum_gen_count
-                # Per-channel KL diagnostics: active units count + ratio + histogram
-                if self._log_accum_kl_per_channel:
-                    kl_per_ch = torch.stack(self._log_accum_kl_per_channel).mean(dim=0)
-                    au = int((kl_per_ch > 0.1).sum().item())
-                    log_dict["train/active_units"] = au
-                    log_dict["train/active_units_ratio"] = au / kl_per_ch.shape[0]
-                    log_histogram(self.logger, "train/kl_per_channel", kl_per_ch, step=int(self.global_step))
-                    self._log_accum_kl_per_channel = []
                 self.log_dict(log_dict, prog_bar=True, on_step=True)
                 self._log_accum_gen = {}
                 self._log_accum_gen_count = 0
@@ -406,10 +396,6 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             self._log_accum_gen["train/loss"] = self._log_accum_gen.get("train/loss", 0.0) + gen_loss.detach().item()
             self._log_accum_gen["train/latent_std"] = self._log_accum_gen.get("train/latent_std", 0.0) + stats["latent_std"].detach().item()
             self._log_accum_gen["train/data_std"] = self._log_accum_gen.get("train/data_std", 0.0) + stats["data_std"].detach().item()
-
-            # Per-channel KL: accumulate for histogram flush at optimizer step
-            if "kl_per_channel" in out["loss_info"]:
-                self._log_accum_kl_per_channel.append(out["loss_info"]["kl_per_channel"].cpu())
 
             # breakdown gen
             for name, value in out["gen_breakdown"].items():
@@ -607,4 +593,4 @@ class AutoencoderValDemoCallback(pl.Callback):
             lat_to_log = latents[0] if isinstance(latents, (tuple, list)) else latents
             log_point_cloud(trainer.logger, 'val/embeddings_3dpca', lat_to_log)
             log_image(trainer.logger, 'val/embeddings_spec', tokens_spectrogram_image(lat_to_log))
-            log_image(trainer.logger, 'val/recon_melspec_left', audio_spectrogram_image(reals_fakes))
+            log_image(trainer.logger, 'val/recon_melspec_left', audio_spectrogram_image(wav_reals_fakes_f32))

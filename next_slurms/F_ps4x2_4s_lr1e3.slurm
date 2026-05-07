@@ -1,11 +1,5 @@
 #!/bin/bash
-# ============================================================
-# Phase 8 — Rect C1: PS=(16,4), Win=(8,4), 4 stage, latent 32×32
-# Grid: 64×32 → 32×16 → 16×8 → 8×4. Win (8,4): nH=nW=8 ✓
-# FC-ratio≈10 ✔ (più compresso di B1). loss=MRSTFT
-# FMA-medium, 4xA100, 100k steps, EMA β=0.9999
-# ============================================================
-#SBATCH --job-name=p8_C1
+#SBATCH --job-name=F_ps4x2_4s
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -18,7 +12,7 @@
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-mkdir -p logs checkpoints/test_rect_C1
+mkdir -p logs checkpoints/F_ps4x2_4s
 module load profile/deeplrn cineca-ai/4.3.0
 
 export OMP_NUM_THREADS=1
@@ -43,9 +37,9 @@ source $WORK/.envs/c_vae/bin/activate
 
 srun python train.py \
     models=swin_cplx_4s_x64 \
-    "models.model.swin.patch_size=[16,4]" \
-    "models.model.swin.window_size=[8,4]" \
-    models.model.latent_channels=32 \
+    "models.model.swin.patch_size=[4,2]" \
+    "models.model.swin.window_size=[32,8]" \
+    models.model.latent_channels=8 \
     data.train_dataset.cac=false \
     data.eval_dataset.cac=false \
     data.demo.istft_params.cac=false \
@@ -60,7 +54,7 @@ srun python train.py \
     trainer.loss_config.mrmel.weights.mrmel=0.0 \
     trainer.scheduler.total_steps=120000 \
     trainer.scheduler.warmup_steps=6000 \
-    trainer.optimizer.lr=1e-4 \
+    trainer.optimizer.lr=1e-3 \
     trainer.optimizer.weight_decay=0.05 \
     "+trainer.optimizer.weight_decay_exclude_1d=true" \
     trainer.trainer.clip_grad_norm=5.0 \
@@ -69,5 +63,5 @@ srun python train.py \
     trainer.trainer.precision="bf16-mixed" \
     "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
-    trainer.trainer.ckpt_dir=checkpoints/test_rect_C1 \
-    trainer.wandb.name=test_rect_C1
+    trainer.trainer.ckpt_dir=checkpoints/F_ps4x2_4s \
+    trainer.wandb.name=F_ps4x2_4s

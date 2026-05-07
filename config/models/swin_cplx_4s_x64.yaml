@@ -45,6 +45,8 @@ model:
     drop_path_rate: 0.1
     use_checkpoint: false
     complex_activation: ComplexGELU1d   # phase-equivariant gate on |x|; use CGeLU to reproduce split baseline
+    abs_pos_embed: false                # inter-window absolute PE on PatchEmbed output (off by default)
+    mim_mask_ratio: 0.0                 # MIM denoising-VAE augmentation: zero-out fraction of input patches at training (off by default)
 
   # ── encoder ─────────────────────────────────────────────────────────────────
   encoder:
@@ -63,6 +65,8 @@ model:
     drop_path_rate: ${models.model.swin.drop_path_rate}
     use_checkpoint: ${models.model.swin.use_checkpoint}
     complex_activation: ${models.model.swin.complex_activation}
+    abs_pos_embed: ${models.model.swin.abs_pos_embed}
+    mim_mask_ratio: ${models.model.swin.mim_mask_ratio}
     fused_window_process: true
 
   # ── decoder ─────────────────────────────────────────────────────────────────

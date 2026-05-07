@@ -1,11 +1,5 @@
 #!/bin/bash
-# ============================================================
-# Phase 8 — Depth d_4462: PS=8sq, Win=(16,2), depths=[4,4,6,2]
-# Front-load: +4 blocchi early (stage 0-1), preserva dettagli
-# VAE a bassa risoluzione. ~57M params vs 49M BASELINE.
-# FMA-medium, 4xA100, 100k steps, EMA β=0.9999, loss=MRSTFT
-# ============================================================
-#SBATCH --job-name=p8_d4462
+#SBATCH --job-name=F_ps16x1_5s
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -14,11 +8,11 @@
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=2-00:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-mkdir -p logs checkpoints/test_depth_4462
+mkdir -p logs checkpoints/F_ps16x1_5s
 module load profile/deeplrn cineca-ai/4.3.0
 
 export OMP_NUM_THREADS=1
@@ -43,26 +37,29 @@ source $WORK/.envs/c_vae/bin/activate
 
 srun python train.py \
     models=swin_cplx_4s_x64 \
-    models.model.swin.patch_size=8 \
-    "models.model.swin.window_size=[16,2]" \
-    models.model.latent_channels=32 \
-    "models.model.encoder.depths=[4,4,6,2]" \
-    "models.model.decoder.depths=[2,6,4,4]" \
+    models.model.swin.embed_dim=36 \
+    "models.model.encoder.depths=[2,2,2,6,2]" \
+    "models.model.encoder.num_heads=[3,6,12,24,48]" \
+    "models.model.decoder.depths=[2,6,2,2,2]" \
+    "models.model.decoder.num_heads=[48,24,12,6,3]" \
+    "models.model.swin.patch_size=[16,1]" \
+    "models.model.swin.window_size=[8,16]" \
+    models.model.latent_channels=8 \
     data.train_dataset.cac=false \
     data.eval_dataset.cac=false \
     data.demo.istft_params.cac=false \
     data.model_channels=2 \
     "data.train_dataset.custom_metadata_kwargs.subset=medium" \
     "data.eval_dataset.custom_metadata_kwargs.subset=medium" \
-    trainer.trainer.epochs=130 \
+    trainer.trainer.epochs=97 \
     trainer.trainer.kl_annealing_epochs=10 \
     trainer.loss_config.bottleneck.weights.kl=1e-5 \
     trainer.loss_config.spectral.weights.stft_mse=0.0 \
     trainer.loss_config.spectral.weights.mrstft=1.0 \
     trainer.loss_config.mrmel.weights.mrmel=0.0 \
-    trainer.scheduler.total_steps=100000 \
-    trainer.scheduler.warmup_steps=5000 \
-    trainer.optimizer.lr=1e-4 \
+    trainer.scheduler.total_steps=120000 \
+    trainer.scheduler.warmup_steps=6000 \
+    trainer.optimizer.lr=1e-3 \
     trainer.optimizer.weight_decay=0.05 \
     "+trainer.optimizer.weight_decay_exclude_1d=true" \
     trainer.trainer.clip_grad_norm=5.0 \
@@ -71,5 +68,5 @@ srun python train.py \
     trainer.trainer.precision="bf16-mixed" \
     "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
-    trainer.trainer.ckpt_dir=checkpoints/test_depth_4462 \
-    trainer.wandb.name=test_depth_4462
+    trainer.trainer.ckpt_dir=checkpoints/F_ps16x1_5s \
+    trainer.wandb.name=F_ps16x1_5s

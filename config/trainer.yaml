@@ -83,7 +83,7 @@ loss_config:
       config:
         fft_sizes:  [2048, 1024, 512, 256, 128, 64]   # 6 risoluzioni SAO (32 omesso: instabile)
         hop_sizes:  [512,  256,  128, 64,  32,  16]   # fft/4 — coerente con SAO
-        max_loss_clamp: 20.0     # bounds explosive spikes from near-zero bins
+        max_loss_clamp: 5.0      # bounds explosive spikes from near-zero bins
         log_mag: true             # log-magnitude L1 on each resolution
         factor_log_mag: 1.0
     weights:

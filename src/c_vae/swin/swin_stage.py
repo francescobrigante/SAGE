@@ -130,14 +130,12 @@ class SwinStage(nn.Module):
 
         Zeroing norm weights at init means residuals start as identity mappings,
         stabilising deep-network training. Called once after init_swin_weights.
-
-        TODO (Phase 6b): ComplexLayerNorm has a different weight structure (2×2
-        covariance entries). Implement complex-aware zero-init before training
-        with is_complex=True. See EXPERIMENTS.md for details.
+        Works for both nn.LayerNorm (weight shape: dim) and ComplexLayerNorm
+        (weight shape: 2×2×dim — the full affine matrix is zeroed).
         """
         for blk in self.blocks:
             if not hasattr(blk.norm1, 'weight') or blk.norm1.weight is None:
-                continue   # ComplexLayerNorm — zero-init deferred to Phase 6b
+                continue
             nn.init.constant_(blk.norm1.bias, 0)
             nn.init.constant_(blk.norm1.weight, 0)
             nn.init.constant_(blk.norm2.bias, 0)

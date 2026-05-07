@@ -55,7 +55,7 @@ def log_compression_stats(wrapper, train_dl, console: Console) -> None:
         with torch.no_grad():
             batch = next(iter(train_dl))
             sp_reals, orig_waveforms = batch[0], batch[1]
-            
+
             # Extract exactly 1 sample from the batch to calculate single-sample dimensions
             sp_single = sp_reals[0:1].to(wrapper.device)
             wav_single = orig_waveforms[0:1]
