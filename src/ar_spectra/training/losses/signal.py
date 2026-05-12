@@ -180,7 +180,7 @@ class STFTLoss(torch.nn.Module):
             self.prefilter = FIRFilter(filter_type="aw", fs=sample_rate)
 
     def stft(self, x):
-        x_stft = torch.stft(x, self.fft_size, self.hop_size, self.win_length, self.window, return_complex=True)
+        x_stft = torch.stft(x.float(), self.fft_size, self.hop_size, self.win_length, self.window.float(), return_complex=True)
         x_mag = torch.sqrt(torch.clamp((x_stft.real**2) + (x_stft.imag**2), min=self.eps))
         x_phs = x_stft if self.phs_used else None
         return x_mag, x_phs

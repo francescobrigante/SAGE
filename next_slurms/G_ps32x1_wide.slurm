@@ -1,5 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=F_ps32x2_4s
+# ============================================================
+# G_ps32x1_wide: PS=(32,1), Win=(8,32), 4 stage, latent 64×16
+# Grid: 32×128 → 16×64 → 8×32 → 4×16
+# Win (8,32): global a stage 3 (n-1) ✓ e al deepest (clamped) ✓
+# Baseline: D_ps32x1_4s, win=(4,16), −10.98 dB @ LR=1e-4, KL=131
+# Ipotesi: +2.4 dB attesi da global a n-1
+# ============================================================
+#SBATCH --job-name=G_ps32x1_wide
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -12,7 +19,7 @@
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-mkdir -p logs checkpoints/F_ps32x2_4s
+mkdir -p logs checkpoints/G_ps32x1_wide
 module load profile/deeplrn cineca-ai/4.3.0
 
 export OMP_NUM_THREADS=1
@@ -24,6 +31,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export http_proxy='http://login07:3150'
 export https_proxy='http://login07:3150'
 export WANDB_MODE=online
+export TF_CPP_MIN_LOG_LEVEL=3
 export WANDB_TAGS="$SLURM_JOB_NAME"
 export WANDB_DIR=$WORK/C-VAE/.wandb_cache
 mkdir -p $WORK/C-VAE/.wandb_cache
@@ -37,9 +45,9 @@ source $WORK/.envs/c_vae/bin/activate
 
 srun python train.py \
     models=swin_cplx_4s_x64 \
-    "models.model.swin.patch_size=[32,2]" \
-    "models.model.swin.window_size=[4,8]" \
-    models.model.latent_channels=8 \
+    "models.model.swin.patch_size=[32,1]" \
+    "models.model.swin.window_size=[8,32]" \
+    models.model.latent_channels=16 \
     data.train_dataset.cac=false \
     data.eval_dataset.cac=false \
     data.demo.istft_params.cac=false \
@@ -54,7 +62,7 @@ srun python train.py \
     trainer.loss_config.mrmel.weights.mrmel=0.0 \
     trainer.scheduler.total_steps=120000 \
     trainer.scheduler.warmup_steps=6000 \
-    trainer.optimizer.lr=1e-3 \
+    trainer.optimizer.lr=1e-4 \
     trainer.optimizer.weight_decay=0.05 \
     "+trainer.optimizer.weight_decay_exclude_1d=true" \
     trainer.trainer.clip_grad_norm=5.0 \
@@ -63,5 +71,5 @@ srun python train.py \
     trainer.trainer.precision="bf16-mixed" \
     "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
-    trainer.trainer.ckpt_dir=checkpoints/F_ps32x2_4s \
-    trainer.wandb.name=F_ps32x2_4s
+    trainer.trainer.ckpt_dir=checkpoints/G_ps32x1_wide \
+    trainer.wandb.name=G_ps32x1_wide

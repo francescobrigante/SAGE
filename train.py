@@ -45,8 +45,8 @@ import config
 OmegaConf.register_new_resolver("config", lambda key: getattr(config, key))
 OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
-from ar_spectra.training.callbacks import DatasetEpochSetter, ModelInfoLogger, EMACallback
-from ar_spectra.utils.model_info import log_compression_stats, extract_model_config
+from ar_spectra.training.callbacks import DatasetEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger
+from ar_spectra.utils.model_info import extract_model_config
 from ar_spectra.utils.config_guards import check_cac_consistency
 
 class WandbConfigLogger:
@@ -392,6 +392,7 @@ def main(cfg: DictConfig):
         TableOnlyModelSummary(max_depth=2),
         TQDMProgressBar(refresh_rate=1),
         DatasetEpochSetter(),
+        CompressionStatsLogger(train_dl=train_dl, console=console),
     ]
 
     use_ema = bool(pl_trainer_cfg.get("use_ema", True))
@@ -491,10 +492,6 @@ def main(cfg: DictConfig):
 
     ok(f"{req_accelerator}", prefix="DEVICE")
     
-    # Extracts and visualizes latent shape and compression rate
-    if _is_rank0():
-        log_compression_stats(wrapper, train_dl, console)
-
     ckpt_path = OmegaConf.select(cfg, "ckpt_path", default=None)
     if ckpt_path:
         ok(f"Resuming from checkpoint: {ckpt_path}", prefix="TRAINER")

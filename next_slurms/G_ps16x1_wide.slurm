@@ -1,5 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=F_ps16x1_4s_wide
+# ============================================================
+# G_ps16x1_wide: PS=(16,1), Win=(16,32), 4 stage, latent 128×8
+# Grid: 64×128 → 32×64 → 16×32 → 8×16
+# Win (16,32): global a stage 3 (n-1) ✓ e al deepest (clamped) ✓
+# Baseline: D_ps16x1_4s, win=(8,16), −15.38 dB @ LR=1e-4
+# Ipotesi: +2.4 dB attesi da global a n-1 (replica B2w8 su ps16x1)
+# ============================================================
+#SBATCH --job-name=G_ps16x1_wide
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -12,7 +19,7 @@
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-mkdir -p logs checkpoints/F_ps16x1_4s_wide
+mkdir -p logs checkpoints/G_ps16x1_wide
 module load profile/deeplrn cineca-ai/4.3.0
 
 export OMP_NUM_THREADS=1
@@ -24,6 +31,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export http_proxy='http://login07:3150'
 export https_proxy='http://login07:3150'
 export WANDB_MODE=online
+export TF_CPP_MIN_LOG_LEVEL=3
 export WANDB_TAGS="$SLURM_JOB_NAME"
 export WANDB_DIR=$WORK/C-VAE/.wandb_cache
 mkdir -p $WORK/C-VAE/.wandb_cache
@@ -54,7 +62,7 @@ srun python train.py \
     trainer.loss_config.mrmel.weights.mrmel=0.0 \
     trainer.scheduler.total_steps=120000 \
     trainer.scheduler.warmup_steps=6000 \
-    trainer.optimizer.lr=1e-3 \
+    trainer.optimizer.lr=1e-4 \
     trainer.optimizer.weight_decay=0.05 \
     "+trainer.optimizer.weight_decay_exclude_1d=true" \
     trainer.trainer.clip_grad_norm=5.0 \
@@ -63,5 +71,5 @@ srun python train.py \
     trainer.trainer.precision="bf16-mixed" \
     "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
-    trainer.trainer.ckpt_dir=checkpoints/F_ps16x1_4s_wide \
-    trainer.wandb.name=F_ps16x1_4s_wide
+    trainer.trainer.ckpt_dir=checkpoints/G_ps16x1_wide \
+    trainer.wandb.name=G_ps16x1_wide

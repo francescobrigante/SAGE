@@ -184,8 +184,8 @@ class MultiResSpectralConvergence(nn.Module):
         B, C, T = x.shape
         x = x.reshape(B * C, T)
         Z = torch.stft(
-            x, n_fft=n_fft, hop_length=hop, win_length=win_length,
-            window=window, center=True, return_complex=True,
+            x.float(), n_fft=n_fft, hop_length=hop, win_length=win_length,
+            window=window.float(), center=True, return_complex=True,
             pad_mode="reflect"
         )
         F, TT = Z.shape[-2:]
@@ -300,11 +300,10 @@ class MultiResolutionSpectrogramLoss(nn.Module):
         B, C, T = x.shape
         x_flat = x.reshape(B * C, T)
         # cuFFT does not support BFloat16 — cast to float32 for STFT, then restore dtype
-        orig_dtype = x_flat.dtype
         Z = torch.stft(
             x_flat.float(), n_fft=n_fft, hop_length=hop, win_length=win_len,
             window=window.float(), center=True, return_complex=True, pad_mode="reflect"
-        ).to(orig_dtype)
+        )  # stays complex64 — bfloat16 has no complex type, casting would silently discard imaginary
         _, F, TT = Z.shape
         return Z.view(B, C, F, TT)
 
