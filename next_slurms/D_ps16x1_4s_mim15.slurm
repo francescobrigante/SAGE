@@ -31,6 +31,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export http_proxy='http://login07:3150'
 export https_proxy='http://login07:3150'
 export WANDB_MODE=online
+export TF_CPP_MIN_LOG_LEVEL=3
 export WANDB_TAGS="$SLURM_JOB_NAME"
 export WANDB_DIR=$WORK/C-VAE/.wandb_cache
 mkdir -p $WORK/C-VAE/.wandb_cache

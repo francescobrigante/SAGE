@@ -28,6 +28,7 @@ export MKL_NUM_THREADS=1
 export NCCL_DEBUG=INFO
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export WANDB_MODE=offline
+export TF_CPP_MIN_LOG_LEVEL=3
 export WANDB_TAGS="$SLURM_JOB_NAME"
 export WANDB_DIR=$WORK/C-VAE/.wandb_cache
 mkdir -p $WORK/C-VAE/.wandb_cache

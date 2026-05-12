@@ -1,11 +1,5 @@
 #!/bin/bash
-# ============================================================
-# Phase 8 — D_A1_win_local: PS=(8,2), Win=(8,4), 4 stage, latent 128×8
-# Grid: 128×64 → 64×32 → 32×16 → 16×8. Win (8,4): 4 finestre al deepest (non-global).
-# Identico ad A1 tranne bottleneck LOCAL: testa struttura latente locale per diffusion.
-# FC-ratio≈42. FMA-medium, 4xA100, 100k steps, EMA β=0.9999, loss=MRSTFT
-# ============================================================
-#SBATCH --job-name=p8_D_A1wloc
+#SBATCH --job-name=F_ps4x2_4s
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -14,11 +8,11 @@
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=2-00:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-mkdir -p logs checkpoints/D_A1_win_local
+mkdir -p logs checkpoints/F_ps4x2_4s
 module load profile/deeplrn cineca-ai/4.3.0
 
 export OMP_NUM_THREADS=1
@@ -32,6 +26,8 @@ export https_proxy='http://login07:3150'
 export WANDB_MODE=online
 export TF_CPP_MIN_LOG_LEVEL=3
 export WANDB_TAGS="$SLURM_JOB_NAME"
+export WANDB_RUN_ID=015ixr91
+export WANDB_RESUME=must
 export WANDB_DIR=$WORK/C-VAE/.wandb_cache
 mkdir -p $WORK/C-VAE/.wandb_cache
 
@@ -44,8 +40,8 @@ source $WORK/.envs/c_vae/bin/activate
 
 srun python train.py \
     models=swin_cplx_4s_x64 \
-    "models.model.swin.patch_size=[8,2]" \
-    "models.model.swin.window_size=[8,4]" \
+    "models.model.swin.patch_size=[4,2]" \
+    "models.model.swin.window_size=[32,8]" \
     models.model.latent_channels=8 \
     data.train_dataset.cac=false \
     data.eval_dataset.cac=false \
@@ -70,5 +66,6 @@ srun python train.py \
     trainer.trainer.precision="bf16-mixed" \
     "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
-    trainer.trainer.ckpt_dir=checkpoints/D_A1_win_local \
-    trainer.wandb.name=D_A1_win_local
+    trainer.trainer.ckpt_dir=checkpoints/F_ps4x2_4s \
+    trainer.wandb.name=F_ps4x2_4s \
+    ckpt_path=$WORK/C-VAE/runs/F_ps4x2_4s/2026-05-09_06-39-32/checkpoints/epoch_029.ckpt

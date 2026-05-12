@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=F_ps8x1_4s
+#SBATCH --job-name=F_ps4x1_4s
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -12,7 +12,7 @@
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-mkdir -p logs checkpoints/F_ps8x1_4s
+mkdir -p logs checkpoints/F_ps4x1_4s
 module load profile/deeplrn cineca-ai/4.3.0
 
 export OMP_NUM_THREADS=1
@@ -24,7 +24,10 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export http_proxy='http://login07:3150'
 export https_proxy='http://login07:3150'
 export WANDB_MODE=online
+export TF_CPP_MIN_LOG_LEVEL=3
 export WANDB_TAGS="$SLURM_JOB_NAME"
+export WANDB_RUN_ID=lnulgynr
+export WANDB_RESUME=must
 export WANDB_DIR=$WORK/C-VAE/.wandb_cache
 mkdir -p $WORK/C-VAE/.wandb_cache
 
@@ -37,8 +40,8 @@ source $WORK/.envs/c_vae/bin/activate
 
 srun python train.py \
     models=swin_cplx_4s_x64 \
-    "models.model.swin.patch_size=[8,1]" \
-    "models.model.swin.window_size=[16,16]" \
+    "models.model.swin.patch_size=[4,1]" \
+    "models.model.swin.window_size=[32,16]" \
     models.model.latent_channels=8 \
     data.train_dataset.cac=false \
     data.eval_dataset.cac=false \
@@ -54,7 +57,7 @@ srun python train.py \
     trainer.loss_config.mrmel.weights.mrmel=0.0 \
     trainer.scheduler.total_steps=120000 \
     trainer.scheduler.warmup_steps=6000 \
-    trainer.optimizer.lr=1e-3 \
+    trainer.optimizer.lr=1e-4 \
     trainer.optimizer.weight_decay=0.05 \
     "+trainer.optimizer.weight_decay_exclude_1d=true" \
     trainer.trainer.clip_grad_norm=5.0 \
@@ -63,5 +66,6 @@ srun python train.py \
     trainer.trainer.precision="bf16-mixed" \
     "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
-    trainer.trainer.ckpt_dir=checkpoints/F_ps8x1_4s \
-    trainer.wandb.name=F_ps8x1_4s
+    trainer.trainer.ckpt_dir=checkpoints/F_ps4x1_4s \
+    trainer.wandb.name=F_ps4x1_4s \
+    ckpt_path=$WORK/C-VAE/runs/F_ps4x1_4s/2026-05-09_06-38-58/checkpoints/last.ckpt

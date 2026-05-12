@@ -4,11 +4,33 @@
 #   contains tensor manipulations applied to audio (trimming, folding channels)
 # =================================================================================
 
+import signal
 import torch
 from einops import rearrange
 import torch.nn.functional as F
 from config import DEFAULT_SILENCE_THRESHOLD
 import torchaudio
+
+_LOAD_TIMEOUT_SECONDS = 30
+
+def _torchaudio_load_safe(path: str) -> tuple:
+    """torchaudio.load() with SIGALRM timeout on Linux to prevent indefinite hangs on corrupt MP3s.
+    Each DataLoader worker is a forked process with its own signal mask, so SIGALRM is safe here.
+    Falls back to a direct call on platforms without SIGALRM (Windows, macOS with threads).
+    """
+    if not hasattr(signal, "SIGALRM"):
+        return torchaudio.load(path, normalize=True)
+
+    def _handler(signum, frame):
+        raise RuntimeError(f"torchaudio.load timed out after {_LOAD_TIMEOUT_SECONDS}s on: {path}")
+
+    old = signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(_LOAD_TIMEOUT_SECONDS)
+    try:
+        return torchaudio.load(path, normalize=True)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
 
 def trim_to_shortest(a: torch.Tensor, b: torch.Tensor):
     """Trim the longer of two tensors to the length of the shorter one."""
@@ -52,7 +74,7 @@ def load_waveform(path: str, target_sample_rate: int, expected_channels: int) ->
         channel_mismatched: True if original channels differed from expected_channels.
         sr_mismatched: True if original sample rate differed from target_sample_rate.
     """
-    wav, sr = torchaudio.load(str(path), normalize=True)
+    wav, sr = _torchaudio_load_safe(str(path))
     wav = wav.to(torch.float32)
     
     file_channels = wav.size(0)

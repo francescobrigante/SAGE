@@ -9,7 +9,7 @@ from pathlib import Path
 from rich.console import Console
 
 from ar_spectra.utils.console import ok, warn
-from ar_spectra.utils.model_info import extract_model_config
+from ar_spectra.utils.model_info import extract_model_config, log_compression_stats
 
 console = Console()
 
@@ -83,6 +83,20 @@ class ModelInfoLogger(pl.Callback):
                     run.save(str(out_path), base_path=str(base_dir))
             except Exception as e:
                 warn(f"ModelInfoLogger: W&B log skipped ({type(e).__name__}: {e})", prefix="TRAINER")
+
+class CompressionStatsLogger(Callback):
+    """Runs a dummy encoder forward pass at fit start to log latent shape and compression rate.
+    Executed only on rank 0, after Lightning has moved the model to the correct device.
+    """
+    def __init__(self, train_dl, console: Console):
+        super().__init__()
+        self._train_dl = train_dl
+        self._console = console
+
+    @rank_zero_only
+    def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        log_compression_stats(pl_module, self._train_dl, self._console)
+
 
 class EMACallback(Callback):
     """Exponential Moving Average (EMA) of model weights.

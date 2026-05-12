@@ -304,7 +304,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         else:
             annealed = self.kl_beta_target * min(epoch / self.kl_annealing_epochs, 1.0)
             kl_module.update_weight(annealed)
-        self.log("train/kl_weight", annealed, on_epoch=True, prog_bar=False)
+        self.log("train/kl_weight", annealed, on_epoch=True, prog_bar=False, sync_dist=True)
 
     def training_step(self, batch, batch_idx):
         out = self.engine.compute(batch, global_step=int(self.global_step))
