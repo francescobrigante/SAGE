@@ -474,6 +474,7 @@ def main(cfg: DictConfig):
         devices=int(pl_trainer_cfg.get("num_gpus", 1)),
         strategy=pl_trainer_cfg.get("strategy", "auto"),
         max_epochs=int(pl_trainer_cfg.get("epochs", 50)),
+        max_steps=int(pl_trainer_cfg.get("max_steps", -1)),
         precision=requested_precision,
         logger=logger,
         callbacks=callbacks,
