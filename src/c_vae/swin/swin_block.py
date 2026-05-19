@@ -248,9 +248,13 @@ class SwinTransformerBlock(nn.Module):
                 x_f = x.view(torch.float32)                                  # (B, H, W, 2C)
                 out_f = WindowProcess.apply(x_f, B, H, W, 2 * C, -sh, -sw, wh, ww)
                 x_windows = out_f.view(torch.complex64)                      # (nW*B, wh, ww, C)
-            # cuda — real float32: pass tensor directly
+            # cuda — real: kernel supports float32/float16 but not bfloat16; cast if needed
             else:
-                x_windows = WindowProcess.apply(x, B, H, W, C, -sh, -sw, wh, ww)
+                orig_dtype = x.dtype
+                if orig_dtype == torch.bfloat16:
+                    x_windows = WindowProcess.apply(x.float(), B, H, W, C, -sh, -sw, wh, ww).bfloat16()
+                else:
+                    x_windows = WindowProcess.apply(x, B, H, W, C, -sh, -sw, wh, ww)
 
         else:
             x_windows = window_partition(x, self.window_size)         # (nW*B, wh, ww, C)
@@ -272,9 +276,13 @@ class SwinTransformerBlock(nn.Module):
                 aw_f = attn_windows.view(torch.float32)                      # (nW*B, wh, ww, 2C)
                 out_f = WindowProcessReverse.apply(aw_f, B, H, W, 2 * C, sh, sw, wh, ww)
                 x = out_f.view(torch.complex64)                              # (B, H, W, C)
-            # cuda — real float32
+            # cuda — real: kernel supports float32/float16 but not bfloat16; cast if needed
             else:
-                x = WindowProcessReverse.apply(attn_windows, B, H, W, C, sh, sw, wh, ww)
+                orig_dtype = attn_windows.dtype
+                if orig_dtype == torch.bfloat16:
+                    x = WindowProcessReverse.apply(attn_windows.float(), B, H, W, C, sh, sw, wh, ww).bfloat16()
+                else:
+                    x = WindowProcessReverse.apply(attn_windows, B, H, W, C, sh, sw, wh, ww)
         else:
             x = window_reverse(attn_windows, self.window_size, H, W)  # (B, H, W, C)
         x = x.view(B, H * W, C)                                       # (B, H*W, C)

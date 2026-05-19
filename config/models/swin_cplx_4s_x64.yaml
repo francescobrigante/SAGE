@@ -68,6 +68,7 @@ model:
     abs_pos_embed: ${models.model.swin.abs_pos_embed}
     mim_mask_ratio: ${models.model.swin.mim_mask_ratio}
     fused_window_process: true
+    use_smooth_convs: false          # spatial smoother after PatchEmbed (and optionally after PatchMerging)
 
   # ── decoder ─────────────────────────────────────────────────────────────────
   decoder:
@@ -85,3 +86,4 @@ model:
     attn_drop_rate: ${models.model.swin.attn_drop_rate}
     drop_path_rate: ${models.model.swin.drop_path_rate}
     use_checkpoint: ${models.model.swin.use_checkpoint}
+    use_smooth_convs: false          # spatial smoother after each PatchExpand + output conv after PatchUnembed

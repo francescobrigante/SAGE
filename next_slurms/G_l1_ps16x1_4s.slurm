@@ -1,12 +1,16 @@
 #!/bin/bash
 # ============================================================
-# G_ps64x1_wide: PS=(64,1), Win=(4,32), 4 stage, latent 32×32
-# Grid: 16×128 → 8×64 → 4×32 → 2×16 (⚠️ H=2 TOO LOW al deepest)
-# Win (4,32): global a stage 3 (n-1) ✓ e al deepest (clamped) ✓
-# Baseline: D_ps64x1_4s, win=(2,16), −9.50 dB @ LR=1e-4, KL=224
-# Ipotesi: +2.4 dB attesi da global a n-1 (nonostante deepest TOO LOW)
+# G_l1_ps16x1_4s: identico a D_ps16x1_4s +
+#   time_domain L1 loss (weight=0.1) per correggere amplitude drift.
+#
+# Ipotesi: il path del gradiente di mrstft passa attraverso stft(istft(S))
+#   (proiezione ortogonale, non identità), attenuando il segnale di ampiezza.
+#   L1 waveform aggiunge un gradiente diretto su decoded vs reals,
+#   senza proiezione STFT, analogamente a come opera un discriminatore.
+# Variabile isolata rispetto a D: solo aggiunta di l1_time_loss=0.1.
+# 12h: run diagnostica per verificare se le ampiezze convergono prima.
 # ============================================================
-#SBATCH --job-name=G_ps64x1_wide
+#SBATCH --job-name=G_l1_ps16x1
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -19,7 +23,7 @@
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-mkdir -p logs checkpoints/G_ps64x1_wide
+mkdir -p logs checkpoints/G_l1_ps16x1_4s
 module load profile/deeplrn cineca-ai/4.3.0
 
 export OMP_NUM_THREADS=1
@@ -33,6 +37,8 @@ export https_proxy='http://login07:3150'
 export WANDB_MODE=online
 export TF_CPP_MIN_LOG_LEVEL=3
 export WANDB_TAGS="$SLURM_JOB_NAME"
+export WANDB_RUN_ID=hq9b9gpx
+export WANDB_RESUME=must
 export WANDB_DIR=$WORK/C-VAE/.wandb_cache
 mkdir -p $WORK/C-VAE/.wandb_cache
 
@@ -45,9 +51,9 @@ source $WORK/.envs/c_vae/bin/activate
 
 srun python train.py \
     models=swin_cplx_4s_x64 \
-    "models.model.swin.patch_size=[64,1]" \
-    "models.model.swin.window_size=[4,32]" \
-    models.model.latent_channels=32 \
+    "models.model.swin.patch_size=[16,1]" \
+    "models.model.swin.window_size=[8,16]" \
+    models.model.latent_channels=8 \
     data.train_dataset.cac=false \
     data.eval_dataset.cac=false \
     data.demo.istft_params.cac=false \
@@ -60,6 +66,7 @@ srun python train.py \
     trainer.loss_config.spectral.weights.stft_mse=0.0 \
     trainer.loss_config.spectral.weights.mrstft=1.0 \
     trainer.loss_config.mrmel.weights.mrmel=0.0 \
+    "++trainer.loss_config.time.weights.l1=0.3" \
     trainer.scheduler.total_steps=120000 \
     trainer.scheduler.warmup_steps=6000 \
     trainer.optimizer.lr=1e-4 \
@@ -71,5 +78,6 @@ srun python train.py \
     trainer.trainer.precision="bf16-mixed" \
     "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
-    trainer.trainer.ckpt_dir=checkpoints/G_ps64x1_wide \
-    trainer.wandb.name=G_ps64x1_wide
+    trainer.trainer.ckpt_dir=checkpoints/G_l1_ps16x1_4s \
+    trainer.wandb.name=G_l1_ps16x1_4s \
+    +ckpt_path=$WORK/C-VAE/runs/G_l1_ps16x1_4s/2026-05-14_08-08-01/checkpoints/last.ckpt

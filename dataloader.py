@@ -6,6 +6,7 @@
 import torch
 import torchaudio
 import os
+import signal
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 from torch.utils.data import Dataset
@@ -20,8 +21,40 @@ from config import (
     DEFAULT_SEED,
     DEFAULT_MAX_RETRIES_PER_SAMPLE,
     DEFAULT_MAX_PAD_RATIO,
-    DEFAULT_AUDIO_EXTENSIONS
+    DEFAULT_AUDIO_EXTENSIONS,
+    DEFAULT_AUDIO_LOAD_TIMEOUT,
 )
+
+
+class _AudioLoadTimeout(Exception):
+    pass
+
+
+class _file_load_timeout:
+    """Context manager: raises _AudioLoadTimeout if the block takes longer than `seconds`.
+    Uses SIGALRM — Unix only, safe in forked DataLoader worker processes.
+    No-op on Windows (os.name == 'nt').
+    """
+    def __init__(self, seconds: int):
+        self._seconds = seconds
+        self._old_handler = None
+
+    def __enter__(self):
+        if os.name == "nt" or self._seconds <= 0:
+            return self
+        self._old_handler = signal.signal(signal.SIGALRM, self._handle)
+        signal.alarm(self._seconds)
+        return self
+
+    def __exit__(self, *_):
+        if os.name == "nt" or self._seconds <= 0:
+            return False
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, self._old_handler or signal.SIG_DFL)
+        return False
+
+    def _handle(self, signum, frame):
+        raise _AudioLoadTimeout(f"Audio load timed out after {self._seconds}s")
 
 class OnTheFlySTFTDataset(Dataset):
     """
@@ -219,11 +252,12 @@ class OnTheFlySTFTDataset(Dataset):
             last_path = path
 
             try:
-                wav, sr, ch_mismatch, sr_mismatch = load_waveform(
-                    path, 
-                    target_sample_rate=self.sample_rate, 
-                    expected_channels=self.audio_channels
-                )
+                with _file_load_timeout(DEFAULT_AUDIO_LOAD_TIMEOUT):
+                    wav, sr, ch_mismatch, sr_mismatch = load_waveform(
+                        path,
+                        target_sample_rate=self.sample_rate,
+                        expected_channels=self.audio_channels
+                    )
                 if ch_mismatch and not self._warned_channel_mismatch and self._epoch == 0:
                     self._warned_channel_mismatch = True
                 if sr_mismatch and not self._warned_sr_mismatch and self._epoch == 0:

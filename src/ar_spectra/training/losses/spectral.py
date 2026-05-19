@@ -111,13 +111,13 @@ class PhaseCosineDistance(nn.Module):
             return loss_tensor.sum(dim=reduce_dims, keepdim=self.keepdim)
 
 class ComplexSpectralConvergence(nn.Module):
-    def __init__(self, *, reduction: str = "mean", eps : float = 1e-6):
+    def __init__(self, *, reduction: str = "mean", eps: float = 1e-6):
         super().__init__()
         if reduction not in {"none", "mean", "sum"}:
             raise ValueError(f"reduction must be 'mean', 'sum', or 'none', but got {reduction}.")
         self.reduction = reduction
         self.eps = eps
-        
+
     def forward(self, S_hat: torch.Tensor, S_gt: torch.Tensor) -> torch.Tensor:
         S_hat = to_complex_spectrogram(S_hat)
         S_gt = to_complex_spectrogram(S_gt)
@@ -125,28 +125,27 @@ class ComplexSpectralConvergence(nn.Module):
             raise ValueError(f"Input shapes must match, but got {S_hat.shape} and {S_gt.shape}.")
         if not (torch.is_complex(S_hat) and torch.is_complex(S_gt)):
             raise TypeError("Input tensors S_hat and S_gt must be complex-valued.")
-        
+
         batch, channels, frequency, time = S_hat.shape
         S_hat = S_hat.reshape(batch*channels, frequency, time)
         S_gt = S_gt.reshape(batch*channels, frequency, time)
-        
+
         diff_flat = (S_gt - S_hat).reshape(batch*channels, -1)
-        gt_flat = S_gt.reshape(batch*channels, -1)
-        
+
         # MPS-safe: torch.linalg.norm on complex is unsupported on MPS.
         # .abs() first is mathematically identical: ||z||₂ = ||z.abs()||₂ = sqrt(Σ|zᵢ|²)
         num = torch.linalg.norm(diff_flat.abs(), ord=2, dim=1)
+        gt_flat = S_gt.reshape(batch*channels, -1)
         den = torch.linalg.norm(gt_flat.abs(), ord=2, dim=1).clamp_min(self.eps)
-        
-        sc = num / den  
-        
+        sc = num / den
+
         if self.reduction == "none":
             return sc
         elif self.reduction == "sum":
             return sc.sum()
         elif self.reduction == "mean":
             return sc.mean()
-        else: 
+        else:
             raise ValueError(f"Invalid reduction: {self.reduction}")
 
 class MultiResSpectralConvergence(nn.Module):

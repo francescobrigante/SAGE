@@ -169,6 +169,14 @@ class EMACallback(Callback):
             ok("Restored training weights after validation.", prefix="EMA")
             self._logged_swap_out = True
 
+    def on_load_checkpoint(self, trainer: pl.Trainer, pl_module: pl.LightningModule, checkpoint: dict) -> None:
+        # AutoencoderTrainingWrapper.on_load_checkpoint strips ema_autoencoder.* from state_dict
+        # and stashes them in checkpoint["_ema_state"] so we can recover them here.
+        ema_state = checkpoint.pop("_ema_state", {})
+        if ema_state:
+            self.ema_state_dict = ema_state
+            ok(f"Restored EMA state from checkpoint ({len(self.ema_state_dict)} tensors).", prefix="EMA")
+
     def on_save_checkpoint(self, trainer: pl.Trainer, pl_module: pl.LightningModule, checkpoint: dict) -> None:
         # Inject EMA weights cleanly into the checkpoint under 'ema_autoencoder.*'
         if self.ema_state_dict:

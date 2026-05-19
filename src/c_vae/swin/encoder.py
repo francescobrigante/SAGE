@@ -11,6 +11,7 @@ import torch.nn as nn
 from timm.layers import to_2tuple
 
 from ar_spectra.blocks.conv.normed import NormLinear
+from ar_spectra.blocks.conv.causal import SConv2d
 from ar_spectra.models.implementations.abstract_ae import AbstractEncoder
 from .swin_stage import SwinStage
 from .patches import PatchEmbed, PatchMerging
@@ -81,6 +82,7 @@ class SwinEncoder(AbstractEncoder):
         complex_activation: str = "ComplexGELU1d",
         abs_pos_embed: bool = False,
         mim_mask_ratio: float = 0.0,
+        use_smooth_convs: bool = False,
     ) -> None:
 
         super().__init__(input_size=in_channels, is_complex=is_complex)
@@ -178,6 +180,16 @@ class SwinEncoder(AbstractEncoder):
         self.norm = make_norm(self._final_dim, is_complex)
         self.head = NormLinear(self._final_dim, dimension, is_complex=is_complex)
 
+        # Optional conv stem (off by default).
+        # Operates at full STFT resolution before patchify — provides cross-patch context.
+        # Symmetric counterpart to the decoder's output_conv (both in STFT space).
+        if use_smooth_convs:
+            self.pre_embed_conv = SConv2d(
+                in_channels, in_channels,
+                kernel_size=3, stride=1,
+                is_complex=is_complex, causal=False, pad_mode='reflect',
+            )
+
         # Weight init
         self.apply(init_swin_weights)
         for stage in self.stages:
@@ -198,6 +210,9 @@ class SwinEncoder(AbstractEncoder):
 
         # freq crop from 1025 to 1024
         x = x[..., :self._freq_size, :]        # (B, 2, 1024, 128)
+        # Conv stem: cross-patch context at full STFT resolution before patchify
+        if hasattr(self, 'pre_embed_conv'):
+            x = self.pre_embed_conv(x)         # (B, 2, 1024, 128)
         # MIM augmentation: zero-out random patches at training only.
         # Disabled at eval/inference (self.training=False) and when mask_ratio=0.
         # The reconstruction target in the engine is the unmasked input → denoising-VAE.
@@ -205,7 +220,7 @@ class SwinEncoder(AbstractEncoder):
             x = random_patch_mask(x, self.patch_size, self.mim_mask_ratio)
         # PatchEmbed
         x = self.patch_embed(x)                # (B, 8192, 48)
-        # 4 Swin Stages 
+        # 4 Swin Stages
         for stage in self.stages:
             x = stage(x)
         # Stage 1 + PatchMerging:                 (B, 2048, 96)  grid (128, 16)

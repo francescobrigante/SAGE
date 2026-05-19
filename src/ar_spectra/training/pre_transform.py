@@ -11,19 +11,14 @@ def _spectrogram_to_complex(S: torch.Tensor) -> torch.Tensor:
         if Cx % 2 != 0:
             raise ValueError(f"Expected even channels (2C) for CAC input, got {Cx}")
         C = Cx // 2
-        Sview = S.view(B, C, 2, F, T)
-        real = Sview[:, :, 0, :, :].float()
-        imag = Sview[:, :, 1, :, :].float()
-        return torch.complex(real, imag)
+        # GROUPED layout: [Re_0..Re_{C-1}, Im_0..Im_{C-1}] — matches dataloader cat([S.real, S.imag])
+        return torch.complex(S[:, :C].float(), S[:, C:].float())
     if S.dim() == 3:
         Cx, F, T = S.shape
         if Cx % 2 != 0:
             raise ValueError(f"Expected even channels (2C) for CAC input, got {Cx}")
         C = Cx // 2
-        Sview = S.view(C, 2, F, T)
-        real = Sview[:, 0, :, :].float()
-        imag = Sview[:, 1, :, :].float()
-        return torch.complex(real, imag)
+        return torch.complex(S[:C].float(), S[C:].float())
     raise ValueError(f"Unsupported spectrogram shape for CAC conversion: {tuple(S.shape)}")
 
 
@@ -32,17 +27,10 @@ def _spectrogram_from_complex(S: torch.Tensor, like: torch.Tensor) -> torch.Tens
     if torch.is_complex(like):
         return S
     if like.dim() == 4:
-        B, C, F, T = S.shape
-        real = S.real
-        imag = S.imag
-        out = torch.stack((real, imag), dim=2).reshape(B, 2 * C, F, T)
-        return out.to(like.dtype)
+        # GROUPED layout: cat([Re, Im], dim=1) — mirrors dataloader and _unpack_complex
+        return torch.cat([S.real, S.imag], dim=1).to(like.dtype)
     if like.dim() == 3:
-        C, F, T = S.shape
-        real = S.real
-        imag = S.imag
-        out = torch.stack((real, imag), dim=1).reshape(2 * C, F, T)
-        return out.to(like.dtype)
+        return torch.cat([S.real, S.imag], dim=0).to(like.dtype)
     raise ValueError(f"Unsupported spectrogram shape for CAC restore: {tuple(like.shape)}")
 
 
