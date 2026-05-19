@@ -1,0 +1,22 @@
+# @package _global_
+# Experiment: HierViT Complex VAE on FMA medium STFT (complex path, 2 input channels).
+# Sets the model to hiervit_cplx_x64, disables CAC (we feed complex STFT directly),
+# and points W&B to project=c-vae (entity must be set via WANDB_ENTITY=ar_spectra env var).
+defaults:
+  - override /models: hiervit_cplx_x64
+
+data:
+  train_dataset:
+    cac: false
+  eval_dataset:
+    cac: false
+  model_channels: 2
+  demo:
+    istft_params:
+      cac: false
+
+trainer:
+  wandb:
+    project: c-vae
+    name: "HierViT_cplx_x16"
+    use_wandb: true
