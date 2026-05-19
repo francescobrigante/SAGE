@@ -83,9 +83,6 @@ def get_audio_files(
         # FMA naming: track 2 -> 000/000002.mp3
         folder = f"{tid:06d}"[:3]
         filename = f"{tid:06d}.mp3"
-        filepath = audio_dir / folder / filename
-        
-        if filepath.exists():
-            files.append(str(filepath))
-    
+        files.append(str(audio_dir / folder / filename))
+
     return files

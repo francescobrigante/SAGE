@@ -113,7 +113,8 @@ class SwinStage(nn.Module):
         """
         for blk in self.blocks:
             if self.use_checkpoint:
-                x = checkpoint.checkpoint(blk, x)   # (B, H*W, C)
+                # x = checkpoint.checkpoint(blk, x)   # (B, H*W, C)
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)   # (B, H*W, C)
             else:
                 x = blk(x)                          # (B, H*W, C)
                 

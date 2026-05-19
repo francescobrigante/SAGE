@@ -12,9 +12,10 @@ import torch.nn as nn
 from timm.layers import to_2tuple
 
 from ar_spectra.blocks.conv.normed import NormLinear
+from ar_spectra.blocks.conv.causal import SConv2d
 from ar_spectra.models.implementations.abstract_ae import AbstractDecoder
 from .swin_stage import SwinStage
-from .patches import PatchExpand, PatchUnembed
+from .patches import PatchExpand, PatchUnembed, SpatialConvSmooth
 from .utils import init_swin_weights, make_norm
 
 
@@ -69,6 +70,7 @@ class SwinDecoder(AbstractDecoder):
         use_checkpoint: bool = False,
         is_complex: bool = False,
         complex_activation: str = "ComplexGELU1d",
+        use_smooth_convs: bool = False,
     ) -> None:
         super().__init__(channels=channels, is_complex=is_complex)
 
@@ -156,6 +158,24 @@ class SwinDecoder(AbstractDecoder):
             is_complex=is_complex,
         )
 
+        # Optional spatial smoothers after PatchExpand (inter-stage) and PatchUnembed (output).
+        # Smooth pixel-shuffle discontinuities at patch boundaries.
+        if use_smooth_convs:
+            self.inter_stage_convs = nn.ModuleList([
+                SpatialConvSmooth(
+                    input_resolution=stage_resolutions[i + 1],
+                    dim=stage_dims[i + 1],
+                    kernel_size=3,
+                    is_complex=is_complex,
+                )
+                for i in range(self.num_stages - 1)
+            ])
+            self.output_conv = SConv2d(
+                in_channels, in_channels,
+                kernel_size=3, stride=1,
+                is_complex=is_complex, causal=False, pad_mode='reflect',
+            )
+
         # Weight init
         self.apply(init_swin_weights)
         for stage in self.stages:
@@ -179,20 +199,17 @@ class SwinDecoder(AbstractDecoder):
 
         x = self.input_proj(x)                          # (B, 128, 384)
 
-        # 4 Swin stages with PatchExpand between them
+        # Swin stages with PatchExpand between them (+ optional spatial smoothers)
         for i, stage in enumerate(self.stages):
             x = stage(x)
             if i < self.num_stages - 1:
                 x = self.patch_expands[i](x)
-        # Stage 4  (384, grid 32*4):               (B,  128, 384)
-        # └── PatchExpand → (192, grid 64*8):      (B,  512, 192)
-        # Stage 3  (192, grid 64*8):               (B,  512, 192)
-        # └── PatchExpand → ( 96, grid 128*16):    (B, 2048,  96)
-        # Stage 2  ( 96, grid 128*16):             (B, 2048,  96)
-        # └── PatchExpand → ( 48, grid 256*32):    (B, 8192,  48)
-        # Stage 1  ( 48, grid 256*32):             (B, 8192,  48)  (no expand)
+                if hasattr(self, 'inter_stage_convs'):
+                    x = self.inter_stage_convs[i](x)    # smooth pixel-shuffle artifacts
 
-        x = self.norm(x)                                # (B, 8192,  C=48)
+        x = self.norm(x)                                # (B, H*W, C_finest)
         x = self.patch_unembed(x)                       # (B, in_channels, F=1024, T=128)
+        if hasattr(self, 'output_conv'):
+            x = self.output_conv(x)                     # smooth frequency-domain block edges
 
         return x

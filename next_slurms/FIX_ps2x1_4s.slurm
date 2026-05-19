@@ -1,18 +1,19 @@
 #!/bin/bash
-#SBATCH --job-name=F_ps4x1_4s
+#SBATCH --job-name=FIX_ps2x1_4s
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
-#SBATCH --gres=gpu:4
+#SBATCH --ntasks-per-node=2
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=1-00:00:00
+#SBATCH --time=23:00:00
+#SBATCH --exclude=lrdn0003,lrdn0724
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-mkdir -p logs checkpoints/F_ps4x1_4s
+mkdir -p logs checkpoints/FIX_ps2x1_4s
 module load profile/deeplrn cineca-ai/4.3.0
 
 export OMP_NUM_THREADS=1
@@ -20,14 +21,13 @@ export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export NCCL_DEBUG=INFO
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 export http_proxy='http://login07:3150'
 export https_proxy='http://login07:3150'
 export WANDB_MODE=online
 export TF_CPP_MIN_LOG_LEVEL=3
 export WANDB_TAGS="$SLURM_JOB_NAME"
-export WANDB_RUN_ID=lnulgynr
-export WANDB_RESUME=must
 export WANDB_DIR=$WORK/C-VAE/.wandb_cache
 mkdir -p $WORK/C-VAE/.wandb_cache
 
@@ -38,11 +38,12 @@ set +a
 cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
+# latent_tokens = (512×128)/4^3 = 1024  →  latent_channels = 1024/1024 = 1  (×64 complex)
 srun python train.py \
     models=swin_cplx_4s_x64 \
-    "models.model.swin.patch_size=[4,1]" \
-    "models.model.swin.window_size=[32,16]" \
-    models.model.latent_channels=8 \
+    "models.model.swin.patch_size=[2,1]" \
+    "models.model.swin.window_size=[64,16]" \
+    models.model.latent_channels=1 \
     data.train_dataset.cac=false \
     data.eval_dataset.cac=false \
     data.demo.istft_params.cac=false \
@@ -66,6 +67,5 @@ srun python train.py \
     trainer.trainer.precision="bf16-mixed" \
     "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
-    trainer.trainer.ckpt_dir=checkpoints/F_ps4x1_4s \
-    trainer.wandb.name=F_ps4x1_4s \
-    ckpt_path=$WORK/C-VAE/runs/F_ps4x1_4s/2026-05-09_06-38-58/checkpoints/last.ckpt
+    trainer.trainer.ckpt_dir=checkpoints/FIX_ps2x1_4s \
+    trainer.wandb.name=FIX_ps2x1_4s

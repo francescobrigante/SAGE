@@ -192,7 +192,17 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             inference_cfg["train_stft_params"] = deepcopy(self.stft_params)
 
         checkpoint["inference_config"] = {k: v for k, v in inference_cfg.items() if v is not None}
-    
+
+    def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+        # EMACallback injects ema_autoencoder.* into state_dict at save time.
+        # Strip those keys here (before PL calls load_state_dict with strict=True)
+        # and stash them so EMACallback.on_load_checkpoint can recover them.
+        prefix = "ema_autoencoder."
+        state = checkpoint.get("state_dict", {})
+        ema_keys = [k for k in list(state) if k.startswith(prefix)]
+        if ema_keys:
+            checkpoint["_ema_state"] = {k[len(prefix):]: state.pop(k) for k in ema_keys}
+
     def configure_optimizers(self):
         """
         Create optimizers/schedulers using Hydra instantiate with _target_ format.

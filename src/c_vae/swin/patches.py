@@ -7,7 +7,7 @@
 #   PatchUnembed  tokens       → spectrogram (decoder output)
 # ===============================================================
 
-from typing import Tuple
+from typing import Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -301,3 +301,59 @@ class PatchExpand(nn.Module):
 
     def extra_repr(self) -> str:
         return f"input_resolution={self.input_resolution}, dim={self.dim}->{self.out_dim}"
+
+
+# --------------------------------------------------------------------------- #
+# SpatialConvSmooth                                                            #
+# --------------------------------------------------------------------------- #
+
+class SpatialConvSmooth(nn.Module):
+    """Token-space 2-D spatial smoother for Swin encoder/decoder.
+
+    Reshapes the flat token sequence (B, H*W, C) into a 2-D spatial map,
+    applies a stride-1 SConv2d with reflect padding, and reshapes back.
+    Used after PatchExpand (decoder) and PatchMerging (encoder) to smooth
+    the discontinuities introduced by pixel-shuffle operations at patch
+    boundaries before the next Swin stage processes the tokens.
+
+    Args:
+        input_resolution: (H, W) spatial grid of the incoming token sequence.
+        dim:              Token channel dimension C.
+        kernel_size:      Conv kernel (int or 2-tuple). Default 3.
+        is_complex:       If True, uses a complex64 Conv2d.
+    """
+
+    def __init__(
+        self,
+        input_resolution: Tuple[int, int],
+        dim: int,
+        kernel_size: Union[int, Tuple[int, int]] = 3,
+        is_complex: bool = False,
+    ) -> None:
+        super().__init__()
+        self.input_resolution = input_resolution
+        self.conv = SConv2d(
+            dim, dim,
+            kernel_size=kernel_size,
+            stride=1,
+            is_complex=is_complex,
+            causal=False,
+            pad_mode='reflect',
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (B, H*W, C)
+
+        Returns:
+            (B, H*W, C)
+        """
+        H, W = self.input_resolution
+        B, L, C = x.shape                                         # (B, H*W, C)
+        x = x.view(B, H, W, C).permute(0, 3, 1, 2)              # (B, C, H, W)
+        x = self.conv(x)                                          # (B, C, H, W)
+        return x.permute(0, 2, 3, 1).contiguous().view(B, L, C)   # (B, H*W, C)
+
+    def extra_repr(self) -> str:
+        return f"input_resolution={self.input_resolution}"
