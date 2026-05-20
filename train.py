@@ -11,8 +11,7 @@ import torch.profiler as torch_profiler
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer, seed_everything
 
-# A100 / Ampere optimizations: TF32 on Tensor Cores for fp32 matmul + cuDNN
-# autotune for the fixed-shape convs (PatchEmbed input is stable (B,2|4,1024,128)).
+torch.set_float32_matmul_precision('high')
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.benchmark = True
