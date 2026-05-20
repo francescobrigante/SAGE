@@ -10,17 +10,17 @@ optimizer:
   # weight_decay_exclude_1d: true  # uncomment to exclude bias + LayerNorm from weight decay
 
 scheduler:
-  # _target_: ar_spectra.training.schedulers.InverseLR
-  # inv_gamma: 15000
-  # power: 0.5
-  # warmup: 0.997
-  # --- CosineLRWithWarmup (step-based, matches Swin Transformer paper) ---
-  _target_: ar_spectra.training.schedulers.CosineLRWithWarmup
-  total_steps: 32000      # epochs * steps_per_epoch (80 * 400 for FMA-small batch=16)
-  warmup_steps: 1600      # ~5% of total_steps (~4 epochs)
-  min_lr: 1.0e-6
-  warmup_lr_init: 1.0e-7
+  _target_: ar_spectra.training.schedulers.InverseLR
+  inv_gamma: 200000       # SAO params: LR ~93% at 32k steps, ~70% at 200k steps
+  power: 0.5
+  warmup: 0.999           # exponential warmup, 90% peak reached at ~2400 steps
   interval: step          # Lightning calls scheduler.step() every batch
+  # --- CosineLRWithWarmup (step-based, matches Swin Transformer paper) ---
+  # _target_: ar_spectra.training.schedulers.CosineLRWithWarmup
+  # total_steps: 32000      # epochs * steps_per_epoch (80 * 400 for FMA-small batch=16)
+  # warmup_steps: 1600      # ~5% of total_steps (~4 epochs)
+  # min_lr: 1.0e-6
+  # warmup_lr_init: 1.0e-7
 
 trainer:
   precision: 32-true

@@ -1,26 +1,16 @@
 #!/bin/bash
 # ============================================================
-# H_ps64x1_3s_e256: PS=(64,1), Win=(4,32), 3 stage, embed=256
+# J3_ps64x1_3s_e256_l1: loss ablation on H_ps64x1_3s_e256
 #
-# GRID (PatchEmbed → PatchMerge ×2):
-#   Stage 0:  16×128  (1024/64  ×  128/1)
-#   Stage 1:   8×64
-#   Stage 2:   4×32   (bottleneck) — 128 token
+# BASE: PS=(64,1), Win=(4,32), 3 stages, embed=256
+#       encoder depths=[2,6,2], decoder depths=[2,6,2]
+#       Latent: 128×8 complex, KL~68
 #
-# GLOBAL ATTENTION — window=[4,32]:
-#   Stage 0: win [4,32]  — 4×4=16 windows
-#   Stage 1: win [4,32]  — 2×2=4 windows
-#   Stage 2: win [4,32] == grid [4,32] → global ✓
-#
-# RATIO & PARAMS:
-#   embed=256: ratio 2× patch input (64×1×2=128 complex) — canonical Swin-Tiny ratio
-#   Params: ~196M (Iso-parameter con H_ps32x1_e128 4-stage)
-#   Latent: 128×8 (seq=128, channels=8 complex) — Ottimo per LDM, KL atteso ~71
-#
-# PROX STEP:
-#   embed 64→256 | LR 1e-3 | MRSTFT | no KL annealing
+# LOSS: MRSTFT(1.0) + L1-waveform(0.5)
+#   Validates +3.6 dB L1-waveform finding (G_l1_ps16x1_4s, LR=1e-4)
+#   on the champion architecture at LR=1e-3.
 # ============================================================
-#SBATCH --job-name=H_ps64x1_3s_e256
+#SBATCH --job-name=J3_ps64x1_3s_e256_l1
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -33,7 +23,7 @@
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-mkdir -p logs checkpoints/H_ps64x1_3s_e256
+mkdir -p logs checkpoints/J3_ps64x1_3s_e256_l1
 module load profile/deeplrn cineca-ai/4.3.0
 
 export OMP_NUM_THREADS=1
@@ -81,8 +71,7 @@ srun python train.py \
     trainer.loss_config.spectral.weights.stft_mse=0.0 \
     trainer.loss_config.spectral.weights.mrstft=1.0 \
     trainer.loss_config.mrmel.weights.mrmel=0.0 \
-    trainer.scheduler.total_steps=120000 \
-    trainer.scheduler.warmup_steps=6000 \
+    "++trainer.loss_config.time.weights.l1=0.5" \
     trainer.optimizer.lr=1e-3 \
     trainer.optimizer.weight_decay=0.05 \
     "+trainer.optimizer.weight_decay_exclude_1d=true" \
@@ -91,7 +80,7 @@ srun python train.py \
     trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
     trainer.trainer.strategy=ddp_find_unused_parameters_true \
     trainer.trainer.precision="bf16-mixed" \
-    "+trainer.trainer.compile=true" \
+    "+trainer.trainer.compile=false" \
     trainer.wandb.use_wandb=true \
-    trainer.trainer.ckpt_dir=checkpoints/H_ps64x1_3s_e256 \
-    trainer.wandb.name=H_ps64x1_3s_e256
+    trainer.trainer.ckpt_dir=checkpoints/J3_ps64x1_3s_e256_l1 \
+    trainer.wandb.name=J3_ps64x1_3s_e256_l1
