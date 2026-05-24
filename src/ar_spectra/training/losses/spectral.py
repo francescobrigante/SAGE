@@ -225,6 +225,84 @@ class MultiResSpectralConvergence(nn.Module):
         elif reduction == "none":
             return sc_vals
 
+class STFTConsistencyLoss(nn.Module):
+    """
+    Self-supervised STFT consistency loss: ||STFT(ISTFT(S_hat)) - S_hat||.
+    Penalizes spectrograms that lie off the overlap-add manifold (valid STFT images).
+    Off-manifold spectrograms cause audible static noise after ISTFT reconstruction.
+    Does not require a target — purely self-supervised on the decoder output.
+    """
+
+    def __init__(
+        self,
+        n_fft: int = 2048,
+        hop_length: int = 512,
+        win_length: int = 2048,
+        center: bool = True,
+        normalized: bool = False,
+        reduction: str = "mean",
+        eps: float = 1e-8,
+    ):
+        super().__init__()
+        if reduction not in {"mean", "sum", "none"}:
+            raise ValueError(f"reduction must be 'mean', 'sum', or 'none', got {reduction}.")
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.win_length = win_length
+        self.center = center
+        self.normalized = normalized
+        self.reduction = reduction
+        self.eps = eps
+        self.register_buffer("_window", torch.hann_window(win_length))
+
+    def forward(self, S_hat: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            S_hat: (B, C, F, T) complex spectrogram from the decoder.
+        Returns:
+            Scalar consistency loss.
+        """
+        B, C, F, T = S_hat.shape
+        window = self._window.to(device=S_hat.device, dtype=torch.float32)
+
+        S_flat = S_hat.reshape(B * C, F, T)                          # (B*C, F, T)
+
+        # ISTFT: project onto waveform domain — this is the Griffin-Lim projection step
+        length = (T - 1) * self.hop_length                           # original waveform length
+        wav = torch.istft(
+            S_flat.to(torch.complex64),
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            win_length=self.win_length,
+            window=window,
+            center=self.center,
+            normalized=self.normalized,
+            length=length,
+        )                                                              # (B*C, length)
+
+        # STFT back: project onto the consistent spectrogram manifold
+        S_cons = torch.stft(
+            wav,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            win_length=self.win_length,
+            window=window,
+            center=self.center,
+            normalized=self.normalized,
+            return_complex=True,
+            pad_mode="reflect",
+        )                                                              # (B*C, F, T)
+
+        S_cons = S_cons.view(B, C, F, T).to(S_hat.dtype)
+
+        diff = (S_cons - S_hat).abs()                                 # (B, C, F, T) real
+        if self.reduction == "mean":
+            return diff.mean()
+        elif self.reduction == "sum":
+            return diff.sum()
+        return diff
+
+
 class MultiResolutionSpectrogramLoss(nn.Module):
     def __init__(
         self,

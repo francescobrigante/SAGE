@@ -86,9 +86,25 @@ loss_config:
         max_loss_clamp: 5.0      # bounds explosive spikes from near-zero bins
         log_mag: true             # log-magnitude L1 on each resolution
         factor_log_mag: 1.0
+    cosine_phase_loss:
+      config:
+        energy_weighted: true
+        energy_power: 1.0
+        eps: 1.0e-7
+        reduction: mean
+    stft_consistency:
+      config:
+        n_fft: 2048
+        hop_length: 512
+        win_length: 2048
+        center: true
+        normalized: false
+        reduction: mean
     weights:
       stft_mse: 1.0
       mrstft: 0.0         # disabled by default; run07+ override a 1.0 via CLI
+      cosine_phase_loss: 0.0
+      stft_consistency: 0.0
   mrmel:
     weights:
       mrmel: 0.3

@@ -133,14 +133,15 @@ class ComplexVAEBottleneck(VAEBottleneck):
         Strict positivity of γ is ensured by Softplus + SMALL_EPSILON.
 
     2) proper = False, apply_cholesky_constraints = False, apply_spectral_parameterization = False (DEFAULT):
-        Predicted parameters: μ (complex), log_σ (used only Re), c (complex)
-        The constraint σ > |c| is not explicitly enforced: the KL divergence term
-            -1/2 * log(σ² - |c|²) acts as a natural barrier function (→ +∞ as |c| → σ).
+        Predicted parameters: μ (complex), σ (softplus(slot_2.real) > 0; slot_2.imag unused), c (complex from slot_3)
+        The constraint σ > |c| IS enforced by construction: c = σ·tanh(|slot_3|)·∠slot_3,
+            so |c| = σ·tanh(|slot_3|) < σ always. The clamp in get_kl is a numerical safeguard only.
 
     3) proper = False, apply_cholesky_constraints = True:
-        Predicted parameters: μ (complex), log(l₁₁), l₂₁, log(l₂₂) (3 predicted because log(l₁₁) and l₂₁ are Re and Im)
+        Predicted parameters: μ (complex), l₁₁ = softplus(slot_2.real) > 0, l₂₁ = slot_2.imag, l₂₂ = softplus(|slot_3|) > 0
         The constraint σ > |c| is guaranteed by construction whenever l₁₁,l₂₂ > 0,
-            which is ensured by l₁₁ = exp(·) > 0 and l₂₂ = exp(·) > 0.
+            which is ensured by l₁₁ = softplus(·) > 0 and l₂₂ = softplus(·) > 0.
+        Both components of slot_2 carry gradient (l₁₁ via Re, l₂₁ via Im); l₂₂ uses |slot_3| so both Re and Im of slot_3 contribute.
 
     4) proper = False, apply_spectral_parameterization = True:
         Predicted parameters: μ (complex), λ₁ = softplus(slot_2.real), λ₂ = softplus(slot_2.imag), θ = slot_3.real
@@ -222,13 +223,12 @@ class ComplexVAEBottleneck(VAEBottleneck):
             slot_2 = x[:, m:2*m]
             slot_3 = x[:, 2*m:]
 
-            # Decode Cholesky factors from the encoder slots (log-parameterized diagonals):
-            # l11 = torch.exp(slot_2.real)  # > 0
-            # l22 = torch.exp(slot_3.real)  # > 0
-            l21 = slot_2.imag             # unconstrained
-
-            l11 = F.softplus(slot_2.real) + SMALL_EPSILON
-            l22 = F.softplus(slot_3.real) + SMALL_EPSILON
+            # Decode Cholesky factors from the encoder slots (softplus-parameterized diagonals):
+            # slot_2: l11 = Re (positive diagonal), l21 = Im (off-diagonal, unconstrained)
+            # slot_3: l22 uses |slot_3| so both Re and Im contribute; phase of slot_3 is redundant but carries gradient
+            l11 = F.softplus(slot_2.real) + SMALL_EPSILON  # > 0
+            l21 = slot_2.imag                              # unconstrained real
+            l22 = F.softplus(slot_3.abs()) + SMALL_EPSILON # > 0; uses both Re and Im of slot_3
 
             # Recover (σ, c) from Cholesky factors:
             # Key identity: σ² - |c|² = 4·l₁₁²·l₂₂² > 0

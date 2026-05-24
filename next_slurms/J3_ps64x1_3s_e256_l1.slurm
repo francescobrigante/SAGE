@@ -6,9 +6,10 @@
 #       encoder depths=[2,6,2], decoder depths=[2,6,2]
 #       Latent: 128×8 complex, KL~68
 #
-# LOSS: MRSTFT(1.0) + L1-waveform(0.5)
-#   Validates +3.6 dB L1-waveform finding (G_l1_ps16x1_4s, LR=1e-4)
-#   on the champion architecture at LR=1e-3.
+# LOSS: MRSTFT(1.0) + L1-waveform(5.0)
+#   Re-run with correct weight: original w=0.5 gave only ~2% contribution
+#   (too weak to affect gradients). w=5.0 gives ~15% stable contribution.
+#   Properly tests L1 waveform supervision on the champion architecture.
 # ============================================================
 #SBATCH --job-name=J3_ps64x1_3s_e256_l1
 #SBATCH --account=IscrC_AHNetBio
@@ -71,9 +72,8 @@ srun python train.py \
     trainer.loss_config.spectral.weights.stft_mse=0.0 \
     trainer.loss_config.spectral.weights.mrstft=1.0 \
     trainer.loss_config.mrmel.weights.mrmel=0.0 \
-    "++trainer.loss_config.time.weights.l1=0.5" \
+    "++trainer.loss_config.time.weights.l1=5.0" \
     trainer.optimizer.lr=1e-3 \
-    trainer.optimizer.weight_decay=0.05 \
     "+trainer.optimizer.weight_decay_exclude_1d=true" \
     "trainer.loss_config.spectral.mrstft.config.max_loss_clamp=20.0" \
     trainer.trainer.clip_grad_norm=20.0 \

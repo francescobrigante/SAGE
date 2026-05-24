@@ -10,7 +10,8 @@ from typing import Any, Dict, Optional, Union
 import torch
 
 from ar_spectra.models.autoencoder import AutoEncoder
-from ar_spectra.utils.console import ok
+from ar_spectra.models.implementations.oobleck_ae import SAOAutoencoder, build_sao_autoencoder
+from ar_spectra.utils.console import ok, warn
 from ar_spectra.utils.model_factory import patch_legacy_paths
 
 
@@ -171,6 +172,34 @@ def decode_audio(
     return waveform
 
 
+def _encode_sao(model: SAOAutoencoder, audio: torch.Tensor) -> torch.Tensor:
+    """Encode waveform with SAO Oobleck encoder, returning the VAE mean (deterministic).
+
+    Pads input to the nearest multiple of downsampling_ratio so the decoder can
+    reconstruct exactly that many samples — _decode_sao then trims to original length.
+    """
+    if audio.dim() == 2:
+        audio = audio.unsqueeze(0)
+    ratio = model.downsampling_ratio
+    T = audio.shape[-1]
+    pad = (-T) % ratio          # 0 if already aligned, else samples needed
+    if pad > 0:
+        audio = torch.nn.functional.pad(audio, (0, pad))
+    enc_out = model.encoder(audio)          # (B, 2*latent_dim, T_lat)
+    mean, _ = enc_out.chunk(2, dim=1)       # take mean — skip stochastic sampling
+    return mean                              # (B, latent_dim, T_lat)
+
+
+def _decode_sao(model: SAOAutoencoder, latents: torch.Tensor, target_length: Optional[int] = None) -> torch.Tensor:
+    """Decode latents with SAO Oobleck decoder, trimming to target_length if given."""
+    if latents.dim() == 2:
+        latents = latents.unsqueeze(0)
+    out = model.decoder(latents)             # (B, C, T)
+    if target_length is not None:
+        out = out[..., :target_length]
+    return out
+
+
 class EuleroEncodeDecode:
     """High-level checkpoint loader for inference.
 
@@ -199,39 +228,60 @@ class EuleroEncodeDecode:
 
         ckpt = torch.load(self.checkpoint_path, map_location="cpu")
         inference_cfg = ckpt.get("inference_config")
-        if not inference_cfg:
-            raise KeyError(
-                "Checkpoint does not contain 'inference_config'.\n"
-                "Regenerate the checkpoint with the updated training pipeline."
+        model_config = ckpt.get("model_config")
+
+        if inference_cfg:
+            # ── Swin / custom checkpoint (has inference_config) ──────────────
+            self._model_type = "swin"
+            model_cfg = inference_cfg.get("model")
+            if not isinstance(model_cfg, dict):
+                raise ValueError("inference_config.model must be a dictionary.")
+            model_cfg = patch_legacy_paths(model_cfg)
+            self.autoencoder = AutoEncoder.from_config(model_cfg)
+            stft_cfg = inference_cfg.get("stft_config")
+            if stft_cfg is not None:
+                self.autoencoder.set_stft_config(stft_cfg)
+            state_dict = ckpt.get("state_dict", ckpt)
+            cleaned_state = _extract_autoencoder_state(state_dict)
+            missing, unexpected = self.autoencoder.load_state_dict(cleaned_state, strict=strict)
+            if missing:
+                warnings.warn(f"Missing keys: {missing}")
+            if unexpected:
+                warnings.warn(f"Unexpected keys: {unexpected}")
+            self.sample_rate: Optional[int] = inference_cfg.get("sample_rate")
+            self.audio_channels: Optional[int] = inference_cfg.get("audio_channels")
+            self._stft_config = stft_cfg
+
+        elif model_config:
+            # ── SAO / Stable Audio Open checkpoint (has model_config) ────────
+            self._model_type = "sao"
+            enc_type = model_config.get("model", {}).get("encoder", {}).get("type", "")
+            if enc_type != "oobleck":
+                raise ValueError(f"model_config.model.encoder.type must be 'oobleck', got '{enc_type}'.")
+            self.autoencoder = build_sao_autoencoder(model_config)
+            state_dict = ckpt.get("state_dict", ckpt)
+            cleaned_state = _extract_autoencoder_state(state_dict)
+            missing, unexpected = self.autoencoder.load_state_dict(cleaned_state, strict=strict)
+            if missing:
+                warn(f"SAO load missing keys: {missing}")
+            if unexpected:
+                warn(f"SAO load unexpected keys: {unexpected}")
+            self.sample_rate = model_config.get("sample_rate")
+            self.audio_channels = (
+                model_config.get("audio_channels")
+                or model_config.get("model", {}).get("io_channels")
             )
+            self._stft_config = None  # SAO is waveform-domain: no STFT
 
-        model_cfg = inference_cfg.get("model")
-        if not isinstance(model_cfg, dict):
-            raise ValueError("inference_config.model must be a dictionary.")
-
-        model_cfg = patch_legacy_paths(model_cfg)
-
-        self.autoencoder = AutoEncoder.from_config(model_cfg)
-
-        stft_cfg = inference_cfg.get("stft_config")
-        if stft_cfg is not None:
-            self.autoencoder.set_stft_config(stft_cfg)
-
-        state_dict = ckpt.get("state_dict", ckpt)
-        cleaned_state = _extract_autoencoder_state(state_dict)
-        missing, unexpected = self.autoencoder.load_state_dict(cleaned_state, strict=strict)
-        if missing:
-            warnings.warn(f"Missing keys: {missing}")
-        if unexpected:
-            warnings.warn(f"Unexpected keys: {unexpected}")
+        else:
+            raise KeyError(
+                "Checkpoint contains neither 'inference_config' nor 'model_config'.\n"
+                "Swin checkpoints: regenerate with the updated training pipeline.\n"
+                "SAO checkpoints: must contain a 'model_config' key."
+            )
 
         self.autoencoder.to(self.device)
         self.autoencoder.eval()
-
-        # Store useful metadata
-        self.sample_rate: Optional[int] = inference_cfg.get("sample_rate")
-        self.audio_channels: Optional[int] = inference_cfg.get("audio_channels")
-        self._stft_config = stft_cfg
         
         ok(f"Loaded checkpoint: {self.checkpoint_path}", prefix="CHECKPOINT")
 
@@ -254,6 +304,8 @@ class EuleroEncodeDecode:
     def encode(self, audio: torch.Tensor, debug: bool = False) -> torch.Tensor:
         """Encode waveform to latents."""
         self.autoencoder.eval()
+        if self._model_type == "sao":
+            return _encode_sao(self.autoencoder, audio.to(self.device))
         return encode_audio(self.autoencoder, audio.to(self.device), debug=debug)
 
     @torch.no_grad()
@@ -265,6 +317,8 @@ class EuleroEncodeDecode:
     ) -> torch.Tensor:
         """Decode latents to waveform."""
         self.autoencoder.eval()
+        if self._model_type == "sao":
+            return _decode_sao(self.autoencoder, latents.to(self.device), target_length=target_length)
         return decode_audio(
             self.autoencoder,
             latents.to(self.device),

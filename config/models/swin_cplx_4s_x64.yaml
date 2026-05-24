@@ -68,6 +68,7 @@ model:
     abs_pos_embed: ${models.model.swin.abs_pos_embed}
     mim_mask_ratio: ${models.model.swin.mim_mask_ratio}
     fused_window_process: true
+    time_frames: 128                 # STFT time frames fed to the model (= dataset target_frames); drives all stage grids
     use_smooth_convs: false          # spatial smoother after PatchEmbed (and optionally after PatchMerging)
 
   # ── decoder ─────────────────────────────────────────────────────────────────
@@ -86,4 +87,5 @@ model:
     attn_drop_rate: ${models.model.swin.attn_drop_rate}
     drop_path_rate: ${models.model.swin.drop_path_rate}
     use_checkpoint: ${models.model.swin.use_checkpoint}
+    time_frames: 128                 # must match encoder value and dataset target_frames
     use_smooth_convs: false          # spatial smoother after each PatchExpand + output conv after PatchUnembed

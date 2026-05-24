@@ -1,17 +1,17 @@
 #!/bin/bash
 # ============================================================
-# J4_ps64x1_3s_e256_l1_mrmel: loss ablation on H_ps64x1_3s_e256
+# J6_ps64x1_3s_e256_cons: loss ablation on H_ps64x1_3s_e256
 #
 # BASE: PS=(64,1), Win=(4,32), 3 stages, embed=256
 #       encoder depths=[2,6,2], decoder depths=[2,6,2]
-#       Latent: 128×8 complex, KL~68
+#       Latent: 128x8 complex, KL~68
 #
-# LOSS: MRSTFT(1.0) + L1-waveform(0.5) + MR-mel(0.5)
-#   Extends J3 with mel-scale perceptual supervision.
-#   Tests whether MR-mel closes the perceptual quality gap of PS=(64,1).
-#   Single-variable change vs J3: +MR-mel at 0.5.
+# LOSS: MRSTFT(1.0) + stft_consistency(0.25)
+#   Consistency contribution: ~35-40% stable throughout training
+#   Self-supervised geometric constraint: enforces STFT(ISTFT(S)) = S.
+#   Orthogonal to MRSTFT -- tests whether valid-STFT regularisation helps.
 # ============================================================
-#SBATCH --job-name=J4_ps64x1_3s_e256_l1_mrmel
+#SBATCH --job-name=J6_ps64x1_3s_e256_cons
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -24,7 +24,7 @@
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-mkdir -p logs checkpoints/J4_ps64x1_3s_e256_l1_mrmel
+mkdir -p logs checkpoints/J6_ps64x1_3s_e256_cons
 module load profile/deeplrn cineca-ai/4.3.0
 
 export OMP_NUM_THREADS=1
@@ -71,8 +71,8 @@ srun python train.py \
     trainer.loss_config.bottleneck.weights.kl=1e-5 \
     trainer.loss_config.spectral.weights.stft_mse=0.0 \
     trainer.loss_config.spectral.weights.mrstft=1.0 \
-    trainer.loss_config.mrmel.weights.mrmel=0.5 \
-    "++trainer.loss_config.time.weights.l1=0.5" \
+    trainer.loss_config.spectral.weights.stft_consistency=0.25 \
+    trainer.loss_config.mrmel.weights.mrmel=0.0 \
     trainer.optimizer.lr=1e-3 \
     "+trainer.optimizer.weight_decay_exclude_1d=true" \
     "trainer.loss_config.spectral.mrstft.config.max_loss_clamp=20.0" \
@@ -82,5 +82,5 @@ srun python train.py \
     trainer.trainer.precision="bf16-mixed" \
     "+trainer.trainer.compile=false" \
     trainer.wandb.use_wandb=true \
-    trainer.trainer.ckpt_dir=checkpoints/J4_ps64x1_3s_e256_l1_mrmel \
-    trainer.wandb.name=J4_ps64x1_3s_e256_l1_mrmel
+    trainer.trainer.ckpt_dir=checkpoints/J6_ps64x1_3s_e256_cons \
+    trainer.wandb.name=J6_ps64x1_3s_e256_cons

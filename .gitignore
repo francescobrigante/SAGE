@@ -17,6 +17,7 @@ Swin-Transformer-main/
 tests/
 runs/
 stable_audio_baseline/
+papers/
 
 src/c_vae/swin/cuda_kernels/build/
 src/c_vae/swin/cuda_kernels/swin_window_process.egg-info/
