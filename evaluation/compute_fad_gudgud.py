@@ -46,13 +46,28 @@ _CLAP_AUDIO_CFG: dict = {
     "enable_fusion": False,
 }
 
-def collect_audio_files(directory: str, max_files=0) -> list[Path]:
+def _load_fma_test_ids(fma_csv_path: str | None) -> set[str] | None:
+    """Return set of zero-padded 6-digit FMA test track IDs, or None if CSV not provided."""
+    if not fma_csv_path or not Path(fma_csv_path).exists():
+        return None
+    try:
+        import pandas as pd
+        tracks = pd.read_csv(fma_csv_path, index_col=0, header=[0, 1])
+        test_ids = tracks[tracks[('set', 'split')] == 'test'].index.tolist()
+        return {f"{tid:06d}" for tid in test_ids}
+    except Exception as e:
+        warn(f"Failed to load FMA test IDs from {fma_csv_path}: {e}")
+        return None
+
+def collect_audio_files(directory: str, max_files=0, fma_test_ids: set[str] | None = None) -> list[Path]:
     root = Path(directory)
     results = []
     for f in root.rglob("*"):
         if f.suffix.lower() not in AUDIO_EXTS:
             continue
         if _SKIP_DIRS.intersection(f.relative_to(root).parts[:-1]):
+            continue
+        if fma_test_ids is not None and f.stem not in fma_test_ids:
             continue
         results.append(f)
     results = sorted(results)
@@ -74,15 +89,24 @@ def main():
     parser.add_argument("--preds-dir", required=True)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--max-files", type=int, default=0)
-    parser.add_argument("--cache-dir", type=Path, help="Unused for now by gudgud96 but accepted for API consistency.")
+    parser.add_argument("--cache-dir", type=Path, help="Per-checkpoint cache (predictions).")
+    parser.add_argument("--shared-cache-dir", type=Path, default=None,
+                        help="Shared cache for target embeddings (reused across checkpoints).")
     parser.add_argument("--model", default="clap-audio")
     parser.add_argument("--csv_out", type=Path, help="Path to save result CSV.")
+    parser.add_argument("--fma-csv-path", type=str, default=None,
+                        help="Path to FMA tracks.csv to restrict target files to the test split.")
     args = parser.parse_args()
+
+    # Load FMA test IDs for target filtering (preds are already scoped by evaluate.py)
+    fma_test_ids = _load_fma_test_ids(args.fma_csv_path)
+    if fma_test_ids:
+        info(f"FMA test-split filter active: {len(fma_test_ids)} test track IDs loaded.")
 
     # Collect and match
     pred_files = collect_audio_files(args.preds_dir, max_files=args.max_files)
     pred_stems = {f.stem for f in pred_files}
-    target_files = collect_audio_files(args.target_dir)
+    target_files = collect_audio_files(args.target_dir, fma_test_ids=fma_test_ids)
     target_matched = [f for f in target_files if f.stem in pred_stems]
 
     if not target_matched or not pred_files:
@@ -92,27 +116,26 @@ def main():
     info(f"FAD gudgud: Matched {len(target_matched)} target / {len(pred_files)} prediction files.")
 
     # 1. Initialize Model
-    # We use CLAPLaionModel(audio) to match gudgud's default behavior
     info(f"Initializing CLAP model for FAD...")
     with silence_output():
         ml = CLAPLaionModel("audio")
         fad = fadtk.FrechetAudioDistance(ml)
     ok("CLAP model initialized successfully.")
 
-    # 2. Batch Embed
-    # Use a unique subfolder for predictions based on the stem of the parent directory
-    ckpt_name = Path(args.preds_dir).parent.name
+    # 2. Batch Embed — targets go to shared cache, predictions to per-checkpoint cache
+    ckpt_name = Path(args.preds_dir).name
     pred_subfolder = f"preds_{ckpt_name}"
+    target_cache = args.shared_cache_dir if args.shared_cache_dir else args.cache_dir
 
-    info("Phase 1/2 - Embedding Target Files...")
-    batch_embed_files(fad, target_matched, batch_size=args.batch_size, cache_dir=args.cache_dir, subfolder="target")
+    info("Phase 1/2 - Embedding Target Files → shared cache...")
+    batch_embed_files(fad, target_matched, batch_size=args.batch_size, cache_dir=target_cache, subfolder="target")
 
     info(f"Phase 2/2 - Embedding Prediction Files into '{pred_subfolder}'...")
     batch_embed_files(fad, pred_files, batch_size=args.batch_size, cache_dir=args.cache_dir, subfolder=pred_subfolder)
 
     # 3. Compute Stats
     info("Computing Statistics...")
-    mu_t, cov_t = compute_stats(fad, target_matched, cache_dir=args.cache_dir, subfolder="target")
+    mu_t, cov_t = compute_stats(fad, target_matched, cache_dir=target_cache, subfolder="target")
     mu_p, cov_p = compute_stats(fad, pred_files, cache_dir=args.cache_dir, subfolder=pred_subfolder)
 
     if mu_t is None or mu_p is None:

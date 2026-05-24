@@ -4,9 +4,10 @@
 #   contains utils for printing messages to the console
 # ==============================================================
 
+import os as _os
 from rich.console import Console
 
-_console = Console()
+_console = Console(no_color=bool(_os.environ.get("NO_COLOR")))
 
 # Optional loggers and utilities
 try:

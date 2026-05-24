@@ -71,6 +71,7 @@ class SwinEncoder(AbstractEncoder):
         num_heads: List[int] = (3, 6, 12, 24),
         window_size: Union[int, Tuple[int, int]] = 8,
         patch_size: Union[int, Tuple[int, int]] = 4,
+        time_frames: int = 128,     # STFT time frames fed to the model (= dataset target_frames)
         dimension: int = 128,       # parameters_to_predict * latent_channels
         mlp_ratio: float = 4.0,
         drop_rate: float = 0.0,
@@ -109,7 +110,7 @@ class SwinEncoder(AbstractEncoder):
 
         # STFT dimensions after freq crop; must be divisible by patch_size
         self._freq_size: int = 1024  # 1025 Nyquist bin is always zeroed, safe to drop
-        self._time_size: int = 128
+        self._time_size: int = int(time_frames)
 
         # ------------------------------ PatchEmbed ------------------------------
         # (B, 2, 1024, 128) -> Conv2d and flatten -> (B, 8192, 48)  grid (256, 32)

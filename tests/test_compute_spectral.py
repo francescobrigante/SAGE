@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "evaluation"))
 
-from eval_dataloader import PairedEvalDataset, batch_align
+from eval_dataloader import PairedEvalDataset, batch_align, atomic_save_npy
 from ar_spectra.utils.audio import load_waveform
 from ar_spectra.training.losses.signal import STFTLoss
 
@@ -194,3 +194,147 @@ def test_per_file_csv_correct_columns_and_count(tmp_path):
     rows = list(csv.DictReader(open(csv_path)))
     assert len(rows) == 4
     assert set(rows[0].keys()) == {"target_file", "stft_loss", "si_sdr"}
+
+
+# ── T4: batch_align correctness ───────────────────────────────────────────────
+
+def test_batch_align_self_lag_zero():
+    """batch_align(x, x) should report lag=0 — no spurious shift on identical signals."""
+    wav = _sine_wav(duration=2.0)
+    t = wav.unsqueeze(0).to(torch.float64)  # [1, 1, T]
+    _, _, lags = batch_align(t, t.clone(), sr=SR)
+    assert int(lags[0].item()) == 0, (
+        f"Expected lag=0 for identical signals, got {lags[0].item()}"
+    )
+
+
+def test_batch_align_recovers_known_lag():
+    """batch_align should recover a known integer-sample delay in the prediction."""
+    delay_samples = 512
+    wav = _sine_wav(duration=2.0, freq=440.0)
+    T = wav.shape[-1]
+    # Prepend zeros and drop from the end to keep the same length
+    delayed = torch.cat([torch.zeros(1, delay_samples), wav[..., :-delay_samples]], dim=-1)
+
+    t = wav.unsqueeze(0).to(torch.float64)      # [1, 1, T]
+    p = delayed.unsqueeze(0).to(torch.float64)  # [1, 1, T]
+    _, _, lags = batch_align(t, p, sr=SR)
+    lag = int(lags[0].item())
+    # A delayed pred → positive lag (pred must be advanced to align with target)
+    assert abs(lag) == delay_samples, (
+        f"Expected lag={delay_samples} for {delay_samples}-sample delay, got {lag}"
+    )
+
+
+def test_batch_align_after_lag_signals_align():
+    """After batch_align, aligned identical-content signals should score near-perfect."""
+    delay_samples = 256
+    wav = _sine_wav(duration=2.0, freq=660.0)
+    delayed = torch.cat([torch.zeros(1, delay_samples), wav[..., :-delay_samples]], dim=-1)
+
+    t = wav.unsqueeze(0).to(torch.float64)
+    p = delayed.unsqueeze(0).to(torch.float64)
+    t_al, p_al, _ = batch_align(t, p, sr=SR)
+
+    device = torch.device("cpu")
+    dtype  = torch.float64
+    sisdr_fn = SISDRMetric().to(device)
+    with torch.no_grad():
+        sisdr = sisdr_fn(p_al.squeeze(1), t_al.squeeze(1)).item()
+    assert sisdr > 20.0, (
+        f"After lag correction, SI-SDR should be high; got {sisdr:.2f} dB"
+    )
+
+
+# ── T5: min-trim handles length mismatch (mirrors compute_spectral.py) ────────
+
+def _compute_pair_mintrim(target: torch.Tensor, pred: torch.Tensor):
+    """Mirror of compute_spectral.py: batch_align → min-trim → metrics."""
+    device = torch.device("cpu")
+    dtype  = torch.float64
+
+    sisdr_metric = SISDRMetric().to(device)
+    stft_loss_fn = STFTLoss(
+        fft_size=2048, hop_size=512, win_length=2048,
+        perceptual_weighting=True, w_log_mag=1.0, sample_rate=SR, reduction="none",
+    ).to(device=device, dtype=dtype)
+
+    t = target.unsqueeze(0).to(device=device, dtype=dtype)  # [1, 1, T_t]
+    p = pred.unsqueeze(0).to(device=device, dtype=dtype)    # [1, 1, T_p]
+
+    t_al, p_al, _ = batch_align(t, p, sr=SR)
+
+    T_min = min(t_al.shape[-1], p_al.shape[-1])
+    t_al = t_al[..., :T_min]
+    p_al = p_al[..., :T_min]
+
+    with torch.no_grad():
+        stft  = stft_loss_fn(p_al, t_al).flatten().mean().item()
+        sisdr = sisdr_metric(p_al.squeeze(1), t_al.squeeze(1)).item()
+
+    return stft, sisdr
+
+
+def test_min_trim_one_sample_mismatch():
+    """Pred 1 sample shorter (MP3 off-by-one): min-trim should still yield near-perfect metrics."""
+    wav    = _sine_wav(duration=1.5)
+    target = wav
+    pred   = wav[..., :-1]  # T - 1
+
+    stft, sisdr = _compute_pair_mintrim(target, pred)
+    assert sisdr > 30.0, f"1-sample mismatch: expected SI-SDR > 30 dB, got {sisdr:.2f}"
+    assert stft  < 0.05, f"1-sample mismatch: expected STFT < 0.05, got {stft:.4f}"
+
+
+def test_min_trim_large_mismatch():
+    """
+    Pred ~1024 samples shorter (SAO downsampling_ratio=2048 rounding scenario).
+    After min-trim, metrics should still indicate high quality for identical content.
+    """
+    sao_trim = 1024
+    wav    = _sine_wav(duration=2.0)
+    target = wav
+    pred   = wav[..., :-sao_trim]  # SAO encoder may shorten output by up to ratio samples
+
+    stft, sisdr = _compute_pair_mintrim(target, pred)
+    assert sisdr > 20.0, f"SAO-scale mismatch: expected SI-SDR > 20 dB, got {sisdr:.2f}"
+    assert stft  < 0.5,  f"SAO-scale mismatch: expected STFT < 0.5, got {stft:.4f}"
+
+
+# ── T6: atomic_save_npy data integrity ───────────────────────────────────────
+
+def test_atomic_save_npy_roundtrip(tmp_path):
+    """atomic_save_npy should write a valid .npy file with byte-identical contents."""
+    rng  = np.random.default_rng(42)
+    data = rng.random((512,)).astype(np.float32)
+    save_path = tmp_path / "emb.npy"
+
+    atomic_save_npy(save_path, data)
+
+    assert save_path.exists(), "Expected .npy file after atomic_save_npy"
+    loaded = np.load(save_path)
+    np.testing.assert_array_equal(loaded, data)
+
+
+def test_atomic_save_npy_no_leftover_tmp(tmp_path):
+    """No .tmp file should remain after a successful atomic_save_npy call."""
+    data      = np.zeros((64,), dtype=np.float32)
+    save_path = tmp_path / "emb.npy"
+
+    atomic_save_npy(save_path, data)
+
+    tmp_files = list(tmp_path.glob("*.tmp"))
+    assert not tmp_files, f"Leftover .tmp files after save: {tmp_files}"
+
+
+def test_atomic_save_npy_overwrites_existing(tmp_path):
+    """Calling atomic_save_npy twice on the same path should update the file."""
+    save_path = tmp_path / "emb.npy"
+    data_v1   = np.ones((32,), dtype=np.float32)
+    data_v2   = np.zeros((32,), dtype=np.float32)
+
+    atomic_save_npy(save_path, data_v1)
+    atomic_save_npy(save_path, data_v2)
+
+    loaded = np.load(save_path)
+    np.testing.assert_array_equal(loaded, data_v2)

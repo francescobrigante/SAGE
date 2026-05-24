@@ -63,6 +63,7 @@ class SwinDecoder(AbstractDecoder):
         num_heads: List[int] = (24, 12, 6, 3),
         window_size: Union[int, Tuple[int, int]] = 8,
         patch_size: Union[int, Tuple[int, int]] = 4,
+        time_frames: int = 128,     # STFT time frames (must match encoder and dataset target_frames)
         mlp_ratio: float = 4.0,
         drop_rate: float = 0.0,
         attn_drop_rate: float = 0.0,
@@ -92,7 +93,7 @@ class SwinDecoder(AbstractDecoder):
 
         # Stage grid resolutions
         _freq_size = 1024
-        _time_size = 128
+        _time_size = int(time_frames)
         base_h = _freq_size // ps_h // (2 ** (self.num_stages - 1))   # e.g. 32 for ps_h=4
         base_w = _time_size // ps_w // (2 ** (self.num_stages - 1))   # e.g.  4 for ps_w=4
         # e.g. stage_resolutions = [(32,4), (64,8), (128,16), (256,32)]

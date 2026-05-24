@@ -105,6 +105,20 @@ class LossWithTarget(LossModule):
         self.decay_weight()
         return self.weight * loss
 
+class SelfLoss(LossModule):
+    """Loss that operates on a single input tensor (self-supervised, no target needed)."""
+
+    def __init__(self, loss_module: nn.Module, input_key: str, name: str, weight: float = 1.0, decay: float = 1.0):
+        super().__init__(name=name, weight=weight, decay=decay)
+        self.loss_module = loss_module  # the underlying nn.Module (forward takes one arg)
+        self.input_key = input_key      # key into the info dict
+
+    def forward(self, info):
+        loss = self.loss_module(info[self.input_key])
+        self.decay_weight()
+        return self.weight * loss
+
+
 class MultiLoss(nn.Module):
     def __init__(self, losses: tp.List[LossModule]):
         super().__init__()

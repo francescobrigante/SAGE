@@ -56,11 +56,11 @@ class PairedEvalDataset(Dataset):
                 import pandas as pd
                 info(f"Filtering dataset to 'test' split using {self.fma_csv_path.name}...")
                 tracks = pd.read_csv(self.fma_csv_path, index_col=0, header=[0, 1])
-                # Filter strictly for 'test' split AND 'small' subset to get exactly 800 files
-                test_condition = (tracks[('set', 'split')] == 'test') & (tracks[('set', 'subset')] == 'small')
+                # Filter by 'test' split only — subset scoping is handled by which target_dir is passed
+                test_condition = tracks[('set', 'split')] == 'test'
                 test_tracks = tracks[test_condition].index.tolist()
                 test_ids = {f"{tid:06d}" for tid in test_tracks}
-                info(f"Found {len(test_ids)} official test tracks in 'small' subset.")
+                info(f"Found {len(test_ids)} official test tracks.")
             except Exception as e:
                 warn(f"Failed to parse FMA CSV: {e}")
 
@@ -228,8 +228,13 @@ def batch_align(target: torch.Tensor, pred: torch.Tensor, sr: int, max_shift_sec
     return aligned_target, aligned_pred, best_lags
 
 def atomic_save_npy(path: Path, data: np.ndarray):
-    """Save numpy array atomically to prevent race conditions."""
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    """Save numpy array atomically to prevent race conditions.
+
+    Uses a PID-unique tmp name so concurrent processes writing to the
+    shared target-embedding cache don't clobber each other's .tmp files.
+    os.replace is still atomic on POSIX for the final rename step.
+    """
+    tmp_path = path.with_suffix(f".{os.getpid()}.tmp")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(tmp_path, "wb") as f:
         np.save(f, data)

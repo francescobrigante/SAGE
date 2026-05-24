@@ -6,10 +6,10 @@ from typing import Optional
 
 from ..models.discriminators import EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, BigVGANDiscriminator
 from ..models.bottlenecks import VAEBottleneck
-from .losses.base import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss
+from .losses.base import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss, SelfLoss
 from .losses.perceptual import MelSpectrogramLoss, HubertLoss
 from .losses import signal
-from .losses.spectral import MultiResSpectralConvergence, ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance
+from .losses.spectral import MultiResSpectralConvergence, ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance, STFTConsistencyLoss
 from ar_spectra.utils.console import ok, warn
 
 def create_loss_modules_from_bottleneck(bottleneck, loss_config):
@@ -109,6 +109,14 @@ class LossManager(nn.Module):
                 configs_phase = phase_block.get("config", phase_block) or {}
                 self.phase_loss = PhaseCosineDistance(**configs_phase)
 
+        self.consistency_loss = None
+        if spectral_cfg and isinstance(spectral_cfg, dict) and "stft_consistency" in spectral_cfg:
+            cons_block = spectral_cfg.get("stft_consistency", {}) or {}
+            cons_cfg = cons_block.get("config", cons_block) or {}
+            if not isinstance(cons_cfg, dict):
+                raise TypeError(f"Expected dict for spectral.stft_consistency.config, got {type(cons_cfg).__name__}")
+            self.consistency_loss = STFTConsistencyLoss(**cons_cfg)
+
         self.discriminator = None
         if self.use_disc:
             disc_type = self.loss_config['discriminator']['type']
@@ -155,7 +163,16 @@ class LossManager(nn.Module):
                     LossWithTarget(
                         self.phase_loss,
                         target_key='encoder_input', input_key='sp_decoded',
-                        name='phase_cosine_loss', weight=phase_weight, decay=stft_loss_decay   
+                        name='phase_cosine_loss', weight=phase_weight, decay=stft_loss_decay
+                    )
+                )
+            if self.consistency_loss is not None:
+                cons_weight = spectral_cfg['weights'].get('stft_consistency', 0.0)
+                gen_loss_modules.append(
+                    SelfLoss(
+                        self.consistency_loss,
+                        input_key='sp_decoded_linear',  # must use linear (un-normed) spectrogram: power_norm breaks STFT consistency
+                        name='stft_consistency_loss', weight=cons_weight, decay=stft_loss_decay,
                     )
                 )
 
@@ -251,6 +268,8 @@ class LossManager(nn.Module):
                 params = {}
                 warn(f"Failed to extract hparams from {type(self.phase_loss).__name__}", prefix="LOSS")
             ok(f"{type(self.phase_loss).__name__}: {params}", prefix="LOSS")
+        if self.consistency_loss is not None:
+            ok(f"STFTConsistencyLoss: {self._extract_hparams(self.consistency_loss)}", prefix="LOSS")
         if spectral_cfg:
             ok(f"Spectral weights: {spectral_cfg.get('weights', {})}", prefix="LOSS")
 

@@ -1,17 +1,27 @@
 #!/bin/bash
 # ============================================================
-# J4_ps64x1_3s_e256_l1_mrmel: loss ablation on H_ps64x1_3s_e256
+# J_ps64x1_T256_3s_e256: PS=(64,1), Win=(4,64), 3 stage, embed=256
+# T=256 (2.96s) — temporal context ablation vs H_ps64x1_3s_e256 (T=128)
 #
-# BASE: PS=(64,1), Win=(4,32), 3 stages, embed=256
-#       encoder depths=[2,6,2], decoder depths=[2,6,2]
-#       Latent: 128×8 complex, KL~68
+# GRID (PatchEmbed → PatchMerge ×2):
+#   Stage 0:  16×256  (1024/64  ×  256/1)
+#   Stage 1:   8×128
+#   Stage 2:   4×64   (bottleneck) — 256 token [2× vs T=128]
 #
-# LOSS: MRSTFT(1.0) + L1-waveform(0.5) + MR-mel(0.5)
-#   Extends J3 with mel-scale perceptual supervision.
-#   Tests whether MR-mel closes the perceptual quality gap of PS=(64,1).
-#   Single-variable change vs J3: +MR-mel at 0.5.
+# GLOBAL ATTENTION — window=[4,64]:
+#   Stage 0: win [4,64]  — 4×4=16 windows  (same count as [4,32]@T=128 ✓)
+#   Stage 1: win [4,64]  — 2×2=4  windows
+#   Stage 2: win [4,64] == grid [4,64] → global ✓ (collapse guard)
+#
+# RATIO & PARAMS:
+#   embed=256: ratio 2× patch input (64×1×2=128 complex) — canonical Swin-Tiny ratio
+#   Params: ~194M (identico a H_ps64x1_3s_e256 — T e Win non influenzano params)
+#   Latent: 256×8 (seq=256, channels=8 complex) — ×64 compressione ✓
+#   Durata segment: (256-1)×512/44100 ≈ 2.96s
+#
+# ABLATION: unica variabile vs H_ps64x1_3s_e256 è T (128→256) e win (4×32→4×64)
 # ============================================================
-#SBATCH --job-name=J4_ps64x1_3s_e256_l1_mrmel
+#SBATCH --job-name=J_ps64x1_T256_3s_e256
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -20,11 +30,11 @@
 #SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=1-00:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-mkdir -p logs checkpoints/J4_ps64x1_3s_e256_l1_mrmel
+mkdir -p logs checkpoints/J_ps64x1_T256_3s_e256
 module load profile/deeplrn cineca-ai/4.3.0
 
 export OMP_NUM_THREADS=1
@@ -53,17 +63,22 @@ source $WORK/.envs/c_vae/bin/activate
 srun python train.py \
     models=swin_cplx_4s_x64 \
     "models.model.swin.patch_size=[64,1]" \
-    "models.model.swin.window_size=[4,32]" \
+    "models.model.swin.window_size=[4,64]" \
     "models.model.swin.embed_dim=256" \
     "models.model.encoder.depths=[2,6,2]" \
     "models.model.encoder.num_heads=[8,16,32]" \
+    "models.model.encoder.time_frames=256" \
     "models.model.decoder.depths=[2,6,2]" \
     "models.model.decoder.num_heads=[32,16,8]" \
+    "models.model.decoder.time_frames=256" \
     models.model.latent_channels=8 \
     data.train_dataset.cac=false \
     data.eval_dataset.cac=false \
     data.demo.istft_params.cac=false \
     data.model_channels=2 \
+    data.train_dataset.target_frames=256 \
+    data.eval_dataset.target_frames=256 \
+    data.demo.istft_params.target_frames=256 \
     "data.train_dataset.custom_metadata_kwargs.subset=medium" \
     "data.eval_dataset.custom_metadata_kwargs.subset=medium" \
     trainer.trainer.epochs=97 \
@@ -71,16 +86,16 @@ srun python train.py \
     trainer.loss_config.bottleneck.weights.kl=1e-5 \
     trainer.loss_config.spectral.weights.stft_mse=0.0 \
     trainer.loss_config.spectral.weights.mrstft=1.0 \
-    trainer.loss_config.mrmel.weights.mrmel=0.5 \
-    "++trainer.loss_config.time.weights.l1=0.5" \
+    trainer.loss_config.mrmel.weights.mrmel=0.0 \
     trainer.optimizer.lr=1e-3 \
+    trainer.optimizer.weight_decay=0.05 \
     "+trainer.optimizer.weight_decay_exclude_1d=true" \
     "trainer.loss_config.spectral.mrstft.config.max_loss_clamp=20.0" \
     trainer.trainer.clip_grad_norm=20.0 \
     trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
     trainer.trainer.strategy=ddp_find_unused_parameters_true \
     trainer.trainer.precision="bf16-mixed" \
-    "+trainer.trainer.compile=false" \
+    "+trainer.trainer.compile=true" \
     trainer.wandb.use_wandb=true \
-    trainer.trainer.ckpt_dir=checkpoints/J4_ps64x1_3s_e256_l1_mrmel \
-    trainer.wandb.name=J4_ps64x1_3s_e256_l1_mrmel
+    trainer.trainer.ckpt_dir=checkpoints/J_ps64x1_T256_3s_e256 \
+    trainer.wandb.name=J_ps64x1_T256_3s_e256

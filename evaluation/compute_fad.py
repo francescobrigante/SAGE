@@ -3,7 +3,11 @@ import os
 import sys
 import argparse
 import numpy as np
+import torch
+import torchaudio
+import torch.nn.functional as F
 from pathlib import Path
+from typing import Optional
 from tqdm import tqdm
 
 # Add project root
@@ -48,6 +52,68 @@ def compute_stats(fad, files: list[Path], cache_dir: Path = None, subfolder: str
     cov = np.cov(all_embs, rowvar=False)
     return mu, cov
 
+
+def embed_mert(ml, wav: torch.Tensor, src_sr: int, device) -> np.ndarray:
+    """In-memory MERT embedding from a [C, T] waveform tensor.
+
+    Returns (N_chunks, D) float16 array.
+    Imported by evaluate.py for the in-memory pipeline.
+    """
+    msr = 24000
+    if src_sr != msr:
+        wav = torchaudio.functional.resample(wav.cpu(), src_sr, msr)
+    wav_m = wav.mean(0)  # (T,)
+
+    cl, hl = 5 * msr, msr
+    chunks = [
+        F.pad(wav_m[s: s + cl], (0, max(0, cl - wav_m[s: s + cl].shape[0]))).cpu().numpy()
+        for s in range(0, wav_m.shape[0], hl)
+    ] or [np.zeros(cl, dtype=np.float32)]
+
+    inputs = ml.processor(chunks, sampling_rate=msr, return_tensors="pt", padding=True).to(device)
+    with torch.no_grad():
+        out = ml.model(**inputs, output_hidden_states=True)
+    layer = getattr(ml, "layer", 12)
+    return out.hidden_states[layer].mean(1).cpu().numpy().astype(np.float16)
+
+
+def compute_fad_from_embeddings(
+    ml,
+    target_files:  list[Path],
+    pred_emb_list: list[np.ndarray],
+    shared_cache:  Path,
+    csv_path:      Path,
+    model_label:   str,
+) -> Optional[float]:
+    """Compute FAD from cached target .npy embeddings + in-memory pred embeddings.
+
+    Used by evaluate.py — no WAV files are written to disk.
+    """
+    import csv as _csv
+    model_name: str = ml.name
+    t_embs = [
+        np.load(shared_cache / model_name / "target" / f"{f.stem}.npy").astype(np.float32)
+        for f in target_files
+        if (shared_cache / model_name / "target" / f"{f.stem}.npy").exists()
+    ]
+    if not t_embs:
+        warn(f"No cached target embeddings for {model_name} — FAD skipped.")
+        return None
+
+    all_t = np.concatenate(t_embs, axis=0)
+    all_p = np.concatenate(pred_emb_list, axis=0).astype(np.float32)
+    score = calc_frechet_distance(
+        all_t.mean(0), np.cov(all_t, rowvar=False),
+        all_p.mean(0), np.cov(all_p, rowvar=False),
+    )
+    ok(f"FAD ({model_label}): {score:.6f}")
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(csv_path, "w", newline="") as f:
+        w = _csv.DictWriter(f, fieldnames=["model", "score"])
+        w.writeheader()
+        w.writerow({"model": model_label, "score": score})
+    return score
+
 def main():
     parser = argparse.ArgumentParser(description="Batch-optimized FAD evaluation (fadtk).")
     parser.add_argument("--target-dir", default=str(DATA_PATH))
@@ -55,7 +121,9 @@ def main():
     parser.add_argument("--model", default="mert", choices=["vggish", "clap-laion", "clap-laion-audio", "mert"])
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--max-files", type=int, default=0)
-    parser.add_argument("--cache-dir", type=Path, help="Shared cache directory.")
+    parser.add_argument("--cache-dir", type=Path, help="Per-checkpoint cache (predictions).")
+    parser.add_argument("--shared-cache-dir", type=Path, default=None,
+                        help="Shared cache for target embeddings (reused across checkpoints).")
     parser.add_argument("--extensions", default="wav,mp3,flac")
     parser.add_argument("--csv_out", type=Path, help="Path to save result CSV.")
     args = parser.parse_args()
@@ -87,25 +155,25 @@ def main():
 
         fad = fadtk.FrechetAudioDistance(ml)
     
+    # pred_subfolder is unique per checkpoint; target cache may be shared across checkpoints
+    ckpt_name = Path(args.preds_dir).name
+    pred_subfolder = f"preds_{ckpt_name}"
+    target_cache = args.shared_cache_dir if args.shared_cache_dir else args.cache_dir
+
     # 1. Collect unique files
     target_files = sorted(list({p[0] for p in dataset.pairs}))
     pred_files = sorted(list({p[1] for p in dataset.pairs}))
 
-    # 2. Batch Embed
-    # Use a unique subfolder for predictions based on the stem of the parent directory
-    # (e.g. runs/eval_sweep/real64x/inference -> preds_real64x)
-    ckpt_name = Path(args.preds_dir).parent.name
-    pred_subfolder = f"preds_{ckpt_name}"
-    
-    info("Phase 1/2 - Embedding Target Files...")
-    batch_embed_files(fad, target_files, batch_size=args.batch_size, cache_dir=args.cache_dir, subfolder="target")
-    
+    # 2. Batch Embed — targets go to shared cache, predictions to per-checkpoint cache
+    info("Phase 1/2 - Embedding Target Files → shared cache...")
+    batch_embed_files(fad, target_files, batch_size=args.batch_size, cache_dir=target_cache, subfolder="target")
+
     info(f"Phase 2/2 - Embedding Prediction Files into '{pred_subfolder}'...")
     batch_embed_files(fad, pred_files, batch_size=args.batch_size, cache_dir=args.cache_dir, subfolder=pred_subfolder)
 
     # 3. Compute Stats
     info("Computing Statistics...")
-    mu_t, cov_t = compute_stats(fad, target_files, cache_dir=args.cache_dir, subfolder="target")
+    mu_t, cov_t = compute_stats(fad, target_files, cache_dir=target_cache, subfolder="target")
     mu_p, cov_p = compute_stats(fad, pred_files, cache_dir=args.cache_dir, subfolder=pred_subfolder)
 
     if mu_t is None or mu_p is None:

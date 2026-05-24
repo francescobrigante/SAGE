@@ -75,7 +75,7 @@ model_channels: 4
 
 demo:
   every_n_epochs: 1
-  max_demos: 7
+  max_demos: 10
   target_seconds: 2
   istft_params:
     sample_rate: ${config:DEFAULT_SAMPLE_RATE}
