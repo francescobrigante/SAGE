@@ -14,6 +14,7 @@ class MultiScaleSubbandCQTDiscriminator(nn.Module):
         super().__init__()
 
         self.cfg = cfg
+        self.use_checkpoint = cfg.get("use_checkpoint", False)
         # Using get with defaults
         self.cfg["cqtd_filters"] = self.cfg.get("cqtd_filters", 32)
         self.cfg["cqtd_max_filters"] = self.cfg.get("cqtd_max_filters", 1024)
@@ -48,8 +49,12 @@ class MultiScaleSubbandCQTDiscriminator(nn.Module):
         fmap_gs = []
 
         for disc in self.discriminators:
-            y_d_r, fmap_r = checkpoint(disc,reals)
-            y_d_g, fmap_g = checkpoint(disc,gens)
+            if self.use_checkpoint:
+                y_d_r, fmap_r = checkpoint(disc, reals, use_reentrant=False)
+                y_d_g, fmap_g = checkpoint(disc, gens, use_reentrant=False)
+            else:
+                y_d_r, fmap_r = disc(reals)
+                y_d_g, fmap_g = disc(gens)
             y_d_rs.append(y_d_r)
             fmap_rs.append(fmap_r)
             y_d_gs.append(y_d_g)

@@ -320,6 +320,7 @@ def main(cfg: DictConfig):
         stft_params=stft_params,
         optimizer_spec=OmegaConf.to_container(trainer_cfg.get("optimizer", {}), resolve=True) or None,
         scheduler_spec=OmegaConf.to_container(trainer_cfg.get("scheduler", {}), resolve=True) or None,
+        disc_optimizer_spec=OmegaConf.to_container(trainer_cfg.get("disc_optimizer") or OmegaConf.create({}), resolve=True) or None,
         pre_transform_spec=pre_transform_spec,
         accumulate_grad_batches=int(trainer_cfg.trainer.get("accumulate_grad_batches", 1)),
         clip_grad_norm=float(trainer_cfg.trainer.get("clip_grad_norm", 0.0)),

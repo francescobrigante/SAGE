@@ -17,6 +17,7 @@ class DACDiscriminator(nn.Module):
         fft_sizes: list = [2048, 1024, 512],
         sample_rate: int = 44100,
         bands: list = BANDS,
+        use_checkpoint: bool = False,
     ):
         """Discriminator that combines multiple discriminators.
 
@@ -35,6 +36,7 @@ class DACDiscriminator(nn.Module):
             Bands to run MRD at, by default `BANDS`
         """
         super().__init__()
+        self.use_checkpoint = use_checkpoint
         discs = []
         discs += [MPD(p, channels=channels) for p in periods]
         discs += [MSD(r, sample_rate=sample_rate, channels=channels) for r in rates]
@@ -50,7 +52,10 @@ class DACDiscriminator(nn.Module):
 
     def forward(self, x):
         x = self.preprocess(x)
-        fmaps = [checkpoint(d,x) for d in self.discriminators]
+        if self.use_checkpoint:
+            fmaps = [checkpoint(d, x, use_reentrant=False) for d in self.discriminators]
+        else:
+            fmaps = [d(x) for d in self.discriminators]
         return fmaps
 
 class DACGANLoss(nn.Module):

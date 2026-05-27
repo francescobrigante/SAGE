@@ -1,11 +1,11 @@
 """
 evaluation/utils.py
 Pure utilities for the in-memory evaluation pipeline.
-Contains: I/O helpers, spectral metrics, alignment, codec batching.
+Contains: I/O helpers, alignment, cache helpers, codec batching.
 
+Loss functions (si_sdr, stft_loss, cdpam_score) live in losses.py.
 Embedding functions (embed_clap, embed_mert, cosine_sim) live in
-compute_clap_score.py and compute_fad.py respectively, where they
-can also be called standalone for debugging.
+compute_clap_score.py and compute_fad.py respectively.
 """
 
 from __future__ import annotations
@@ -20,9 +20,8 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torchaudio
 
-from ar_spectra.utils.console import ok, warn
+from ar_spectra.utils.console import warn
 
 
 # ── I/O helpers ───────────────────────────────────────────────
@@ -141,73 +140,6 @@ def batch_align(target: torch.Tensor, pred: torch.Tensor, sr: int, max_shift_sec
         aligned_pred[i, :, :cur]   = y
 
     return aligned_target, aligned_pred, best_lags
-
-
-# ── Spectral metrics ──────────────────────────────────────────
-
-def si_sdr(target: torch.Tensor, pred: torch.Tensor) -> float:
-    """SI-SDR (dB) from [C, T] tensors on any device."""
-    t = target.flatten().float()
-    p = pred.flatten().float()
-    t = t - t.mean()
-    p = p - p.mean()
-    alpha = (p @ t) / (t @ t + 1e-8)
-    proj  = alpha * t
-    noise = p - proj
-    return 10.0 * torch.log10(proj.norm() ** 2 / (noise.norm() ** 2 + 1e-8)).item()
-
-
-def stft_loss(target: torch.Tensor, pred: torch.Tensor) -> float:
-    """Multi-resolution log-magnitude STFT L1 (3 scales) from [C, T] tensors."""
-    t_m = target.float().mean(0)
-    p_m = pred.float().mean(0)
-    loss, eps = 0.0, 1e-8
-    for n_fft in (512, 1024, 2048):
-        win = torch.hann_window(n_fft, device=target.device)
-        T_s = torch.stft(t_m, n_fft, n_fft // 4, n_fft, win, return_complex=True).abs()
-        P_s = torch.stft(p_m, n_fft, n_fft // 4, n_fft, win, return_complex=True).abs()
-        loss += (torch.log(T_s + eps) - torch.log(P_s + eps)).abs().mean().item()
-    return loss / 3.0
-
-
-# ── CDPAM ─────────────────────────────────────────────────────
-
-_cdpam_model = None
-
-
-def cdpam_score(target: torch.Tensor, pred: torch.Tensor, src_sr: int, device="cpu") -> float:
-    """CDPAM perceptual similarity from [C, T] tensors.
-
-    CDPAM loads weights with torch.load (weights_only=False required for older
-    safetensors-free checkpoints).  The model itself runs on `device`.
-    """
-    global _cdpam_model
-    if _cdpam_model is None:
-        _orig = torch.load
-        torch.load = lambda *a, **kw: _orig(*a, **{**kw, "weights_only": False})
-        try:
-            import cdpam
-            # cdpam.CDPAM accepts dev= kwarg; fall back to cpu if cuda fails
-            try:
-                _cdpam_model = cdpam.CDPAM(dev=str(device))
-            except Exception:
-                _cdpam_model = cdpam.CDPAM(dev="cpu")
-                device = "cpu"
-        finally:
-            torch.load = _orig
-
-    cdpam_sr = 22050
-    if src_sr != cdpam_sr:
-        rs = torchaudio.transforms.Resample(src_sr, cdpam_sr)
-        target = rs(target.cpu())
-        pred   = rs(pred.cpu())
-
-    # CDPAM expects float32 mono [1, T] scaled to [-32768, 32768]
-    t = target.float().cpu().mean(0, keepdim=True) * 32768.0
-    p = pred.float().cpu().mean(0, keepdim=True) * 32768.0
-    n = min(t.shape[-1], p.shape[-1])
-    with torch.no_grad():
-        return float(_cdpam_model.forward(t[..., :n], p[..., :n]).item())
 
 
 # ── Cache helpers ─────────────────────────────────────────────

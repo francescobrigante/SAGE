@@ -106,6 +106,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         stft_params: Optional[dict] = None,
         optimizer_spec: Optional[dict] = None,
         scheduler_spec: Optional[dict] = None,
+        disc_optimizer_spec: Optional[dict] = None,  # if set, used for disc instead of optimizer_spec
         pre_transform_spec: Optional[dict] = None,
         accumulate_grad_batches: int = 1,
     ):
@@ -124,6 +125,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         # Store raw specs (may be None). We normalize in configure_optimizers.
         self._optimizer_spec = optimizer_spec
         self._scheduler_spec = scheduler_spec
+        self._disc_optimizer_spec = disc_optimizer_spec  # None → falls back to _optimizer_spec
 
         self.engine = AutoencoderEngine(
             autoencoder=autoencoder,
@@ -263,14 +265,25 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
 
         opt_disc = None
         if self.use_disc and self.discriminator is not None:
-            opt_disc = hydra_instantiate(opt_spec, params=_build_param_groups(self.discriminator), _convert_="all")
+            # Use disc-specific spec if provided (e.g. different lr/betas/wd), else fall back to gen spec.
+            disc_spec_raw = self._disc_optimizer_spec if self._disc_optimizer_spec else opt_spec
+            disc_spec = deepcopy(disc_spec_raw) if isinstance(disc_spec_raw, dict) else deepcopy(opt_spec)
+            if "_target_" not in disc_spec:
+                disc_spec["_target_"] = opt_spec.get("_target_", default_opt["_target_"])
+            disc_spec.pop("weight_decay_exclude_1d", None)  # consumed for gen; disc always uses flat param list
+            # Discriminator always uses a flat parameter list so that the optimizer-level weight_decay
+            # from disc_spec is applied uniformly — no per-group override that would inherit gen's wd.
+            opt_disc = hydra_instantiate(disc_spec, params=list(self.discriminator.parameters()), _convert_="all")
+            disc_lr_log = disc_spec.get("lr", "?")
+        else:
+            disc_lr_log = "n/a"
 
         # Create schedulers via Hydra instantiate
         sched_gen = hydra_instantiate(sched_spec, optimizer=opt_gen, _convert_="all") if sched_spec else None
         sched_disc = hydra_instantiate(sched_spec, optimizer=opt_disc, _convert_="all") if (sched_spec and opt_disc is not None) else None
 
         ok(
-            f"Optimizer: {opt_spec['_target_']} (wd_exclude_1d={wd_exclude}), "
+            f"Optimizer: {opt_spec['_target_']} gen_lr={opt_spec.get('lr','?')} disc_lr={disc_lr_log} (wd_exclude_1d={wd_exclude}), "
             f"Scheduler: {sched_spec['_target_']} (interval={sched_interval})",
             prefix="TRAINER",
         )

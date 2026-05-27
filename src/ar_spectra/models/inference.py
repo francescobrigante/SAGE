@@ -10,9 +10,28 @@ from typing import Any, Dict, Optional, Union
 import torch
 
 from ar_spectra.models.autoencoder import AutoEncoder
-from ar_spectra.models.implementations.oobleck_ae import SAOAutoencoder, build_sao_autoencoder
 from ar_spectra.utils.console import ok, warn
 from ar_spectra.utils.model_factory import patch_legacy_paths
+
+
+def _normalize_ae_key_value(key: str, value: Any) -> tuple[str, Any]:
+    """Strip torch.compile wrapper prefix and convert _real_view back to complex.
+
+    make_complex_model_ddp_compatible renames complex params from ``weight``
+    to ``weight_real_view`` (float32 view_as_real).  torch.compile wraps the
+    module under ``_orig_mod.``.  Both must be undone at inference time so
+    the state dict matches the freshly-built AutoEncoder.
+    """
+    if key.startswith("_orig_mod."):
+        key = key[len("_orig_mod."):]
+    if key.endswith("_real_view") and isinstance(value, torch.Tensor):
+        orig_key = key[: -len("_real_view")]
+        try:
+            value = torch.view_as_complex(value.contiguous())
+            key = orig_key
+        except Exception:
+            pass  # keep original name/value if conversion fails
+    return key, value
 
 
 def _extract_autoencoder_state(state_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -21,17 +40,52 @@ def _extract_autoencoder_state(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     Lightning checkpoints store model weights under entries such as
     ``"engine.autoencoder.encoder.0.weight"``.  Inference code only owns the
     raw :class:`AutoEncoder`, so we project those keys back to the namespace the
-    model expects.  If we fail to find any prefixed keys we fall back to the
-    original dictionary, which covers plain ``state_dict`` exports.
+    model expects.
+
+    Handles two extra transformations needed for Swin C-VAE checkpoints:
+    - ``_orig_mod.`` prefix added by ``torch.compile``
+    - ``_real_view`` suffix added by ``make_complex_model_ddp_compatible`` for
+      NCCL/DDP compatibility; converted back with ``torch.view_as_complex``.
+
+    Prioritizes Exponential Moving Average (EMA) weights if present in the
+    checkpoint for maximum reconstruction fidelity.
     """
-    prefixes = ("engine.autoencoder.", "autoencoder.")
+    # 1. Try to extract EMA weights (preferred for evaluation)
+    ema_prefixes = (
+        "engine.autoencoder_ema.ema_model.",
+        "autoencoder_ema.ema_model.",
+        "autoencoder_ema.online_model.",   # SAO / stable-audio-tools EMA
+        "ema_autoencoder._orig_mod.",      # Swin compiled checkpoint
+        "ema_autoencoder.",                # Swin standard checkpoint
+    )
     cleaned: Dict[str, Any] = {}
 
+    for key, value in state_dict.items():
+        for prefix in ema_prefixes:
+            if key.startswith(prefix):
+                stripped = key[len(prefix):]
+                norm_key, norm_value = _normalize_ae_key_value(stripped, value)
+                cleaned[norm_key] = norm_value
+                break
+
+    if cleaned:
+        print("[CHECKPOINT] Loaded autoencoder weights from EMA")
+        return cleaned
+
+    # 2. Fallback to standard autoencoder weights if EMA is not present
+    # List longer prefixes first so torch.compile variant matches before the plain one.
+    prefixes = (
+        "engine.autoencoder._orig_mod.",  # compiled
+        "engine.autoencoder.",
+        "autoencoder.",
+    )
     for key, value in state_dict.items():
         matched = False
         for prefix in prefixes:
             if key.startswith(prefix):
-                cleaned[key[len(prefix):]] = value
+                stripped = key[len(prefix):]
+                norm_key, norm_value = _normalize_ae_key_value(stripped, value)
+                cleaned[norm_key] = norm_value
                 matched = True
                 break
         if not matched and (
@@ -39,7 +93,8 @@ def _extract_autoencoder_state(state_dict: Dict[str, Any]) -> Dict[str, Any]:
             or key.startswith("decoder.")
             or key.startswith("bottleneck.")
         ):
-            cleaned[key] = value
+            norm_key, norm_value = _normalize_ae_key_value(key, value)
+            cleaned[norm_key] = norm_value
 
     return cleaned if cleaned else state_dict
 
@@ -172,34 +227,6 @@ def decode_audio(
     return waveform
 
 
-def _encode_sao(model: SAOAutoencoder, audio: torch.Tensor) -> torch.Tensor:
-    """Encode waveform with SAO Oobleck encoder, returning the VAE mean (deterministic).
-
-    Pads input to the nearest multiple of downsampling_ratio so the decoder can
-    reconstruct exactly that many samples — _decode_sao then trims to original length.
-    """
-    if audio.dim() == 2:
-        audio = audio.unsqueeze(0)
-    ratio = model.downsampling_ratio
-    T = audio.shape[-1]
-    pad = (-T) % ratio          # 0 if already aligned, else samples needed
-    if pad > 0:
-        audio = torch.nn.functional.pad(audio, (0, pad))
-    enc_out = model.encoder(audio)          # (B, 2*latent_dim, T_lat)
-    mean, _ = enc_out.chunk(2, dim=1)       # take mean — skip stochastic sampling
-    return mean                              # (B, latent_dim, T_lat)
-
-
-def _decode_sao(model: SAOAutoencoder, latents: torch.Tensor, target_length: Optional[int] = None) -> torch.Tensor:
-    """Decode latents with SAO Oobleck decoder, trimming to target_length if given."""
-    if latents.dim() == 2:
-        latents = latents.unsqueeze(0)
-    out = model.decoder(latents)             # (B, C, T)
-    if target_length is not None:
-        out = out[..., :target_length]
-    return out
-
-
 class EuleroEncodeDecode:
     """High-level checkpoint loader for inference.
 
@@ -253,25 +280,14 @@ class EuleroEncodeDecode:
             self._stft_config = stft_cfg
 
         elif model_config:
-            # ── SAO / Stable Audio Open checkpoint (has model_config) ────────
-            self._model_type = "sao"
-            enc_type = model_config.get("model", {}).get("encoder", {}).get("type", "")
-            if enc_type != "oobleck":
-                raise ValueError(f"model_config.model.encoder.type must be 'oobleck', got '{enc_type}'.")
-            self.autoencoder = build_sao_autoencoder(model_config)
-            state_dict = ckpt.get("state_dict", ckpt)
-            cleaned_state = _extract_autoencoder_state(state_dict)
-            missing, unexpected = self.autoencoder.load_state_dict(cleaned_state, strict=strict)
-            if missing:
-                warn(f"SAO load missing keys: {missing}")
-            if unexpected:
-                warn(f"SAO load unexpected keys: {unexpected}")
-            self.sample_rate = model_config.get("sample_rate")
-            self.audio_channels = (
-                model_config.get("audio_channels")
-                or model_config.get("model", {}).get("io_channels")
+            # ── SAO / Stable Audio Open checkpoint ────────────────────────────
+            # EuleroEncodeDecode is Swin-only. SAO checkpoints must be evaluated
+            # with evaluate_sao.py which uses stable_audio_tools APIs directly.
+            raise ValueError(
+                f"Checkpoint {self.checkpoint_path} is a Stable Audio Open (SAO) "
+                "checkpoint (contains 'model_config' key). "
+                "Use evaluation/evaluate_sao.py for SAO evaluation."
             )
-            self._stft_config = None  # SAO is waveform-domain: no STFT
 
         else:
             raise KeyError(
@@ -304,8 +320,6 @@ class EuleroEncodeDecode:
     def encode(self, audio: torch.Tensor, debug: bool = False) -> torch.Tensor:
         """Encode waveform to latents."""
         self.autoencoder.eval()
-        if self._model_type == "sao":
-            return _encode_sao(self.autoencoder, audio.to(self.device))
         return encode_audio(self.autoencoder, audio.to(self.device), debug=debug)
 
     @torch.no_grad()
@@ -317,8 +331,6 @@ class EuleroEncodeDecode:
     ) -> torch.Tensor:
         """Decode latents to waveform."""
         self.autoencoder.eval()
-        if self._model_type == "sao":
-            return _decode_sao(self.autoencoder, latents.to(self.device), target_length=target_length)
         return decode_audio(
             self.autoencoder,
             latents.to(self.device),

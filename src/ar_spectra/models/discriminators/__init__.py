@@ -9,3 +9,11 @@ from .oobleck import OobleckDiscriminator, MPD, MSD, MRD
 from .subband import MultiScaleSubbandCQTDiscriminator
 from .dac import DACDiscriminator, DACGANLoss
 from .bigvgan import BigVGANDiscriminator
+from .transformer import (
+    MultiTransformerDiscriminator,
+    TransformerMultiSTFTDiscriminator,
+    TransformerMultiPatchedDiscriminator,
+    TransformerMultiWaveletDiscriminator,
+    TransformerMultiChromaDiscriminator,
+)
+from .hil import HILDiscriminator, MultiFilterBankDiscriminator

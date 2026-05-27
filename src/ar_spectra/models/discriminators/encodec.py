@@ -3,7 +3,7 @@
 # EnCodec family discriminators (e.g., multi-resolution).
 # =============================================================================
 
-from .types import IndividualDiscriminatorOut, get_hinge_losses
+from .types import IndividualDiscriminatorOut, get_hinge_losses, get_relativistic_losses
 import torch
 import torch.nn as nn
 import numpy as np
@@ -23,6 +23,9 @@ class DiscriminatorSTFT(nn.Module):
                  activation: str = 'LeakyReLU', activation_params: dict = {'negative_slope': 0.2},
                  spec_scale_pow=0.0, **kwargs):
         super().__init__()
+        # DDP Compatibility: Default to False. Reentrant checkpointing (use_reentrant=True)
+        # causes DDP crash because of nested autograd hooks.
+        self.use_checkpoint = kwargs.get('use_checkpoint', False)
         assert len(kernel_size) == 2
         assert len(stride) == 2
         self.filters = filters
@@ -70,10 +73,16 @@ class DiscriminatorSTFT(nn.Module):
         z = torch.cat([z.real, z.imag], dim=1)
         z = rearrange(z, 'b c w t -> b c t w')
         for i, layer in enumerate(self.convs):
-            z = checkpoint(layer, z)
+            if self.use_checkpoint:
+                z = checkpoint(layer, z, use_reentrant=False)
+            else:
+                z = layer(z)
             z = self.activation(z)
             fmap.append(z)
-        z = checkpoint(self.conv_post, z)
+        if self.use_checkpoint:
+            z = checkpoint(self.conv_post, z, use_reentrant=False)
+        else:
+            z = self.conv_post(z)
         return z, fmap
 
 
@@ -134,8 +143,7 @@ class EncodecDiscriminator(nn.Module):
             if self.loss_type == "hinge":
                 _dis, _adv = get_hinge_losses(logits_true[i], logits_fake[i])
             else:  # rpgan
-                print("NameError, implementation yet to be imported from stable_audio in ar-spectra")
-                #_dis, _adv = get_relativistic_losses(logits_true[i], logits_fake[i])
+                _dis, _adv = get_relativistic_losses(logits_true[i], logits_fake[i])
 
             dis_loss = dis_loss + _dis 
             adv_loss = adv_loss + _adv

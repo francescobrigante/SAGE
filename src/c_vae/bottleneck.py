@@ -211,7 +211,7 @@ class ComplexVAEBottleneck(VAEBottleneck):
             slot_2 = x[:, m:2*m]
             slot_3 = x[:, 2*m:]
 
-            sigma  = F.softplus(slot_2.real) + SMALL_EPSILON
+            sigma  = F.softplus(slot_2.real.clamp(max=10.0)) + SMALL_EPSILON  # clamp prevents bf16 overflow → sigma=inf → KL=inf−inf=NaN
             c_mag = slot_3.abs()
             c = sigma * torch.tanh(c_mag) * slot_3 / (c_mag + SMALL_EPSILON)
             kl, kl_per_dim = get_kl(mu, sigma, c)
