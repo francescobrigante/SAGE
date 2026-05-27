@@ -1,14 +1,13 @@
 #!/bin/bash
 # ============================================================
-# SA2-VAE Oobleck (real) - channels=72, x64, 100k steps, 4 GPU (A100)
+# SA2-VAE Oobleck (real) - channels=128, x64, with Encodec discriminator
 #
 # Hardware: 1 Nodo, 4 GPU DDP
-# Dati: FMA-medium
-# Steps totali = 100k
-# Iso-parameter vs Swin cplx x64: 49.85M scalar params.
+# Dati: FMA-large
+# Config: fma_vae_discrim.json (adv=0.1, feat_match=5.0, kl=1e-4)
 # ============================================================
 
-#SBATCH --job-name=train_SAO_original_noDisc
+#SBATCH --job-name=train_SAO_original_Disc
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -17,9 +16,12 @@
 #SBATCH --gres=gpu:4                   # 4x A100 64GB
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=2-00:00:00
+#SBATCH --time=1-10:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
+
+mkdir -p logs
+mkdir -p checkpoints/sa2_x64_160M_disc
 
 module load profile/deeplrn cineca-ai/4.3.0
 
@@ -44,20 +46,17 @@ set +a
 cd $WORK/C-VAE/stable_audio_baseline
 source $WORK/.envs/sa2/bin/activate
 
-echo "============================================================"
-echo "Starting SA2-VAE (Oobleck real) on 4x A100 DDP"
-echo "Model  : channels=128, 160M params, x64 compression"
-echo "Steps  : 500000  (FMA-large, batch=4/GPU x 4 GPU = 16 global)"
-echo "============================================================"
-
 srun python train_fma.py \
-    --model-config configs/model/fma_vae_nodiscrim.json \
+    --model-config configs/model/fma_vae_discrim.json \
     --batch-size 4 \
     --num-workers 8 \
-    --save-dir checkpoints/sa2_x64_160M \
-    --name SAO160M_noDisc \
+    --save-dir checkpoints/sa2_x64_160M_disc \
+    --name SAO160M_Disc \
     --num-gpus 4 \
     --precision bf16-mixed \
     --checkpoint-every 50000 \
     --val-every 2500 \
     --subset large \
+    --ckpt-path $WORK/C-VAE/runs/SAO160M_Disc/2026-05-24_21-55-56/checkpoints/sa2-step=200000.ckpt \
+    --wandb-id tks7fffq \
+    --run-dir $WORK/C-VAE/runs/SAO160M_Disc/2026-05-24_21-55-56

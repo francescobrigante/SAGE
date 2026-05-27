@@ -4,10 +4,19 @@ device: ${config:DEFAULT_DEVICE}
 
 optimizer:
   _target_: torch.optim.AdamW
-  lr: 3e-4
+  lr: 1e-3
   weight_decay: 1e-4
   betas: [0.9, 0.98]
-  # weight_decay_exclude_1d: true  # uncomment to exclude bias + LayerNorm from weight decay
+  weight_decay_exclude_1d: true  # exclude bias + LayerNorm from weight decay
+
+# disc_optimizer: separate AdamW for discriminator (overrides `optimizer` fields for disc only).
+# If omitted, disc uses the same spec as the generator.
+# SAO uses: lr=3e-4, betas=[0.8,0.99], weight_decay=1e-3  (disc_lr = 2× gen_lr in SAO).
+# disc_optimizer:
+#   _target_: torch.optim.AdamW
+#   lr: 3e-4
+#   betas: [0.8, 0.99]
+#   weight_decay: 1e-3
 
 scheduler:
   _target_: ar_spectra.training.schedulers.InverseLR
@@ -45,8 +54,8 @@ trainer:
   accumulate_grad_batches: 1
   strategy: auto
   num_gpus: 1
-  clip_grad_norm: 5.0               # Swin V2 default; complex nets need more headroom (ComplexLayerNorm + hermitian attention)
-  kl_annealing_epochs: 20
+  clip_grad_norm: 20.0
+  kl_annealing_epochs: 0
   terminate_on_nan: true
   detect_anomaly: false
   # gradient_clip_val/algorithm rimossi: non supportati con manual optimization
@@ -83,7 +92,7 @@ loss_config:
       config:
         fft_sizes:  [2048, 1024, 512, 256, 128, 64]   # 6 risoluzioni SAO (32 omesso: instabile)
         hop_sizes:  [512,  256,  128, 64,  32,  16]   # fft/4 — coerente con SAO
-        max_loss_clamp: 5.0      # bounds explosive spikes from near-zero bins
+        max_loss_clamp: 20.0      # bounds explosive spikes from near-zero bins
         log_mag: true             # log-magnitude L1 on each resolution
         factor_log_mag: 1.0
     cosine_phase_loss:

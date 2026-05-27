@@ -4,7 +4,10 @@
 import torch.nn as nn
 from typing import Optional
 
-from ..models.discriminators import EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, BigVGANDiscriminator
+from ..models.discriminators import (
+    EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, BigVGANDiscriminator,
+    MultiTransformerDiscriminator, HILDiscriminator,
+)
 from ..models.bottlenecks import VAEBottleneck
 from .losses.base import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss, SelfLoss
 from .losses.perceptual import MelSpectrogramLoss, HubertLoss
@@ -129,6 +132,10 @@ class LossManager(nn.Module):
                 self.discriminator = DACGANLoss(channels=self.audio_channels, sample_rate=sample_rate, **disc_cfg)
             elif disc_type == 'big_vgan':
                 self.discriminator = BigVGANDiscriminator(channels=self.audio_channels, sample_rate=sample_rate, **disc_cfg)
+            elif disc_type == 'transformer':
+                self.discriminator = MultiTransformerDiscriminator(in_channels=self.audio_channels, **disc_cfg)
+            elif disc_type == 'hil':
+                self.discriminator = HILDiscriminator(in_channels=self.audio_channels, sample_rate=sample_rate, **disc_cfg)
 
         gen_loss_modules = []
         if self.use_disc:
