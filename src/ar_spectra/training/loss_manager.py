@@ -148,44 +148,48 @@ class LossManager(nn.Module):
         if spectral_cfg:
             if self.stft_mse is not None:
                 stft_mse_weight = spectral_cfg['weights'].get('stft_mse', 0.0)
-                gen_loss_modules.append(
-                    LossWithTarget(
-                        self.stft_mse,
-                        input_key='sp_decoded', target_key='encoder_input',
-                        name='pwc_mse_loss', weight=stft_mse_weight, decay=stft_loss_decay,
+                if stft_mse_weight > 0.0:
+                    gen_loss_modules.append(
+                        LossWithTarget(
+                            self.stft_mse,
+                            input_key='sp_decoded', target_key='encoder_input',
+                            name='pwc_mse_loss', weight=stft_mse_weight, decay=stft_loss_decay,
+                        )
                     )
-                )
             if self.mrstft is not None:
                 stft_mse_weight = spectral_cfg['weights'].get('mrstft', 0.0)
-                gen_loss_modules.append(
-                    LossWithTarget(
-                        self.mrstft,
-                        target_key='reals', input_key='decoded',
-                        name='mrstft_loss', weight=stft_mse_weight, decay=stft_loss_decay
+                if stft_mse_weight > 0.0:
+                    gen_loss_modules.append(
+                        LossWithTarget(
+                            self.mrstft,
+                            target_key='reals', input_key='decoded',
+                            name='mrstft_loss', weight=stft_mse_weight, decay=stft_loss_decay
+                        )
                     )
-                )
             if self.phase_loss is not None:
                 phase_weight = spectral_cfg['weights'].get('cosine_phase_loss', 0.0)
-                gen_loss_modules.append(
-                    LossWithTarget(
-                        self.phase_loss,
-                        target_key='encoder_input', input_key='sp_decoded',
-                        name='phase_cosine_loss', weight=phase_weight, decay=stft_loss_decay
+                if phase_weight > 0.0:
+                    gen_loss_modules.append(
+                        LossWithTarget(
+                            self.phase_loss,
+                            target_key='encoder_input', input_key='sp_decoded',
+                            name='phase_cosine_loss', weight=phase_weight, decay=stft_loss_decay
+                        )
                     )
-                )
             if self.consistency_loss is not None:
                 cons_weight = spectral_cfg['weights'].get('stft_consistency', 0.0)
-                gen_loss_modules.append(
-                    SelfLoss(
-                        self.consistency_loss,
-                        input_key='sp_decoded_linear',  # must use linear (un-normed) spectrogram: power_norm breaks STFT consistency
-                        name='stft_consistency_loss', weight=cons_weight, decay=stft_loss_decay,
+                if cons_weight > 0.0:
+                    gen_loss_modules.append(
+                        SelfLoss(
+                            self.consistency_loss,
+                            input_key='sp_decoded_linear',  # must use linear (un-normed) spectrogram: power_norm breaks STFT consistency
+                            name='stft_consistency_loss', weight=cons_weight, decay=stft_loss_decay,
+                        )
                     )
-                )
 
         if "mrmel" in self.loss_config:
              mrmel_weight = self.loss_config["mrmel"]["weights"]["mrmel"]
-             if mrmel_weight > 0:
+             if mrmel_weight > 0.0:
                  mrmel_config = self.loss_config["mrmel"]["config"]
                  self.mrmel = MelSpectrogramLoss(self.sample_rate,
                      n_mels=mrmel_config["n_mels"],
@@ -198,7 +202,7 @@ class LossManager(nn.Module):
 
         if "hubert" in self.loss_config:
             hubert_weight = self.loss_config["hubert"]["weights"]["hubert"]
-            if hubert_weight > 0:
+            if hubert_weight > 0.0:
                 hubert_cfg = self.loss_config["hubert"].get("config", {})
                 self.hubert = HubertLoss(weight=1.0, **hubert_cfg)
                 gen_loss_modules.append(LossWithTarget(self.hubert, target_key="reals", input_key="decoded", name="hubert_loss", weight=hubert_weight, decay=self.loss_config["hubert"].get("decay", 1.0)))

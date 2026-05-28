@@ -50,6 +50,8 @@ export WANDB_MODE=online
 export TF_CPP_MIN_LOG_LEVEL=3
 export WANDB_TAGS="$SLURM_JOB_NAME"
 export WANDB_DIR=$WORK/C-VAE/.wandb_cache
+export WANDB_RUN_ID="n4k506wk"
+export WANDB_RESUME="must"
 
 set -a
 source $WORK/C-VAE/.env
@@ -90,4 +92,5 @@ srun python train.py \
     "+trainer.trainer.compile=false" \
     trainer.wandb.use_wandb=true \
     trainer.trainer.ckpt_dir=checkpoints/K9_ps64x1_3s_e288_kl1e-4 \
-    trainer.wandb.name=K9_ps64x1_3s_e288_kl1e-4
+    trainer.wandb.name=K9_ps64x1_3s_e288_kl1e-4 \
+    +ckpt_path=$WORK/C-VAE/runs/K9_ps64x1_3s_e288_kl1e-4/2026-05-26_01-41-01/checkpoints/last.ckpt

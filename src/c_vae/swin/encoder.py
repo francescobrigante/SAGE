@@ -234,9 +234,10 @@ class SwinEncoder(AbstractEncoder):
 
         x = x.transpose(1, 2)                   # (B, out_channels, 128=H*W latent)
         
-        H_lat, W_lat = self._final_resolution   # 32, 4
+        H_lat = self._final_resolution[0]
+        W_lat = x.shape[-1] // H_lat
 
         # [OPTIONAL] Reshape back to 2D spatial grid
-        # x = x.reshape(B, self.dimension, H_lat, W_lat)         # (B, dimension, H=32, W=4)
+        # x = x.reshape(B, self.dimension, H_lat, W_lat)         # (B, dimension, H_lat, W_lat)
 
-        return x, {"feature_shape": (H_lat, W_lat)} # (B, out_channels, 128=H*W latent)
+        return x, {"feature_shape": (H_lat, W_lat)} # (B, out_channels, L_lat)
