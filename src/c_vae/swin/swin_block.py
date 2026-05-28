@@ -193,28 +193,8 @@ class SwinTransformerBlock(nn.Module):
             complex_activation=complex_activation,
         )
 
-        # Pre-compute SW-MSA attention mask once and register as a non-parameter buffer.
-        # The mask uses -100.0 for cross-region pairs so softmax -> 0 after exp.
-        if max(self.shift_size) > 0:
-            H, W = self.input_resolution
-            wh, ww = self.window_size
-            sh, sw = self.shift_size
-            img_mask = torch.zeros((1, H, W, 1))                       # (1, H, W, 1)
-            h_slices = (slice(0, -wh), slice(-wh, -sh), slice(-sh, None))
-            w_slices = (slice(0, -ww), slice(-ww, -sw), slice(-sw, None))
-            cnt = 0
-            for h in h_slices:
-                for w in w_slices:
-                    img_mask[:, h, w, :] = cnt
-                    cnt += 1
-            mask_windows = window_partition(img_mask, self.window_size)  # (nW, wh, ww, 1)
-            mask_windows = mask_windows.view(-1, wh * ww)
-            attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-            attn_mask = attn_mask.masked_fill(attn_mask != 0, -100.0).masked_fill(attn_mask == 0, 0.0)
-        else:
-            attn_mask = None
-
-        self.register_buffer("attn_mask", attn_mask)
+        # We will compute the SW-MSA mask dynamically and cache it in forward()
+        self._attn_mask_cache = {}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply W-MSA or SW-MSA + FFN with pre-norm residual connections.
@@ -225,15 +205,46 @@ class SwinTransformerBlock(nn.Module):
         Returns:
             (B, H*W, C)
         """
-        H, W = self.input_resolution
+        H = self.input_resolution[0]
         B, L, C = x.shape                                              # (B, H*W, C)
-        assert L == H * W, f"token count {L} != H*W = {H*W}"
+        assert L % H == 0, f"Token count {L} not divisible by H={H}"
+        W = L // H
 
         wh, ww = self.window_size
         sh, sw = self.shift_size
 
+        pad_l = pad_t = 0
+        pad_r = (ww - W % ww) % ww
+        pad_b = (wh - H % wh) % wh
+
+        Hp = H + pad_b
+        Wp = W + pad_r
+
+        # cached attention mask uses -100.0 for cross-region pairs so softmax -> 0 after exp.
+        if max(self.shift_size) > 0:
+            cache_key = (Hp, Wp)
+            if cache_key not in self._attn_mask_cache:
+                img_mask = torch.zeros((1, Hp, Wp, 1))
+                h_slices = (slice(0, -wh), slice(-wh, -sh), slice(-sh, None))
+                w_slices = (slice(0, -ww), slice(-ww, -sw), slice(-sw, None))
+                cnt = 0
+                for h in h_slices:
+                    for w in w_slices:
+                        img_mask[:, h, w, :] = cnt
+                        cnt += 1
+                mask_windows = window_partition(img_mask, self.window_size)
+                mask_windows = mask_windows.view(-1, wh * ww)
+                mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+                self._attn_mask_cache[cache_key] = mask.masked_fill(mask != 0, -100.0).masked_fill(mask == 0, 0.0)
+            attn_mask = self._attn_mask_cache[cache_key].to(x.device)
+        else:
+            attn_mask = None
+
         shortcut = x
         x = x.view(B, H, W, C)                                        # (B, H, W,  C)
+        if pad_r > 0 or pad_b > 0:
+            import torch.nn.functional as F
+            x = F.pad(x, (0, 0, pad_l, pad_r, pad_t, pad_b))
 
         # Cyclic shift + window partition
         if max(self.shift_size) > 0:
@@ -241,20 +252,20 @@ class SwinTransformerBlock(nn.Module):
             if not self.fused_window_process:
                 shifted_x = torch.roll(x, shifts=(-sh, -sw), dims=(1, 2))
                 x_windows = window_partition(shifted_x, self.window_size)  # (nW*B, wh, ww, C)
-            # cuda — complex64: reinterpret as float32 (B,H,W,2C), run kernel, cast back.
+            # cuda — complex64: reinterpret as float32 (B,Hp,Wp,2C), run kernel, cast back.
             # Safe because the kernel is pure memory scatter/gather (no arithmetic) and
             # complex64 is stored as interleaved float32 pairs, so Re/Im pairing is preserved.
             elif self.is_complex:
-                x_f = x.view(torch.float32)                                  # (B, H, W, 2C)
-                out_f = WindowProcess.apply(x_f, B, H, W, 2 * C, -sh, -sw, wh, ww)
+                x_f = x.view(torch.float32)                                  # (B, Hp, Wp, 2C)
+                out_f = WindowProcess.apply(x_f, B, Hp, Wp, 2 * C, -sh, -sw, wh, ww)
                 x_windows = out_f.view(torch.complex64)                      # (nW*B, wh, ww, C)
             # cuda — real: kernel supports float32/float16 but not bfloat16; cast if needed
             else:
                 orig_dtype = x.dtype
                 if orig_dtype == torch.bfloat16:
-                    x_windows = WindowProcess.apply(x.float(), B, H, W, C, -sh, -sw, wh, ww).bfloat16()
+                    x_windows = WindowProcess.apply(x.float(), B, Hp, Wp, C, -sh, -sw, wh, ww).bfloat16()
                 else:
-                    x_windows = WindowProcess.apply(x, B, H, W, C, -sh, -sw, wh, ww)
+                    x_windows = WindowProcess.apply(x, B, Hp, Wp, C, -sh, -sw, wh, ww)
 
         else:
             x_windows = window_partition(x, self.window_size)         # (nW*B, wh, ww, C)
@@ -262,29 +273,33 @@ class SwinTransformerBlock(nn.Module):
         x_windows = x_windows.view(-1, wh * ww, C)                    # (nW*B, wh*ww, C)
 
         # W-MSA / SW-MSA
-        attn_windows = self.attn(x_windows, mask=self.attn_mask)      # (nW*B, wh*ww, C)
+        attn_windows = self.attn(x_windows, mask=attn_mask)      # (nW*B, wh*ww, C)
 
         # Reverse window partition + reverse cyclic shift
         attn_windows = attn_windows.view(-1, wh, ww, C)
         if max(self.shift_size) > 0:
             # not cuda
             if not self.fused_window_process:
-                shifted_x = window_reverse(attn_windows, self.window_size, H, W)  # (B, H, W, C)
+                shifted_x = window_reverse(attn_windows, self.window_size, Hp, Wp)  # (B, Hp, Wp, C)
                 x = torch.roll(shifted_x, shifts=(sh, sw), dims=(1, 2))
             # cuda — complex64 view trick (same rationale as forward path above)
             elif self.is_complex:
                 aw_f = attn_windows.view(torch.float32)                      # (nW*B, wh, ww, 2C)
-                out_f = WindowProcessReverse.apply(aw_f, B, H, W, 2 * C, sh, sw, wh, ww)
-                x = out_f.view(torch.complex64)                              # (B, H, W, C)
+                out_f = WindowProcessReverse.apply(aw_f, B, Hp, Wp, 2 * C, sh, sw, wh, ww)
+                x = out_f.view(torch.complex64)                              # (B, Hp, Wp, C)
             # cuda — real: kernel supports float32/float16 but not bfloat16; cast if needed
             else:
                 orig_dtype = attn_windows.dtype
                 if orig_dtype == torch.bfloat16:
-                    x = WindowProcessReverse.apply(attn_windows.float(), B, H, W, C, sh, sw, wh, ww).bfloat16()
+                    x = WindowProcessReverse.apply(attn_windows.float(), B, Hp, Wp, C, sh, sw, wh, ww).bfloat16()
                 else:
-                    x = WindowProcessReverse.apply(attn_windows, B, H, W, C, sh, sw, wh, ww)
+                    x = WindowProcessReverse.apply(attn_windows, B, Hp, Wp, C, sh, sw, wh, ww)
         else:
-            x = window_reverse(attn_windows, self.window_size, H, W)  # (B, H, W, C)
+            x = window_reverse(attn_windows, self.window_size, Hp, Wp)  # (B, Hp, Wp, C)
+            
+        if pad_r > 0 or pad_b > 0:
+            x = x[:, :H, :W, :].contiguous()
+            
         x = x.view(B, H * W, C)                                       # (B, H*W, C)
 
         # Res-Post-LN (Swin V2): norm applied to branch output, residual added after

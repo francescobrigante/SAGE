@@ -90,9 +90,8 @@ class PatchEmbed(nn.Module):
         """
         
         _, _, H, W = x.shape                                          # (B, C, H, W)
-        assert H == self.img_size[0] and W == self.img_size[1], (
-            f"Input size ({H}x{W}) does not match model ({self.img_size[0]}x{self.img_size[1]})."
-        )
+        assert H == self.img_size[0], f"Freq mismatch: got {H}, expected {self.img_size[0]}"
+        assert W % self.patch_size[1] == 0, f"W={W} not divisible by patch_size_w={self.patch_size[1]}"
         x = self.proj(x)                                              # (B, embed_dim, H/ph, W/pw)
         x = x.flatten(2).transpose(1, 2)                             # (B, num_patches, embed_dim)
         if self.norm is not None:
@@ -155,9 +154,10 @@ class PatchUnembed(nn.Module):
         Returns:
             (B, out_channels, H * patch_size, W * patch_size)
         """
-        H, W = self.input_resolution
+        H = self.input_resolution[0]
         B, L, C = x.shape                                             # (B, H*W, embed_dim)
-        assert L == H * W, f"token count {L} != H*W = {H*W}"
+        assert L % H == 0, f"Token count {L} not divisible by H={H}"
+        W = L // H
         x = x.transpose(1, 2).view(B, C, H, W)                       # (B, embed_dim, H, W)
         return self.conv(x)                                           # (B, out_channels, H*ps, W*ps)
 
@@ -213,9 +213,10 @@ class PatchMerging(nn.Module):
         Returns:
             (B, H/2 * W/2, 2C)
         """
-        H, W = self.input_resolution
+        H = self.input_resolution[0]
         B, L, C = x.shape                                             # (B, H*W, C)
-        assert L == H * W, f"token count {L} != H*W = {H*W}"
+        assert L % H == 0, f"Token count {L} not divisible by H={H}"
+        W = L // H
         assert H % 2 == 0 and W % 2 == 0, f"grid ({H}x{W}) must be even for PatchMerging"
 
         x = x.view(B, H, W, C)                                        # (B, H, W, C)
@@ -285,9 +286,10 @@ class PatchExpand(nn.Module):
         Returns:
             (B, 4*H*W, C) = (B, 2H * 2W, C)
         """
-        H, W = self.input_resolution
+        H = self.input_resolution[0]
         B, L, C = x.shape                                             # (B, H*W, 2C)
-        assert L == H * W,    f"token count {L} != H*W = {H*W}"
+        assert L % H == 0, f"Token count {L} not divisible by H={H}"
+        W = L // H
         assert C == self.dim, f"channel dim {C} != expected {self.dim}"
 
         x = self.expand(x)                                            # (B, H*W, 4C)
@@ -349,8 +351,10 @@ class SpatialConvSmooth(nn.Module):
         Returns:
             (B, H*W, C)
         """
-        H, W = self.input_resolution
+        H = self.input_resolution[0]
         B, L, C = x.shape                                         # (B, H*W, C)
+        assert L % H == 0, f"Token count {L} not divisible by H={H}"
+        W = L // H
         x = x.view(B, H, W, C).permute(0, 3, 1, 2)              # (B, C, H, W)
         x = self.conv(x)                                          # (B, C, H, W)
         return x.permute(0, 2, 3, 1).contiguous().view(B, L, C)   # (B, H*W, C)

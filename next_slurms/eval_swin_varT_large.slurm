@@ -1,12 +1,13 @@
 #!/bin/bash
 # ============================================================
-# eval_swin_large.slurm
-# Full FMA-large evaluation — VarT Swin (single forward pass).
-# Metrics: SI-SDR, STFT, CLAP cosine, FAD (MERT + CLAP-audio).
-# CDPAM skipped at scale (too slow); run debug job for it.
+# eval_swin_varT_large: Full FMA-large evaluation — VarT Swin
+#
+# Evaluates baseline + STFT_3seconds in parallel (1 per GPU).
+# Single forward pass per file (VarT padding, no chunking).
+# Metrics: SI-SDR, STFT-loss, CDPAM.
 # Use --resume to restart safely after preemption.
 # ============================================================
-#SBATCH --job-name=eval_swin_large
+#SBATCH --job-name=eval_swin_varT_large
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -39,16 +40,13 @@ set +a
 cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
-CACHE_DIR="$SCRATCH/eval_cache"
-mkdir -p "$CACHE_DIR"
+# ---- checkpoints (rank 0 → baseline, rank 1 → STFT_3seconds) ----
+CKPT0=$WORK/C-VAE/checkpoints/baseline.ckpt
+CKPT1=$WORK/C-VAE/checkpoints/STFT_3seconds.ckpt
 
-# rank 0 → GPU 0 → baseline;  rank 1 → GPU 1 → STFT_3seconds
 srun python evaluation/evaluate_swin_varT.py \
-    --checkpoint checkpoints/baseline.ckpt checkpoints/STFT_3seconds.ckpt \
+    --checkpoint "$CKPT0" "$CKPT1" \
     --target-dir $FAST/datasets/fma/fma_large \
-    --output-dir $WORK/C-VAE/runs/eval_swin_large \
-    --cache-dir  "$CACHE_DIR" \
+    --output-dir $WORK/C-VAE/runs/eval_swin_varT_large \
     --num-workers 8 \
-    --max-files 2500 \
-    --skip-cdpam \
     --resume

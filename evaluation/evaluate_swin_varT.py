@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # =============================================================================
-# evaluation/evaluate_swin.py
-# Hann-WOLA evaluation for Swin C-VAE — SI-SDR, STFT loss, CDPAM,
-# CLAP cosine similarity, FAD (MERT + CLAP-audio).
+# evaluation/evaluate_swin_varT.py
+# Parallel multi-checkpoint evaluation for Swin C-VAE (variable-length audio).
 #
-# Each file is chunked with 25% overlap; all chunks are batched into a single
-# GPU encode/decode call, then stitched with Weighted Overlap-Add using Hann
-# windows. Metrics are computed on the full stitched reconstruction — no
-# per-chunk averaging.
+# With srun --ntasks-per-node=N, each rank handles every N-th checkpoint
+# on its own GPU (SLURM_LOCALID). Audio is padded to the next temporal
+# multiple of 2^num_downsamples and processed in a single forward pass —
+# no fixed-chunk splitting. Metrics: SI-SDR, STFT, CDPAM, CLAP, FAD.
 # =============================================================================
 
 from __future__ import annotations
@@ -34,17 +33,10 @@ sys.path.insert(0, str(_PROJ_ROOT / "src"))
 
 from ar_spectra.models.inference import EuleroEncodeDecode
 from ar_spectra.utils.console import ok, warn, info, err
-from config import (
-    DATA_PATH,
-    DEFAULT_AUDIO_EXTENSIONS,
-    DEFAULT_DEVICE,
-    DEFAULT_MAX_FILES,
-    FMA_METADATA,
-)
+from config import DATA_PATH, DEFAULT_AUDIO_EXTENSIONS, DEFAULT_MAX_FILES, FMA_METADATA
 from losses import si_sdr, stft_loss, cdpam_score
-from utils import (write_csv, collect_fma_files, get_expected_frames,
-                   atomic_save_npy, load_or_embed, target_cache_path,
-                   silence_output)
+from utils import (write_csv, collect_fma_files, atomic_save_npy,
+                   load_or_embed, target_cache_path, silence_output)
 from compute_clap_score import embed_clap, cosine_sim
 from compute_fad import embed_mert, compute_fad_from_embeddings
 from fadtk.model_loader import CLAPLaionModel, MERTModel
@@ -58,12 +50,12 @@ if not hasattr(np, "float"):
 class _AudioDataset(Dataset):
     """Load audio files; returns (waveform [C, T], stem).
 
-    Resampled waveforms are cached as float32 .npy files when cache_dir is set,
+    Resampled waveforms are cached as float32 .npy when cache_dir is set,
     avoiding repeated MP3 decode + resample for every checkpoint.
     """
 
-    def __init__(self, files: list[Path], target_sr: int,
-                 target_ch: int, cache_dir: Optional[Path] = None):
+    def __init__(self, files: list[Path], target_sr: int, target_ch: int,
+                 cache_dir: Optional[Path] = None):
         self.files     = files
         self.target_sr = target_sr
         self.target_ch = target_ch
@@ -101,77 +93,43 @@ class _AudioDataset(Dataset):
             return None, p.stem
 
 
-# ── WOLA inference ────────────────────────────────────────────
+# ── Padding ───────────────────────────────────────────────────
 
-def swin_infer_wola(
-    codec, wav: torch.Tensor, chunk_samples: int, overlap_samples: int
-) -> torch.Tensor:
-    """Batch encode+decode [C, T] with Hann WOLA stitching.
-
-    All chunks from this file are stacked into one GPU call, then stitched
-    with Weighted Overlap-Add (synthesis window: Hann fade at edges, flat
-    center). Since fade_in[k] + fade_out[k] == 1 for every k in the overlap
-    region, the normalised sum recovers the signal without amplitude loss.
-
-    Returns reconstructed [C, T] on CPU (same length as input).
-    """
-    C, T = wav.shape
-    ae   = codec.autoencoder
-
-    chunk_ranges, T_padded = ae._plan_chunks(T, chunk_samples, overlap_samples)
-    if not chunk_ranges:
-        return wav.clone()
-
-    wav_padded = F.pad(wav, (0, T_padded - T)) if T_padded > T else wav.clone()
-
-    # Stack all chunks → single GPU forward pass              [N, C, chunk_samples]
-    chunks_gpu = torch.stack(
-        [wav_padded[:, s:e] for s, e in chunk_ranges]
-    ).to(codec.device)
-
-    latents = codec.encode(chunks_gpu)                                  # [N, D, T_lat]
-    decoded = codec.decode(
-        latents, target_length=chunk_samples
-    ).cpu().float()                                                     # [N, C, chunk_samples]
-
-    # Synthesis window: Hann fade at edges, ones in the flat centre
-    fade_in, fade_out = ae._hann_crossfade_windows(overlap_samples)
-    win = torch.ones(chunk_samples)
-    if fade_in is not None:
-        win[:overlap_samples]                 = fade_in
-        win[chunk_samples - overlap_samples:] = fade_out
-
-    out  = torch.zeros(C, T_padded)
-    norm = torch.zeros(T_padded)
-
-    for i, (s, e) in enumerate(chunk_ranges):
-        out[:, s:e]  += decoded[i] * win.unsqueeze(0)                  # [C, chunk_samples]
-        norm[s:e]    += win
-
-    out = out / norm.clamp(min=1e-8).unsqueeze(0)
-    return out[:, :T]                                                   # [C, T]
+def pad_audio_for_swin(
+    wav: torch.Tensor, hop_length: int, num_downsamples: int = 2
+) -> tuple[torch.Tensor, int]:
+    """Pad waveform so STFT frame count T is a multiple of 2^num_downsamples."""
+    orig_samples = wav.shape[-1]
+    w_multiple   = 2 ** num_downsamples
+    W_current    = (orig_samples // hop_length) + 1
+    pad_w        = (w_multiple - W_current % w_multiple) % w_multiple
+    target_samples = max(orig_samples, (W_current + pad_w - 1) * hop_length)
+    if target_samples > orig_samples:
+        wav = F.pad(wav, (0, target_samples - orig_samples))
+    return wav, orig_samples
 
 
 # ── Argument parsing ──────────────────────────────────────────
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Hann-WOLA Swin C-VAE evaluation — SI-SDR, STFT, CDPAM, CLAP, FAD.",
+        description="Variable-T Swin C-VAE evaluation — SI-SDR, STFT, CDPAM, CLAP, FAD.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--checkpoint",   required=True, nargs="+", type=Path,
-                   help="One or more Swin C-VAE .ckpt files (evaluated sequentially).")
-    p.add_argument("--target-dir",   default=str(DATA_PATH))
-    p.add_argument("--output-dir",   required=True)
-    p.add_argument("--device",       default=DEFAULT_DEVICE)
-    p.add_argument("--num-workers",  type=int, default=4)
-    p.add_argument("--max-files",    type=int, default=DEFAULT_MAX_FILES)
-    p.add_argument("--fma-csv-path", default=FMA_METADATA)
-    p.add_argument("--extensions",   default=",".join(DEFAULT_AUDIO_EXTENSIONS))
-    p.add_argument("--cache-dir",    type=Path, default=None,
-                   help="Cache resampled waveforms and target embeddings (reused across checkpoints).")
-    p.add_argument("--skip-cdpam",   action="store_true")
-    p.add_argument("--resume",       action="store_true",
+    p.add_argument("--checkpoint",      nargs="+", required=True, type=Path,
+                   help="One or more Swin .ckpt files; distributed across SLURM ranks.")
+    p.add_argument("--target-dir",      default=str(DATA_PATH))
+    p.add_argument("--output-dir",      required=True)
+    p.add_argument("--num-workers",     type=int, default=4)
+    p.add_argument("--max-files",       type=int, default=DEFAULT_MAX_FILES)
+    p.add_argument("--fma-csv-path",    default=FMA_METADATA)
+    p.add_argument("--extensions",      default=",".join(DEFAULT_AUDIO_EXTENSIONS))
+    p.add_argument("--cache-dir",       type=Path, default=None,
+                   help="Cache resampled waveforms and target embeddings across checkpoints.")
+    p.add_argument("--num-downsamples", type=int, default=None,
+                   help="Override PatchMerging count (auto-detected from checkpoint if omitted).")
+    p.add_argument("--skip-cdpam",      action="store_true")
+    p.add_argument("--resume",          action="store_true",
                    help="Skip checkpoint if metrics/_done already exists.")
     return p.parse_args()
 
@@ -181,7 +139,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
 
-    # ── SLURM rank → GPU assignment (mirrors evaluate_swin_varT.py) ──
+    # ── SLURM rank → GPU assignment ────────────────────────────
     local_rank = int(os.environ.get("SLURM_LOCALID", 0))
     world_size = int(os.environ.get("SLURM_NTASKS_PER_NODE", 1))
     device     = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
@@ -192,14 +150,19 @@ def main() -> None:
     if not my_ckpts:
         info(f"Rank {local_rank}: no checkpoints assigned — exiting.", prefix="EVAL")
         return
+
     info(f"Rank {local_rank}/{world_size} on {device} — "
          f"{len(my_ckpts)}/{len(all_ckpts)} checkpoints", prefix="EVAL")
 
     target_dir  = Path(args.target_dir).expanduser().resolve()
     output_root = Path(args.output_dir).expanduser().resolve()
+    cache_dir   = args.cache_dir.expanduser().resolve() if args.cache_dir else None
 
     if not target_dir.is_dir():
         err(f"Target directory not found: {target_dir}"); return
+    if cache_dir:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        info(f"Cache dir: {cache_dir}", prefix="EVAL")
 
     audio_exts  = {(e if e.startswith(".") else f".{e}").lower()
                    for e in args.extensions.split(",")}
@@ -210,12 +173,7 @@ def main() -> None:
 
     stem_to_file: dict[str, Path] = {f.stem: f for f in audio_files}
 
-    cache_dir = args.cache_dir.expanduser().resolve() if args.cache_dir else None
-    if cache_dir:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        info(f"Cache dir: {cache_dir}", prefix="EVAL")
-
-    # Load CLAP + MERT once — heavy, reused across all checkpoints
+    # Load CLAP + MERT once per rank — heavy, reused across all checkpoints on this rank
     info("Loading CLAP (music/audio) and MERT models...", prefix="EVAL")
     clap_music_ml = CLAPLaionModel("music")
     clap_audio_ml = CLAPLaionModel("audio")
@@ -228,7 +186,7 @@ def main() -> None:
 
     for ckpt_path in my_ckpts:
         metrics_dir = output_root / ckpt_path.stem / "metrics"
-        ok(f"=== {ckpt_path.name} ===", prefix="EVAL")
+        ok(f"=== {ckpt_path.name} (rank {local_rank}) ===", prefix="EVAL")
 
         if args.resume and (metrics_dir / "_done").exists():
             info("[RESUME] already done — skipping.", prefix="EVAL"); continue
@@ -241,18 +199,22 @@ def main() -> None:
         sr: int = codec.sample_rate    or 44100
         ch: int = codec.audio_channels or 2
 
-        expected_frames = (get_expected_frames(codec.autoencoder.encoder)
-                           if hasattr(codec.autoencoder, "encoder") else None)
-        stft_cfg      = getattr(codec.autoencoder, "_stft_config", None)
-        hop           = stft_cfg.hop_length if (expected_frames and stft_cfg) else None
-        chunk_samples = ((expected_frames - 1) * hop) if (expected_frames and hop) else None
+        stft_cfg = getattr(codec.autoencoder, "_stft_config", None)
+        if stft_cfg is None:
+            err(f"No STFT config in {ckpt_path.name}."); continue
+        hop_length: int = stft_cfg.hop_length
 
-        if chunk_samples is None:
-            err(f"Cannot determine chunk_samples from {ckpt_path.name}."); continue
-
-        overlap_samples = chunk_samples // 4  # 25% overlap — standard WOLA
-        ok(f"sr={sr} ch={ch}  chunk={chunk_samples}sa ({chunk_samples/sr:.2f}s)  "
-           f"overlap={overlap_samples}sa ({overlap_samples/sr:.3f}s)", prefix="EVAL")
+        if args.num_downsamples is not None:
+            num_downsamples = args.num_downsamples
+        else:
+            try:
+                num_downsamples = len(codec.autoencoder.encoder.depths) - 1
+            except AttributeError:
+                warn(f"Cannot read encoder.depths; defaulting num_downsamples=2", prefix="EVAL")
+                num_downsamples = 2
+        ok(f"sr={sr} ch={ch} hop={hop_length} "
+           f"depths={getattr(codec.autoencoder.encoder, 'depths', '?')} "
+           f"downsamples={num_downsamples}", prefix="EVAL")
 
         metrics_dir.mkdir(parents=True, exist_ok=True)
 
@@ -263,7 +225,7 @@ def main() -> None:
             num_workers=args.num_workers,
             collate_fn=lambda b: b[0],
             persistent_workers=args.num_workers > 0,
-            prefetch_factor=4 if args.num_workers > 0 else None,
+            prefetch_factor=2 if args.num_workers > 0 else None,
         )
 
         spectral_rows:    list[dict]       = []
@@ -284,42 +246,47 @@ def main() -> None:
                     skipped += 1; continue
 
                 try:
-                    # Single GPU call — all overlapping chunks batched together
-                    pred = swin_infer_wola(codec, wav, chunk_samples, overlap_samples)
-                    # pred: [C, T]  cpu, same length as wav
+                    wav_padded, orig_len = pad_audio_for_swin(wav, hop_length, num_downsamples)
+                    wav_gpu = wav_padded.unsqueeze(0).to(device)             # [1, C, T_pad]
+                    latents = codec.encode(wav_gpu)                           # [1, D, T_lat]
+                    decoded = codec.decode(latents,
+                                           target_length=wav_padded.shape[-1])  # [1, C, T_pad]
+                    n       = min(orig_len, decoded.shape[-1])
+                    wav_ref = wav[..., :n]                                   # [C, n]  cpu
+                    pred    = decoded[0, ..., :n].cpu().float()              # [C, n]
                 except Exception as e:
                     err(f"Inference error {stem}: {e}", prefix="EVAL")
                     skipped += 1; continue
 
                 spectral_rows.append({
                     "file":      stem,
-                    "si_sdr":    float(si_sdr(wav, pred)),
-                    "stft_loss": float(stft_loss(wav, pred)),
+                    "si_sdr":    float(si_sdr(wav_ref, pred)),
+                    "stft_loss": float(stft_loss(wav_ref, pred)),
                 })
 
                 if not args.skip_cdpam:
                     try:
                         cdpam_rows.append({"file": stem,
-                                           "cdpam": cdpam_score(wav, pred, sr, device=device)})
+                                           "cdpam": cdpam_score(wav_ref, pred, sr, device=device)})
                     except Exception as e:
-                        warn(f"CDPAM error {stem}: {e}", prefix="CDPAM")
+                        warn(f"CDPAM error {stem}: {e}", prefix="EVAL")
 
-                # CLAP cosine + FAD embeddings (full audio)
+                # CLAP cosine + FAD embeddings
                 try:
-                    t_cm = load_or_embed(clap_music_ml, embed_clap, wav, sr, device,
+                    t_cm = load_or_embed(clap_music_ml, embed_clap, wav_ref, sr, device,
                                          target_cache_path(cache_dir, clap_music_ml.name, stem))
                     p_cm = embed_clap(clap_music_ml, pred, sr, device)
                     clap_music_rows.append({"file": stem,
                                             "cosine": float(cosine_sim(t_cm.mean(0), p_cm.mean(0)))})
 
-                    t_ca = load_or_embed(clap_audio_ml, embed_clap, wav, sr, device,
+                    t_ca = load_or_embed(clap_audio_ml, embed_clap, wav_ref, sr, device,
                                          target_cache_path(cache_dir, clap_audio_ml.name, stem))
                     p_ca = embed_clap(clap_audio_ml, pred, sr, device)
                     clap_audio_rows.append({"file": stem,
                                             "cosine": float(cosine_sim(t_ca.mean(0), p_ca.mean(0)))})
                     clap_a_pred_embs.append(p_ca)
 
-                    load_or_embed(mert_ml, embed_mert, wav, sr, device,
+                    load_or_embed(mert_ml, embed_mert, wav_ref, sr, device,
                                   target_cache_path(cache_dir, mert_ml.name, stem))
                     mert_pred_embs.append(embed_mert(mert_ml, pred, sr, device))
                     fad_files.append(stem_to_file[stem])
@@ -328,8 +295,8 @@ def main() -> None:
                     warn(f"Embedding error {stem}: {e}", prefix="EMBED")
 
                 if (len(spectral_rows) + skipped) % 50 == 0:
-                    elapsed = time.time() - t0
-                    info(f"{len(spectral_rows)+skipped}/{len(audio_files)} files  ({elapsed:.0f}s)", prefix="EVAL")
+                    info(f"{len(spectral_rows)+skipped}/{len(audio_files)} "
+                         f"({time.time()-t0:.0f}s)", prefix="EVAL")
 
         ok(f"Done — processed: {len(spectral_rows)}  skipped: {skipped}", prefix="EVAL")
 
@@ -356,11 +323,10 @@ def main() -> None:
             ok(f"fad_gudgud.csv written", prefix="EVAL")
 
         (metrics_dir / "_done").touch()
-
         del codec
         torch.cuda.empty_cache()
 
-    ok("All checkpoints done.", prefix="EVAL")
+    ok(f"Rank {local_rank} done.", prefix="EVAL")
 
 
 if __name__ == "__main__":

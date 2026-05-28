@@ -1,10 +1,12 @@
 #!/bin/bash
 # ============================================================
 # K11_ps64x1_3s_e256_disc_hil: Swin H + SAME Convoluzionale (HIL) + RPGAN
-#   Fix rispetto alla run originale interrotta:
-#     kl:       1e-5 -> 1e-4  (K8 > K3 su latent_std)
-#     disc opt: separato dal gen -- SAO-exact
-#       disc_lr=3e-4, betas=(0.8,0.99), wd=1e-3
+#   K11b relaunch (run sana, contro prior escape latent_std ~ 3):
+#     kl:       1e-4 -> 5e-4  (HIL ~3x piu' aggressivo di MS-STFT: K8 kl=1e-4->std 1.5, HIL kl=1e-4->std 3)
+#     disc_lr:  3e-4 -> 2e-4  (SAO-exact; rallenta HIL -> disc_loss verso equilibrio rpgan ~0.69, meno escape)
+#     gen opt:  INVARIATO betas (0.9,0.98) -- betas baseline swin
+#     adv/fm:   INVARIATI (0.1 / 5.0) -- fm = driver qualita' percettiva; 1a leva escalation se std resta >2
+#     NB: monitora latent_std nelle prime ~15 epoch; se >2 -> fm 5.0->3.0 (o kl=1e-3). Annealing OFF.
 #     time:     7h -> 18h (run completa 120 epoch)
 #
 # DISCRIMINATORE (SAME convoluzionale = HILDiscriminator):
@@ -13,10 +15,10 @@
 #   Objective: rpgan (Relativistic Paired GAN, softplus -- come SAME)
 #   Weights: adversarial=0.1, feature_matching=5.0
 #
-# CONFRONTO con K13 (encodec/hinge, stesso disc opt SAO-exact):
-#   K13: encodec disc (MS-STFT x5, hinge loss)
-#   K11: HIL disc (STFT+PQMF+Chroma, rpgan) <- questo
-#   -> isola l'effetto del tipo di discriminatore a parita' di tutto il resto
+# CONFRONTO con K13 (encodec/hinge):
+#   K13: encodec disc (MS-STFT x5, hinge loss), kl=1e-4, disc_lr=3e-4
+#   K11: HIL disc (STFT+PQMF+Chroma, rpgan) <- questo, kl=5e-4, disc_lr=2e-4
+#   -> NB: non piu' ablation pulita (kl/disc_lr divergono); K11b ottimizzata best-performing
 #
 # GRID (PatchEmbed -> PatchMerge x2):
 #   Stage 0:  16x128  (1024/64  x  128/1)
@@ -26,7 +28,7 @@
 # LOSS: MRSTFT(1.0) + RPGAN (adv=0.1, fm=5.0)
 # DATA: FMA-medium (19,922 train tracks)
 # ============================================================
-#SBATCH --job-name=K11_ps64x1_3s_e256_disc_hil
+#SBATCH --job-name=K11_ps64x1_3s_e256_disc_hil_conservativo
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -35,7 +37,7 @@
 #SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=1-10:00:00
+#SBATCH --time=1-5:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -81,7 +83,7 @@ srun python train.py \
     "data.eval_dataset.custom_metadata_kwargs.subset=medium" \
     trainer.trainer.epochs=120 \
     trainer.trainer.kl_annealing_epochs=0 \
-    trainer.loss_config.bottleneck.weights.kl=1e-4 \
+    trainer.loss_config.bottleneck.weights.kl=5e-4 \
     trainer.loss_config.spectral.weights.stft_mse=0.0 \
     trainer.loss_config.spectral.weights.mrstft=1.0 \
     "trainer.loss_config.spectral.mrstft.config.max_loss_clamp=20.0" \
@@ -89,7 +91,7 @@ srun python train.py \
     trainer.optimizer.lr=1e-3 \
     "+trainer.optimizer.weight_decay_exclude_1d=true" \
     "+trainer.disc_optimizer._target_=torch.optim.AdamW" \
-    "+trainer.disc_optimizer.lr=3e-4" \
+    "+trainer.disc_optimizer.lr=2e-4" \
     "+trainer.disc_optimizer.betas=[0.8,0.99]" \
     "+trainer.disc_optimizer.weight_decay=1e-3" \
     trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
@@ -97,8 +99,8 @@ srun python train.py \
     trainer.trainer.precision="bf16-mixed" \
     "+trainer.trainer.compile=false" \
     trainer.wandb.use_wandb=true \
-    trainer.trainer.ckpt_dir=checkpoints/K11_ps64x1_3s_e256_disc_hil \
-    trainer.wandb.name=K11_ps64x1_3s_e256_disc_hil \
+    trainer.trainer.ckpt_dir=checkpoints/K11_ps64x1_3s_e256_disc_hil_conservativo \
+    trainer.wandb.name=K11_ps64x1_3s_e256_disc_hil_conservativo \
     "+trainer.loss_config.discriminator.type=hil" \
     "+trainer.loss_config.discriminator.config.loss_type=rpgan" \
     "+trainer.loss_config.discriminator.config.filters=64" \
