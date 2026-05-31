@@ -89,7 +89,7 @@ srun python train.py \
     "trainer.loss_config.spectral.mrstft.config.max_loss_clamp=20.0" \
     trainer.trainer.clip_grad_norm=20.0 \
     trainer.optimizer.lr=1e-3 \
-    "+trainer.optimizer.weight_decay_exclude_1d=true" \
+    "trainer.optimizer.weight_decay_exclude_1d=true" \
     "+trainer.disc_optimizer._target_=torch.optim.AdamW" \
     "+trainer.disc_optimizer.lr=2e-4" \
     "+trainer.disc_optimizer.betas=[0.8,0.99]" \

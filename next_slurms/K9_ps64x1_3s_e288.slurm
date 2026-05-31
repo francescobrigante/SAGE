@@ -26,11 +26,11 @@
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
-#SBATCH --gres=gpu:4
+#SBATCH --ntasks-per-node=2
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=7:00:00
+#SBATCH --time=23:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -50,8 +50,6 @@ export WANDB_MODE=online
 export TF_CPP_MIN_LOG_LEVEL=3
 export WANDB_TAGS="$SLURM_JOB_NAME"
 export WANDB_DIR=$WORK/C-VAE/.wandb_cache
-export WANDB_RUN_ID="n4k506wk"
-export WANDB_RESUME="must"
 
 set -a
 source $WORK/C-VAE/.env
@@ -60,7 +58,29 @@ set +a
 cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
-srun python train.py \
+# ─── Auto-resume: W&B run_id + last checkpoint ──────────────────────────────
+RUN_ID_FILE="$WORK/C-VAE/.run_ids/${SLURM_JOB_NAME}"
+
+if [ -f "$RUN_ID_FILE" ]; then
+    export WANDB_RESUME=must
+    export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
+    echo "[RESUME] W&B run: $WANDB_RUN_ID"
+fi
+
+LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/${SLURM_JOB_NAME}"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+CKPT_ARG=""
+if [ -n "$LATEST_CKPT" ]; then
+    CKPT_ARG="+ckpt_path=$LATEST_CKPT"
+    echo "[RESUME] Checkpoint: $LATEST_CKPT"
+fi
+
+# ─── Retry loop (up to 8 attempts — recovers from DataLoader timeouts) ───────
+MAX_ATTEMPTS=8
+attempt=1
+while [ $attempt -le $MAX_ATTEMPTS ]; do
+    echo "[$(date '+%T')] Training attempt $attempt/$MAX_ATTEMPTS"
+
+    srun --kill-on-bad-exit=1 python train.py \
     models=swin_cplx_4s_x64 \
     "models.model.swin.patch_size=[64,1]" \
     "models.model.swin.window_size=[4,32]" \
@@ -83,14 +103,29 @@ srun python train.py \
     trainer.loss_config.spectral.weights.mrstft=1.0 \
     trainer.loss_config.mrmel.weights.mrmel=0.0 \
     trainer.optimizer.lr=1e-3 \
-    "+trainer.optimizer.weight_decay_exclude_1d=true" \
+    "++trainer.optimizer.weight_decay_exclude_1d=true" \
     "trainer.loss_config.spectral.mrstft.config.max_loss_clamp=20.0" \
     trainer.trainer.clip_grad_norm=20.0 \
     trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
     trainer.trainer.strategy=ddp_find_unused_parameters_true \
     trainer.trainer.precision="bf16-mixed" \
-    "+trainer.trainer.compile=false" \
+    "++trainer.trainer.compile=false" \
     trainer.wandb.use_wandb=true \
     trainer.trainer.ckpt_dir=checkpoints/K9_ps64x1_3s_e288_kl1e-4 \
     trainer.wandb.name=K9_ps64x1_3s_e288_kl1e-4 \
-    +ckpt_path=$WORK/C-VAE/runs/K9_ps64x1_3s_e288_kl1e-4/2026-05-26_01-41-01/checkpoints/last.ckpt
+    $CKPT_ARG
+
+    EXIT=$?
+    [ $EXIT -eq 0 ] && break
+
+    echo "[$(date '+%T')] Attempt $attempt failed (exit $EXIT), retrying in 15s..."
+    sleep 15
+    attempt=$((attempt + 1))
+
+    if [ -f "$RUN_ID_FILE" ]; then
+        export WANDB_RESUME=must
+        export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
+    fi
+    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/${SLURM_JOB_NAME}"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+    [ -n "$LATEST_CKPT" ] && CKPT_ARG="+ckpt_path=$LATEST_CKPT"
+done

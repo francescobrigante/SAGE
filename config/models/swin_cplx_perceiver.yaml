@@ -1,10 +1,9 @@
-# Model configuration — Config #6: Swin V2 Complex VAE, 4-stage, ×64 compression
+# Model configuration — Swin V2 Complex VAE with Perceiver Compression Stage
 #
-# Compression check (1.5s stereo 44.1kHz, target_frames=128, hop=512):
-#   waveform_samples ≈ 131120   latent_scalars = 8 × 128 × 2 = 2048   → ×64 ✓
-#   4 stages → 3 PatchMerging → grid 256×32 → 128×16 → 64×8 → 32×4 → N=128
-#   3 stages with SW-MSA active (window_size=8, clamped at stage 4 min=4)
-#   Symmetric ablation pair with swin_real_4s_x64.yaml (same depth/grid, real vs complex)
+# Baseline: 4-stage, patch_size [4,1]. 
+# Swin outputs 512 tokens (32x16 grid) which are compressed to 128 abstract tokens
+# via Perceiver Hermitian Cross-Attention to keep channels at 1024 without exploding
+# to 4096 (which would happen with a standard PatchMerging).
 #
 # Required data overrides (CLI or experiment YAML):
 #   data.train_dataset.cac=false   data.eval_dataset.cac=false
@@ -37,16 +36,16 @@ model:
   # ── shared Swin hyperparameters ─────────────────────────────────────────────
   swin:
     embed_dim: 64               # head_dim=16 at all stages with num_heads=[4,8,16,32]
-    window_size: 8
-    patch_size: 4
+    window_size: [32, 16]
+    patch_size: [4, 1]
     mlp_ratio: 4.0
     drop_rate: 0.0
     attn_drop_rate: 0.0
     drop_path_rate: 0.1
     use_checkpoint: false
-    complex_activation: ComplexGELU1d   # phase-equivariant gate on |x|; use CGeLU to reproduce split baseline
-    abs_pos_embed: false                # inter-window absolute PE on PatchEmbed output (off by default)
-    mim_mask_ratio: 0.0                 # MIM denoising-VAE augmentation: zero-out fraction of input patches at training (off by default)
+    complex_activation: ComplexGELU1d
+    abs_pos_embed: false
+    mim_mask_ratio: 0.0
 
   # ── encoder ─────────────────────────────────────────────────────────────────
   encoder:
@@ -54,8 +53,8 @@ model:
     in_channels: 2                    # stereo complex STFT (complex_L, complex_R)
     is_complex: true
     embed_dim: ${models.model.swin.embed_dim}
-    depths: [2, 2, 6, 2]             # more depth at stage 3 (64×8 grid, most semantic)
-    num_heads: [4, 8, 16, 32]        # head_dim=16 constant: 64/4, 128/8, 256/16, 512/32
+    depths: [2, 2, 6, 2]
+    num_heads: [4, 8, 16, 32]
     window_size: ${models.model.swin.window_size}
     patch_size: ${models.model.swin.patch_size}
     dimension: ${mul:${models.model.parameters_to_predict},${models.model.latent_channels}}
@@ -68,8 +67,10 @@ model:
     abs_pos_embed: ${models.model.swin.abs_pos_embed}
     mim_mask_ratio: ${models.model.swin.mim_mask_ratio}
     fused_window_process: true
-    time_frames: 128                 # STFT time frames fed to the model (= dataset target_frames); drives all stage grids
-    use_smooth_convs: false          # spatial smoother after PatchEmbed (and optionally after PatchMerging)
+    time_frames: 128
+    use_smooth_convs: false
+    use_perceiver_compression: true
+    num_perceiver_queries: 128
 
   # ── decoder ─────────────────────────────────────────────────────────────────
   decoder:
@@ -87,10 +88,11 @@ model:
     attn_drop_rate: ${models.model.swin.attn_drop_rate}
     drop_path_rate: ${models.model.swin.drop_path_rate}
     use_checkpoint: ${models.model.swin.use_checkpoint}
-    time_frames: 128                 # must match encoder value and dataset target_frames
-    use_smooth_convs: false          # spatial smoother after each PatchExpand + output conv after PatchUnembed
+    time_frames: 128
+    use_smooth_convs: false
+    use_perceiver_compression: true
 
-# Automatic data configuration overrides for complex models to bypass command line boilerplate
+# Automatic data configuration overrides
 data:
   train_dataset:
     cac: false

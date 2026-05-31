@@ -1,20 +1,19 @@
 #!/bin/bash
 # ============================================================
-# eval_swin_debug.slurm
-# Smoke evaluation on 100 files — VarT Swin (single forward pass).
-# Verifies SI-SDR, STFT, CLAP, FAD pipeline end-to-end.
-# CDPAM skipped for speed; enable by removing --skip-cdpam.
+# eval_percettive_1.slurm
+# Full perceptual evaluation for "real baseline MSE.ckpt"
+# Computes: SI-SDR, SDR, STFT, CDPAM, CLAP (audio/music), FAD
 # ============================================================
-#SBATCH --job-name=eval_swin_debug
+#SBATCH --job-name=eval_real_baseline_mse
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
-#SBATCH --qos=boost_qos_dbg
+#SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=2
-#SBATCH --gres=gpu:2
-#SBATCH --cpus-per-task=8
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=16
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=0-00:30:00
+#SBATCH --time=04:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -41,12 +40,14 @@ source $WORK/.envs/c_vae/bin/activate
 CACHE_DIR="$SCRATCH/eval_cache"
 mkdir -p "$CACHE_DIR"
 
-# rank 0 → GPU 0 → baseline;  rank 1 → GPU 1 → STFT_3seconds
-srun python evaluation/evaluate_swin_varT.py \
-    --checkpoint checkpoints/baseline.ckpt checkpoints/STFT_3seconds.ckpt \
+echo "Starting full evaluation for real baseline MSE..."
+
+srun --ntasks=1 python evaluation/evaluate_swin_varT.py \
+    --checkpoint "checkpoints/real baseline MSE.ckpt" \
     --target-dir $FAST/datasets/fma/fma_large \
-    --output-dir $WORK/C-VAE/runs/eval_swin_debug \
+    --output-dir $WORK/C-VAE/runs/eval_swin_large \
     --cache-dir  "$CACHE_DIR" \
     --num-workers 16 \
-    --max-files 100 \
-    --skip-cdpam
+    --max-files 2500
+
+echo "Evaluation completed!"

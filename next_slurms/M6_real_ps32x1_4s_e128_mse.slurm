@@ -1,6 +1,15 @@
 #!/bin/bash
-
-#SBATCH --job-name=Swin_Baseline_Example
+# ============================================================
+# M6_real_ps32x1_4s_e128_mse: Real-valued equivalent of L6 + stft_MSE loss
+#   - 4-stage Swin V2 Real VAE
+#   - depths: enc=[2,2,6,2], dec=[2,6,2,2]
+#   - num_heads: enc=[4,8,16,32], dec=[32,16,8,4]
+#   - embed_dim=128, latent_channels=16 (to preserve ×64 compression)
+#   - patch_size=[32,1], window_size=[8,32]
+#   - stft_mse=1.0, mrstft=0.0 (stft_MSE only loss)
+#   - Precision: 32 (FP32) to prevent numerical explosion under bf16
+# ============================================================
+#SBATCH --job-name=M6_real_ps32x1_4s_e128_mse
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -9,7 +18,7 @@
 #SBATCH --gres=gpu:2                   # 2x A100 DDP
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=24:00:00
+#SBATCH --time=23:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -38,15 +47,17 @@ cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
 # ─── Auto-resume: W&B run_id + last checkpoint ──────────────────────────────
-RUN_ID_FILE="$WORK/C-VAE/.run_ids/${SLURM_JOB_NAME}"
+RUN_ID_FILE="$WORK/C-VAE/.run_ids/M6_real_ps32x1_4s_e128_mse"
 
+# Override hardcoded WANDB vars with persisted run_id if available
 if [ -f "$RUN_ID_FILE" ]; then
     export WANDB_RESUME=must
     export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
     echo "[RESUME] W&B run: $WANDB_RUN_ID"
 fi
 
-LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/${SLURM_JOB_NAME}"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+# Auto-detect newest last.ckpt (finds pre-crash checkpoint on first launch too)
+LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/M6_real_ps32x1_4s_e128_mse"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
 CKPT_ARG=""
 if [ -n "$LATEST_CKPT" ]; then
     CKPT_ARG="+ckpt_path=$LATEST_CKPT"
@@ -60,19 +71,27 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
     echo "[$(date '+%T')] Training attempt $attempt/$MAX_ATTEMPTS"
 
     srun --kill-on-bad-exit=1 python train.py \
-        models=swin_cplx_baseline \
+        models=swin_real_baseline \
+        "models.model.encoder.depths=[2,2,6,2]" \
+        "models.model.encoder.num_heads=[4,8,16,32]" \
+        "models.model.decoder.depths=[2,6,2,2]" \
+        "models.model.decoder.num_heads=[32,16,8,4]" \
+        "models.model.swin.patch_size=[32,1]" \
+        "models.model.swin.window_size=[8,32]" \
+        "models.model.swin.embed_dim=128" \
+        models.model.latent_channels=16 \
         trainer.trainer.epochs=97 \
         trainer.loss_config.bottleneck.weights.kl=1e-5 \
-        trainer.loss_config.spectral.weights.stft_mse=0.0 \
-        trainer.loss_config.spectral.weights.mrstft=1.0 \
+        trainer.loss_config.spectral.weights.stft_mse=1.0 \
+        trainer.loss_config.spectral.weights.mrstft=0.0 \
         trainer.optimizer.lr=1e-3 \
         trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
         trainer.trainer.strategy=ddp_find_unused_parameters_true \
-        trainer.trainer.precision="bf16-mixed" \
+        trainer.trainer.precision="32" \
         "+trainer.trainer.compile=false" \
         trainer.wandb.use_wandb=true \
-        trainer.trainer.ckpt_dir=checkpoints/EXAMPLE \
-        trainer.wandb.name=Swin_Baseline_Example \
+        trainer.trainer.ckpt_dir=checkpoints/M6_real_ps32x1_4s_e128_mse \
+        trainer.wandb.name=M6_real_ps32x1_4s_e128_mse \
         $CKPT_ARG
 
     EXIT=$?
@@ -86,6 +105,6 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         export WANDB_RESUME=must
         export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
     fi
-    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/${SLURM_JOB_NAME}"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/M6_real_ps32x1_4s_e128_mse"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
     [ -n "$LATEST_CKPT" ] && CKPT_ARG="+ckpt_path=$LATEST_CKPT"
 done

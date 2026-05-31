@@ -33,7 +33,8 @@ sys.path.insert(0, str(_PROJ_ROOT / "stable_audio_baseline"))
 
 from ar_spectra.models.inference import _extract_autoencoder_state
 from ar_spectra.utils.console import ok, warn, info, err
-from losses import si_sdr, stft_loss, cdpam_score
+from losses import compute_sdr_and_sisdr, stft_loss, cdpam_score
+
 from utils import (write_csv, collect_fma_files, atomic_save_npy,
                    load_or_embed, target_cache_path, silence_output)
 from compute_clap_score import embed_clap, cosine_sim
@@ -151,6 +152,7 @@ def _parse_args() -> argparse.Namespace:
                    help="Directory to cache resampled target waveforms (.npy). "
                         "Written on first pass; reused for subsequent checkpoints and runs.")
     p.add_argument("--skip-cdpam", action="store_true")
+    p.add_argument("--sdr-only", action="store_true")
     p.add_argument("--resume", action="store_true",
                    help="Skip checkpoint if spectral.csv already exists.")
     return p.parse_args()
@@ -173,16 +175,17 @@ def main() -> None:
 
     stem_to_file: dict[str, Path] = {f.stem: f for f in audio_files}
 
-    # Load embedding models once — heavy, reused across all checkpoints
-    info("Loading CLAP (music/audio) and MERT models...", prefix="EVAL")
-    clap_music_ml = CLAPLaionModel("music")
-    clap_audio_ml = CLAPLaionModel("audio")
-    mert_ml       = MERTModel()
-    for _ml in (clap_music_ml, clap_audio_ml, mert_ml):
-        with silence_output():
-            _ml.load_model()
-        _ml.model.to(device)
-    ok("Embedding models ready.", prefix="EVAL")
+    if not args.sdr_only:
+        # Load embedding models once — heavy, reused across all checkpoints
+        info("Loading CLAP (music/audio) and MERT models...", prefix="EVAL")
+        clap_music_ml = CLAPLaionModel("music")
+        clap_audio_ml = CLAPLaionModel("audio")
+        mert_ml       = MERTModel()
+        for _ml in (clap_music_ml, clap_audio_ml, mert_ml):
+            with silence_output():
+                _ml.load_model()
+            _ml.model.to(device)
+        ok("Embedding models ready.", prefix="EVAL")
 
     for ckpt_path in args.checkpoint:
         ckpt_path   = Path(ckpt_path).expanduser().resolve()
@@ -249,41 +252,44 @@ def main() -> None:
                 wav_ref = wav[..., :n]                       # [C, n]
                 pred    = decoded[0, ..., :n].cpu().float()  # [C, n]
 
+                sdr_val, sisdr_val = compute_sdr_and_sisdr(wav_ref, pred)
                 spectral_rows.append({
                     "file":      stem,
-                    "si_sdr":    si_sdr(wav_ref, pred),
+                    "si_sdr":    sisdr_val,
+                    "sdr":       sdr_val,
                     "stft_loss": stft_loss(wav_ref, pred),
                 })
 
-                if not args.skip_cdpam:
+                if not args.skip_cdpam and not args.sdr_only:
                     try:
                         score = cdpam_score(wav_ref, pred, sr, device=device)
                         cdpam_rows.append({"file": stem, "cdpam": score})
                     except Exception as e:
                         warn(f"CDPAM {stem}: {e}", prefix="CDPAM")
 
-                # CLAP cosine similarity + FAD embeddings (target cached, pred in-memory)
-                try:
-                    t_cm = load_or_embed(clap_music_ml, embed_clap, wav_ref, sr, device,
-                                         target_cache_path(cache_dir, clap_music_ml.name, stem))
-                    p_cm = embed_clap(clap_music_ml, pred, sr, device)
-                    clap_music_rows.append({"file": stem,
-                                            "cosine": float(cosine_sim(t_cm.mean(0), p_cm.mean(0)))})
-
-                    t_ca = load_or_embed(clap_audio_ml, embed_clap, wav_ref, sr, device,
-                                         target_cache_path(cache_dir, clap_audio_ml.name, stem))
-                    p_ca = embed_clap(clap_audio_ml, pred, sr, device)
-                    clap_audio_rows.append({"file": stem,
-                                            "cosine": float(cosine_sim(t_ca.mean(0), p_ca.mean(0)))})
-                    clap_a_pred_embs.append(p_ca)
-
-                    load_or_embed(mert_ml, embed_mert, wav_ref, sr, device,
-                                  target_cache_path(cache_dir, mert_ml.name, stem))
-                    mert_pred_embs.append(embed_mert(mert_ml, pred, sr, device))
-                    fad_files.append(stem_to_file[stem])
-
-                except Exception as e:
-                    warn(f"Embedding error {stem}: {e}", prefix="EMBED")
+                if not args.sdr_only:
+                    # CLAP cosine similarity + FAD embeddings (target cached, pred in-memory)
+                    try:
+                        t_cm = load_or_embed(clap_music_ml, embed_clap, wav_ref, sr, device,
+                                             target_cache_path(cache_dir, clap_music_ml.name, stem))
+                        p_cm = embed_clap(clap_music_ml, pred, sr, device)
+                        clap_music_rows.append({"file": stem,
+                                                "cosine": float(cosine_sim(t_cm.mean(0), p_cm.mean(0)))})
+    
+                        t_ca = load_or_embed(clap_audio_ml, embed_clap, wav_ref, sr, device,
+                                             target_cache_path(cache_dir, clap_audio_ml.name, stem))
+                        p_ca = embed_clap(clap_audio_ml, pred, sr, device)
+                        clap_audio_rows.append({"file": stem,
+                                                "cosine": float(cosine_sim(t_ca.mean(0), p_ca.mean(0)))})
+                        clap_a_pred_embs.append(p_ca)
+    
+                        load_or_embed(mert_ml, embed_mert, wav_ref, sr, device,
+                                      target_cache_path(cache_dir, mert_ml.name, stem))
+                        mert_pred_embs.append(embed_mert(mert_ml, pred, sr, device))
+                        fad_files.append(stem_to_file[stem])
+    
+                    except Exception as e:
+                        warn(f"Embedding error {stem}: {e}", prefix="EMBED")
 
                 if (i + 1) % 50 == 0:
                     elapsed = time.time() - t0
@@ -293,7 +299,7 @@ def main() -> None:
 
         if spectral_rows:
             write_csv(metrics_dir / "spectral.csv",
-                      ["file", "si_sdr", "stft_loss"], spectral_rows)
+                      ["file", "si_sdr", "sdr", "stft_loss"], spectral_rows)
             ok(f"spectral.csv written", prefix="EVAL")
         if cdpam_rows:
             write_csv(metrics_dir / "cdpam.csv", ["file", "cdpam"], cdpam_rows)

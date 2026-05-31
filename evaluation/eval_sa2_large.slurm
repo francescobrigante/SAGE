@@ -57,7 +57,7 @@ SA2_CKPTS=(
 COMMON_FLAGS=(
     --target-dir   "$TARGET_DIR"
     --cache-dir    "$CACHE_DIR"
-    --num-workers  8
+    --num-workers  16
     --max-files    2500
     --resume
 )

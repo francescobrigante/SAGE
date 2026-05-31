@@ -363,6 +363,12 @@ def main(cfg: DictConfig):
                 WandbConfigLogger(conf_root, use_artifact=True, log_text=False).log_to_wandb(run)
             except Exception as e:
                 warn(f"Upload dir conf on W&B failed ({type(e).__name__}: {e})", prefix="TRAINER")
+            try:
+                run_id_file = config.PROJECT_ROOT / ".run_ids" / run_name
+                run_id_file.parent.mkdir(parents=True, exist_ok=True)
+                run_id_file.write_text(logger.experiment.id)
+            except Exception as e:
+                warn(f"Could not persist W&B run_id ({e})", prefix="TRAINER")
         else:
             # Evita l'inizializzazione di run W&B sugli altri rank, ma mantieni un logger compatibile
             logger = TensorBoardLogger(save_dir=str(run_dir), name="lightning_logs", version=None)

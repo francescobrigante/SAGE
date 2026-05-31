@@ -8,24 +8,24 @@ import signal
 import torch
 from einops import rearrange
 import torch.nn.functional as F
-from config import DEFAULT_SILENCE_THRESHOLD
+from config import DEFAULT_SILENCE_THRESHOLD, DEFAULT_AUDIO_LOAD_TIMEOUT
 import torchaudio
-
-_LOAD_TIMEOUT_SECONDS = 30
 
 def _torchaudio_load_safe(path: str) -> tuple:
     """torchaudio.load() with SIGALRM timeout on Linux to prevent indefinite hangs on corrupt MP3s.
     Each DataLoader worker is a forked process with its own signal mask, so SIGALRM is safe here.
     Falls back to a direct call on platforms without SIGALRM (Windows, macOS with threads).
+    Note: SIGALRM cannot interrupt NFS D-state hangs (kernel uninterruptible sleep);
+    the DataLoader-level timeout (DEFAULT_DATALOADER_TIMEOUT) is the final safety net in those cases.
     """
     if not hasattr(signal, "SIGALRM"):
         return torchaudio.load(path, normalize=True)
 
     def _handler(signum, frame):
-        raise RuntimeError(f"torchaudio.load timed out after {_LOAD_TIMEOUT_SECONDS}s on: {path}")
+        raise RuntimeError(f"torchaudio.load timed out after {DEFAULT_AUDIO_LOAD_TIMEOUT}s on: {path}")
 
     old = signal.signal(signal.SIGALRM, _handler)
-    signal.alarm(_LOAD_TIMEOUT_SECONDS)
+    signal.alarm(DEFAULT_AUDIO_LOAD_TIMEOUT)
     try:
         return torchaudio.load(path, normalize=True)
     finally:
