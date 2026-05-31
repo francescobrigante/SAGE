@@ -34,7 +34,8 @@ sys.path.insert(0, str(_PROJ_ROOT / "src"))
 from ar_spectra.models.inference import EuleroEncodeDecode
 from ar_spectra.utils.console import ok, warn, info, err
 from config import DATA_PATH, DEFAULT_AUDIO_EXTENSIONS, DEFAULT_MAX_FILES, FMA_METADATA
-from losses import si_sdr, stft_loss, cdpam_score
+from losses import compute_sdr_and_sisdr, stft_loss, cdpam_score
+
 from utils import (write_csv, collect_fma_files, atomic_save_npy,
                    load_or_embed, target_cache_path, silence_output)
 from compute_clap_score import embed_clap, cosine_sim
@@ -129,6 +130,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--num-downsamples", type=int, default=None,
                    help="Override PatchMerging count (auto-detected from checkpoint if omitted).")
     p.add_argument("--skip-cdpam",      action="store_true")
+    p.add_argument("--cdpam-only",      action="store_true",
+                   help="Only calculate CDPAM and write cdpam.csv (skips _done check if cdpam.csv is missing)")
+    p.add_argument("--sdr-only",        action="store_true",
+                   help="Only compute SI-SDR, SDR and STFT loss, skipping CDPAM, CLAP, and FAD.")
     p.add_argument("--resume",          action="store_true",
                    help="Skip checkpoint if metrics/_done already exists.")
     return p.parse_args()
@@ -173,22 +178,25 @@ def main() -> None:
 
     stem_to_file: dict[str, Path] = {f.stem: f for f in audio_files}
 
-    # Load CLAP + MERT once per rank — heavy, reused across all checkpoints on this rank
-    info("Loading CLAP (music/audio) and MERT models...", prefix="EVAL")
-    clap_music_ml = CLAPLaionModel("music")
-    clap_audio_ml = CLAPLaionModel("audio")
-    mert_ml       = MERTModel()
-    for _ml in (clap_music_ml, clap_audio_ml, mert_ml):
-        with silence_output():
-            _ml.load_model()
-        _ml.model.to(device)
-    ok("Embedding models ready.", prefix="EVAL")
+    if not args.cdpam_only and not args.sdr_only:
+        # Load CLAP + MERT once per rank — heavy, reused across all checkpoints on this rank
+        info("Loading CLAP (music/audio) and MERT models...", prefix="EVAL")
+        clap_music_ml = CLAPLaionModel("music")
+        clap_audio_ml = CLAPLaionModel("audio")
+        mert_ml       = MERTModel()
+        for _ml in (clap_music_ml, clap_audio_ml, mert_ml):
+            with silence_output():
+                _ml.load_model()
+            _ml.model.to(device)
+        ok("Embedding models ready.", prefix="EVAL")
 
     for ckpt_path in my_ckpts:
         metrics_dir = output_root / ckpt_path.stem / "metrics"
         ok(f"=== {ckpt_path.name} (rank {local_rank}) ===", prefix="EVAL")
 
-        if args.resume and (metrics_dir / "_done").exists():
+        if args.cdpam_only and (metrics_dir / "cdpam.csv").exists():
+            info("[RESUME] cdpam.csv already exists — skipping.", prefix="EVAL"); continue
+        elif not args.cdpam_only and args.resume and (metrics_dir / "_done").exists():
             info("[RESUME] already done — skipping.", prefix="EVAL"); continue
 
         try:
@@ -258,41 +266,45 @@ def main() -> None:
                     err(f"Inference error {stem}: {e}", prefix="EVAL")
                     skipped += 1; continue
 
-                spectral_rows.append({
-                    "file":      stem,
-                    "si_sdr":    float(si_sdr(wav_ref, pred)),
-                    "stft_loss": float(stft_loss(wav_ref, pred)),
-                })
+                if not args.cdpam_only:
+                    sdr_val, sisdr_val = compute_sdr_and_sisdr(wav_ref, pred)
+                    spectral_rows.append({
+                        "file":      stem,
+                        "si_sdr":    sisdr_val,
+                        "sdr":       sdr_val,
+                        "stft_loss": float(stft_loss(wav_ref, pred)),
+                    })
 
-                if not args.skip_cdpam:
+                if not args.skip_cdpam and not args.sdr_only:
                     try:
                         cdpam_rows.append({"file": stem,
                                            "cdpam": cdpam_score(wav_ref, pred, sr, device=device)})
                     except Exception as e:
                         warn(f"CDPAM error {stem}: {e}", prefix="EVAL")
 
-                # CLAP cosine + FAD embeddings
-                try:
-                    t_cm = load_or_embed(clap_music_ml, embed_clap, wav_ref, sr, device,
-                                         target_cache_path(cache_dir, clap_music_ml.name, stem))
-                    p_cm = embed_clap(clap_music_ml, pred, sr, device)
-                    clap_music_rows.append({"file": stem,
-                                            "cosine": float(cosine_sim(t_cm.mean(0), p_cm.mean(0)))})
-
-                    t_ca = load_or_embed(clap_audio_ml, embed_clap, wav_ref, sr, device,
-                                         target_cache_path(cache_dir, clap_audio_ml.name, stem))
-                    p_ca = embed_clap(clap_audio_ml, pred, sr, device)
-                    clap_audio_rows.append({"file": stem,
-                                            "cosine": float(cosine_sim(t_ca.mean(0), p_ca.mean(0)))})
-                    clap_a_pred_embs.append(p_ca)
-
-                    load_or_embed(mert_ml, embed_mert, wav_ref, sr, device,
-                                  target_cache_path(cache_dir, mert_ml.name, stem))
-                    mert_pred_embs.append(embed_mert(mert_ml, pred, sr, device))
-                    fad_files.append(stem_to_file[stem])
-
-                except Exception as e:
-                    warn(f"Embedding error {stem}: {e}", prefix="EMBED")
+                if not args.cdpam_only and not args.sdr_only:
+                    # CLAP cosine + FAD embeddings
+                    try:
+                        t_cm = load_or_embed(clap_music_ml, embed_clap, wav_ref, sr, device,
+                                             target_cache_path(cache_dir, clap_music_ml.name, stem))
+                        p_cm = embed_clap(clap_music_ml, pred, sr, device)
+                        clap_music_rows.append({"file": stem,
+                                                "cosine": float(cosine_sim(t_cm.mean(0), p_cm.mean(0)))})
+    
+                        t_ca = load_or_embed(clap_audio_ml, embed_clap, wav_ref, sr, device,
+                                             target_cache_path(cache_dir, clap_audio_ml.name, stem))
+                        p_ca = embed_clap(clap_audio_ml, pred, sr, device)
+                        clap_audio_rows.append({"file": stem,
+                                                "cosine": float(cosine_sim(t_ca.mean(0), p_ca.mean(0)))})
+                        clap_a_pred_embs.append(p_ca)
+    
+                        load_or_embed(mert_ml, embed_mert, wav_ref, sr, device,
+                                      target_cache_path(cache_dir, mert_ml.name, stem))
+                        mert_pred_embs.append(embed_mert(mert_ml, pred, sr, device))
+                        fad_files.append(stem_to_file[stem])
+    
+                    except Exception as e:
+                        warn(f"Embedding error {stem}: {e}", prefix="EMBED")
 
                 if (len(spectral_rows) + skipped) % 50 == 0:
                     info(f"{len(spectral_rows)+skipped}/{len(audio_files)} "
@@ -302,7 +314,7 @@ def main() -> None:
 
         if spectral_rows:
             write_csv(metrics_dir / "spectral.csv",
-                      ["file", "si_sdr", "stft_loss"], spectral_rows)
+                      ["file", "si_sdr", "sdr", "stft_loss"], spectral_rows)
             ok(f"spectral.csv written ({len(spectral_rows)} rows)", prefix="EVAL")
         if cdpam_rows:
             write_csv(metrics_dir / "cdpam.csv", ["file", "cdpam"], cdpam_rows)
@@ -322,7 +334,8 @@ def main() -> None:
                                         metrics_dir / "fad_gudgud.csv", "clap-laion-audio")
             ok(f"fad_gudgud.csv written", prefix="EVAL")
 
-        (metrics_dir / "_done").touch()
+        if not args.cdpam_only:
+            (metrics_dir / "_done").touch()
         del codec
         torch.cuda.empty_cache()
 

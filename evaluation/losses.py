@@ -9,6 +9,34 @@ from __future__ import annotations
 import torch
 import torchaudio
 
+def compute_sdr_and_sisdr(target: torch.Tensor, pred: torch.Tensor, eps: float = 1e-8) -> tuple[float, float]:
+    """Compute both standard scale-dependent SDR and scale-invariant SDR (SI-SDR)
+    efficiently in a single pass using dot products, avoiding redundant vector allocations.
+
+    Both metrics are computed on the flattened de-biased (mean-removed) tensors.
+    """
+    t = target.flatten().float()
+    p = pred.flatten().float()
+    t = t - t.mean()
+    p = p - p.mean()
+
+    t_sq = torch.sum(t ** 2)
+    p_sq = torch.sum(p ** 2)
+    t_dot_p = torch.sum(t * p)
+
+    # 1. SDR
+    noise_sdr = p_sq + t_sq - 2.0 * t_dot_p
+    sdr_val = 10.0 * torch.log10(t_sq / (torch.clamp(noise_sdr, min=0.0) + eps))
+
+    # 2. SI-SDR
+    proj_sq = (t_dot_p ** 2) / (t_sq + eps)
+    noise_sisdr = p_sq - proj_sq
+    sisdr_val = 10.0 * torch.log10(proj_sq / (torch.clamp(noise_sisdr, min=0.0) + eps))
+
+    return sdr_val.item(), sisdr_val.item()
+
+
+
 
 # ── SI-SDR ────────────────────────────────────────────────────
 

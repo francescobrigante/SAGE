@@ -16,7 +16,7 @@
 #SBATCH --gres=gpu:4                   # 4x A100 64GB
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=1-10:00:00
+#SBATCH --time=23:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 

@@ -41,7 +41,8 @@ from config import (
     DEFAULT_MAX_FILES,
     FMA_METADATA,
 )
-from losses import si_sdr, stft_loss, cdpam_score
+from losses import compute_sdr_and_sisdr, stft_loss, cdpam_score
+
 from utils import (write_csv, collect_fma_files, get_expected_frames,
                    atomic_save_npy, load_or_embed, target_cache_path,
                    silence_output)
@@ -291,9 +292,11 @@ def main() -> None:
                     err(f"Inference error {stem}: {e}", prefix="EVAL")
                     skipped += 1; continue
 
+                sdr_val, sisdr_val = compute_sdr_and_sisdr(wav, pred)
                 spectral_rows.append({
                     "file":      stem,
-                    "si_sdr":    float(si_sdr(wav, pred)),
+                    "si_sdr":    sisdr_val,
+                    "sdr":       sdr_val,
                     "stft_loss": float(stft_loss(wav, pred)),
                 })
 
@@ -335,7 +338,7 @@ def main() -> None:
 
         if spectral_rows:
             write_csv(metrics_dir / "spectral.csv",
-                      ["file", "si_sdr", "stft_loss"], spectral_rows)
+                      ["file", "si_sdr", "sdr", "stft_loss"], spectral_rows)
             ok(f"spectral.csv written ({len(spectral_rows)} rows)", prefix="EVAL")
         if cdpam_rows:
             write_csv(metrics_dir / "cdpam.csv", ["file", "cdpam"], cdpam_rows)

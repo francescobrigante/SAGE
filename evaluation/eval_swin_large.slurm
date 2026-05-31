@@ -15,7 +15,7 @@
 #SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=2-00:00:00
+#SBATCH --time=00:08:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -48,7 +48,6 @@ srun python evaluation/evaluate_swin_varT.py \
     --target-dir $FAST/datasets/fma/fma_large \
     --output-dir $WORK/C-VAE/runs/eval_swin_large \
     --cache-dir  "$CACHE_DIR" \
-    --num-workers 8 \
+    --num-workers 16 \
     --max-files 2500 \
-    --skip-cdpam \
     --resume

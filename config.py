@@ -34,8 +34,8 @@ DEFAULT_MODEL_CHECKPOINT = CHECKPOINT_DIR / "eulerodec.ckpt"
 
 # Training & Dataloading Defaults
 DEFAULT_NUM_WORKERS = 8
-DEFAULT_DATALOADER_TIMEOUT = 60
-DEFAULT_AUDIO_LOAD_TIMEOUT = 15  # per-file timeout (s) to abort stuck MP3 decode in worker
+DEFAULT_DATALOADER_TIMEOUT = 120
+DEFAULT_AUDIO_LOAD_TIMEOUT = 60   # per-file timeout (s) to abort stuck MP3 decode in worker
 DEFAULT_SEED = 94
 DEFAULT_MAX_RETRIES_PER_SAMPLE = 8
 DEFAULT_MAX_PAD_RATIO = 0.05

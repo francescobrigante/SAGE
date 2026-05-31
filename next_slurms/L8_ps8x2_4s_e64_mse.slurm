@@ -1,15 +1,31 @@
 #!/bin/bash
-
-#SBATCH --job-name=Swin_Baseline_Example
+# ============================================================
+# L8_ps8x2_4s_e64_mse: Swin 4-stage VAE + stft_MSE + PS=8x2
+#   IDENTICO a L3/L6/L7, ma con modifiche geometriche per patch temporale 2:
+#     stft_mse: 1.0
+#     mrstft:   0.0
+#     mrmel:    0.0  (senza mrmel)
+#     patch_size: [8, 2]
+#     window_size: [16, 8]
+#     embed_dim: 64
+#     latent_channels: 8  (per ×64 compression rate con 128 tokens)
+#
+#   Tutto il resto invariato (kl=1e-5, lr=1e-3).
+#
+# ARCH (swin_cplx_4s_x64): PS=8x2, window=[16,8], embed=64, depths=[2,2,6,2]
+#   Stage 0: 128x64 -> Stage 1: 64x32 -> Stage 2: 32x16 -> Stage 3: 16x8 (128 tokens, x64 complex con 8 ch)
+# DATA: FMA-medium (default), no disc.
+# ============================================================
+#SBATCH --job-name=L8_ps8x2_4s_e64_mse
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=2
-#SBATCH --gres=gpu:2                   # 2x A100 DDP
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=24:00:00
+#SBATCH --time=23:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -29,6 +45,8 @@ export WANDB_MODE=online
 export TF_CPP_MIN_LOG_LEVEL=3
 export WANDB_TAGS="$SLURM_JOB_NAME"
 export WANDB_DIR=$WORK/C-VAE/.wandb_cache
+export WANDB_RESUME=allow
+export WANDB_RUN_ID=l8mse8x2
 
 set -a
 source $WORK/C-VAE/.env
@@ -38,15 +56,17 @@ cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
 # ─── Auto-resume: W&B run_id + last checkpoint ──────────────────────────────
-RUN_ID_FILE="$WORK/C-VAE/.run_ids/${SLURM_JOB_NAME}"
+RUN_ID_FILE="$WORK/C-VAE/.run_ids/L8_ps8x2_4s_e64_mse"
 
+# Override hardcoded WANDB vars with persisted run_id if available
 if [ -f "$RUN_ID_FILE" ]; then
     export WANDB_RESUME=must
     export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
     echo "[RESUME] W&B run: $WANDB_RUN_ID"
 fi
 
-LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/${SLURM_JOB_NAME}"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+# Auto-detect newest last.ckpt
+LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/L8_ps8x2_4s_e64_mse"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
 CKPT_ARG=""
 if [ -n "$LATEST_CKPT" ]; then
     CKPT_ARG="+ckpt_path=$LATEST_CKPT"
@@ -61,18 +81,27 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
 
     srun --kill-on-bad-exit=1 python train.py \
         models=swin_cplx_baseline \
+        "models.model.encoder.depths=[2,2,6,2]" \
+        "models.model.encoder.num_heads=[4,8,16,32]" \
+        "models.model.decoder.depths=[2,6,2,2]" \
+        "models.model.decoder.num_heads=[32,16,8,4]" \
+        "models.model.swin.patch_size=[8,2]" \
+        "models.model.swin.window_size=[16,8]" \
+        "models.model.swin.embed_dim=64" \
+        models.model.latent_channels=8 \
         trainer.trainer.epochs=97 \
         trainer.loss_config.bottleneck.weights.kl=1e-5 \
-        trainer.loss_config.spectral.weights.stft_mse=0.0 \
-        trainer.loss_config.spectral.weights.mrstft=1.0 \
+        trainer.loss_config.spectral.weights.stft_mse=1.0 \
+        trainer.loss_config.spectral.weights.mrstft=0.0 \
+        trainer.loss_config.mrmel.weights.mrmel=0.0 \
         trainer.optimizer.lr=1e-3 \
         trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
         trainer.trainer.strategy=ddp_find_unused_parameters_true \
         trainer.trainer.precision="bf16-mixed" \
         "+trainer.trainer.compile=false" \
         trainer.wandb.use_wandb=true \
-        trainer.trainer.ckpt_dir=checkpoints/EXAMPLE \
-        trainer.wandb.name=Swin_Baseline_Example \
+        trainer.trainer.ckpt_dir=checkpoints/L8_ps8x2_4s_e64_mse \
+        trainer.wandb.name=L8_ps8x2_4s_e64_mse \
         $CKPT_ARG
 
     EXIT=$?
@@ -86,6 +115,6 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         export WANDB_RESUME=must
         export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
     fi
-    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/${SLURM_JOB_NAME}"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/L8_ps8x2_4s_e64_mse"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
     [ -n "$LATEST_CKPT" ] && CKPT_ARG="+ckpt_path=$LATEST_CKPT"
 done

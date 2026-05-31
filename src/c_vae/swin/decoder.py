@@ -17,6 +17,7 @@ from ar_spectra.models.implementations.abstract_ae import AbstractDecoder
 from .swin_stage import SwinStage
 from .patches import PatchExpand, PatchUnembed, SpatialConvSmooth
 from .utils import init_swin_weights, make_norm
+from .perceiver import PerceiverDecompression
 
 
 class SwinDecoder(AbstractDecoder):
@@ -72,6 +73,7 @@ class SwinDecoder(AbstractDecoder):
         is_complex: bool = False,
         complex_activation: str = "ComplexGELU1d",
         use_smooth_convs: bool = False,
+        use_perceiver_compression: bool = False,
     ) -> None:
         super().__init__(channels=channels, is_complex=is_complex)
 
@@ -108,6 +110,14 @@ class SwinDecoder(AbstractDecoder):
         # Input projection: latent_channels → largest stage dim
         # (B, T, latent_channels=64) → (B, T, stage_dims[0]=384)
         self.input_proj = NormLinear(channels, stage_dims[0], is_complex=is_complex)
+
+        if use_perceiver_compression:
+            self.decompressor = PerceiverDecompression(
+                dim=stage_dims[0],
+                num_queries=stage_resolutions[0][0] * stage_resolutions[0][1],
+                grid_size=stage_resolutions[0],
+                is_complex=is_complex
+            )
 
         # Stochastic depth
         total_blocks = sum(depths)
@@ -199,6 +209,9 @@ class SwinDecoder(AbstractDecoder):
         # x = x.flatten(2).transpose(1, 2)              # (B, 128,  64)
 
         x = self.input_proj(x)                          # (B, 128, 384)
+
+        if hasattr(self, 'decompressor'):
+            x = self.decompressor(x)
 
         # Swin stages with PatchExpand between them (+ optional spatial smoothers)
         for i, stage in enumerate(self.stages):

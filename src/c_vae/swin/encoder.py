@@ -16,6 +16,7 @@ from ar_spectra.models.implementations.abstract_ae import AbstractEncoder
 from .swin_stage import SwinStage
 from .patches import PatchEmbed, PatchMerging
 from .utils import init_swin_weights, make_norm, random_patch_mask
+from .perceiver import PerceiverCompression
 
 
 class SwinEncoder(AbstractEncoder):
@@ -84,6 +85,8 @@ class SwinEncoder(AbstractEncoder):
         abs_pos_embed: bool = False,
         mim_mask_ratio: float = 0.0,
         use_smooth_convs: bool = False,
+        use_perceiver_compression: bool = False,
+        num_perceiver_queries: int = 128,
     ) -> None:
 
         super().__init__(input_size=in_channels, is_complex=is_complex)
@@ -177,6 +180,15 @@ class SwinEncoder(AbstractEncoder):
         self._final_dim: int = stage_dims[-1]                            # 384
         self._final_resolution: Tuple[int, int] = stage_resolutions[-1]  # (32, 4)
 
+        if use_perceiver_compression:
+            self.compressor = PerceiverCompression(
+                dim=self._final_dim,
+                num_queries=num_perceiver_queries,
+                grid_size=self._final_resolution,
+                is_complex=is_complex
+            )
+            self._final_resolution = (num_perceiver_queries, 1)
+
         # Final norm + projection to latent dimension
         self.norm = make_norm(self._final_dim, is_complex)
         self.head = NormLinear(self._final_dim, dimension, is_complex=is_complex)
@@ -228,6 +240,9 @@ class SwinEncoder(AbstractEncoder):
         # Stage 2 + PatchMerging:                 (B,  512, 192)  grid  (64,  8)
         # Stage 3 + PatchMerging:                 (B,  128, 384)  grid  (32,  4)
         # Stage 4 (no merge):                     (B,  128, 384)  grid  (32,  4)
+
+        if hasattr(self, 'compressor'):
+            x = self.compressor(x)
 
         x = self.norm(x)                        # (B, 128, 384)
         x = self.head(x)                        # (B, 128, out_channels)
