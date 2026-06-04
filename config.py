@@ -27,6 +27,14 @@ DEFAULT_AUDIO_CHANNELS = 2
 FMA_METADATA = os.getenv("FMA_METADATA")
 DATA_PATH = os.getenv("DATA_PATH")
 
+# External model storage on Leonardo $FAST (persistent project scratch, 1 TB).
+# Foundation models (MERT teacher, etc.) are pre-downloaded here on the login node
+# and loaded offline (local_files_only) on the isolated compute nodes.
+FAST_DIR = Path(os.getenv("FAST", PROJECT_ROOT / "_fast"))
+MODELS_DIR = FAST_DIR / "models"
+MERT_MODEL_ID = "m-a-p/MERT-v1-95M"          # HF repo id of the MERT teacher
+MERT_MODEL_DIR = MODELS_DIR / "MERT-v1-95M"  # local snapshot dir on $FAST
+
 DEFAULT_BATCH_SIZE = 16
 DEFAULT_MAX_FILES = 0 # 0 means all
 

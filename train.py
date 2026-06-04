@@ -138,6 +138,69 @@ class TableOnlyModelSummary(pl.Callback):
             console.print(summary_str)
 
 
+def _load_autoencoder_weights(wrapper, ckpt_file: str, use_ema: bool = True) -> None:
+    """Load ONLY the autoencoder weights from a checkpoint into the wrapper.
+
+    Unlike a full PL resume (``ckpt_path``), this restores *no* optimizer state,
+    global step, or trainer loops — it just copies encoder+decoder weights so a
+    fresh run can fine-tune (e.g. decoder-finetune with a newly-added
+    discriminator). Reads ``ema_autoencoder.*`` (EMA, default) or
+    ``engine.autoencoder.*`` (live) keys and loads them into
+    ``wrapper.engine.autoencoder`` with ``strict=False``.
+
+    Args:
+        wrapper:   The AutoencoderTrainingWrapper whose autoencoder receives weights.
+        ckpt_file: Path to the source checkpoint (e.g. M5's last.ckpt).
+        use_ema:   If True, prefer EMA weights; else the live training weights.
+    """
+    prefix = "ema_autoencoder." if use_ema else "engine.autoencoder."
+    ck = torch.load(ckpt_file, map_location="cpu", weights_only=False)
+    sd = ck.get("state_dict", ck) if isinstance(ck, dict) else ck
+    weights = {k[len(prefix):]: v for k, v in sd.items() if k.startswith(prefix)}
+    if not weights:                                   # requested source absent → fall back
+        alt = "engine.autoencoder." if use_ema else "ema_autoencoder."
+        weights = {k[len(alt):]: v for k, v in sd.items() if k.startswith(alt)}
+        warn(f"init_from: '{prefix}' weights absent; fell back to '{alt}'.", prefix="TRAINER")
+    if not weights:
+        raise ValueError(f"init_from: no autoencoder weights found in {ckpt_file}.")
+    missing, unexpected = wrapper.engine.autoencoder.load_state_dict(weights, strict=False)
+    ok(f"init_from: loaded {len(weights)} autoencoder weights from {ckpt_file} "
+       f"(ema={use_ema}); missing={len(missing)} unexpected={len(unexpected)}.", prefix="TRAINER")
+    if missing:
+        warn(f"init_from missing keys (first 5): {missing[:5]}", prefix="TRAINER")
+    if unexpected:
+        warn(f"init_from unexpected keys (first 5): {unexpected[:5]}", prefix="TRAINER")
+
+
+def _load_discriminator_weights(wrapper, ckpt_file: str) -> None:
+    """Load discriminator weights from a checkpoint into the wrapper.
+
+    Extracts keys matching ``engine.loss_manager.discriminator.*`` and loads
+    them into ``wrapper.engine.loss_manager.discriminator`` with
+    ``strict=False``.  Used for decoder-finetune runs that want to *continue*
+    a previously-trained discriminator rather than re-initialising it.
+
+    Args:
+        wrapper:   The AutoencoderTrainingWrapper whose discriminator receives weights.
+        ckpt_file: Path to the source checkpoint (e.g. N6's last.ckpt).
+    """
+    prefix = "engine.loss_manager.discriminator."
+    ck = torch.load(ckpt_file, map_location="cpu", weights_only=False)
+    sd = ck.get("state_dict", ck) if isinstance(ck, dict) else ck
+    weights = {k[len(prefix):]: v for k, v in sd.items() if k.startswith(prefix)}
+    if not weights:
+        raise ValueError(f"init_from_disc: no discriminator weights found in {ckpt_file}.")
+    disc = wrapper.engine.loss_manager.discriminator
+    if disc is None:
+        raise ValueError("init_from_disc: wrapper has no discriminator to load into.")
+    missing, unexpected = disc.load_state_dict(weights, strict=False)
+    ok(f"init_from_disc: loaded {len(weights)} discriminator weights from {ckpt_file}; "
+       f"missing={len(missing)} unexpected={len(unexpected)}.", prefix="TRAINER")
+    if missing:
+        warn(f"init_from_disc missing keys (first 5): {missing[:5]}", prefix="TRAINER")
+    if unexpected:
+        warn(f"init_from_disc unexpected keys (first 5): {unexpected[:5]}", prefix="TRAINER")
+
 
 @hydra.main(version_base=None, config_path="config", config_name="main")
 def main(cfg: DictConfig):
@@ -314,6 +377,7 @@ def main(cfg: DictConfig):
         warmup_steps=int(trainer_cfg.trainer.get("warmup_steps", 0)),
         warmup_mode=str(trainer_cfg.trainer.get("warmup_mode", "adv")),
         encoder_freeze_on_warmup=bool(trainer_cfg.trainer.get("encoder_freeze_on_warmup", False)),
+        freeze_encoder=bool(trainer_cfg.trainer.get("freeze_encoder", False)),
         force_input_mono=bool(model_cfg.get("autoencoder", {}).get("force_input_mono", False)),
         latent_mask_ratio=float(model_cfg.get("autoencoder", {}).get("latent_mask_ratio", 0.0)),
         teacher_model=None,
@@ -321,6 +385,7 @@ def main(cfg: DictConfig):
         optimizer_spec=OmegaConf.to_container(trainer_cfg.get("optimizer", {}), resolve=True) or None,
         scheduler_spec=OmegaConf.to_container(trainer_cfg.get("scheduler", {}), resolve=True) or None,
         disc_optimizer_spec=OmegaConf.to_container(trainer_cfg.get("disc_optimizer") or OmegaConf.create({}), resolve=True) or None,
+        aux_optimizer_spec=OmegaConf.to_container(trainer_cfg.get("aux_optimizer") or OmegaConf.create({}), resolve=True) or None,
         pre_transform_spec=pre_transform_spec,
         accumulate_grad_batches=int(trainer_cfg.trainer.get("accumulate_grad_batches", 1)),
         clip_grad_norm=float(trainer_cfg.trainer.get("clip_grad_norm", 0.0)),
@@ -500,8 +565,21 @@ def main(cfg: DictConfig):
     ok(f"{req_accelerator}", prefix="DEVICE")
     
     ckpt_path = OmegaConf.select(cfg, "ckpt_path", default=None)
+    init_from = OmegaConf.select(cfg, "init_from", default=None)
+    init_from_ema = bool(OmegaConf.select(cfg, "init_from_ema", default=True))
+    init_from_disc = bool(OmegaConf.select(cfg, "init_from_disc", default=False))
     if ckpt_path:
+        # Full resume takes precedence: the run's own checkpoint already holds the
+        # fine-tuned weights + discriminator + optimizer/step state.
         ok(f"Resuming from checkpoint: {ckpt_path}", prefix="TRAINER")
+        if init_from:
+            warn(f"init_from={init_from} IGNORED: ckpt_path resume takes precedence.", prefix="TRAINER")
+    elif init_from:
+        # Cold start of a fine-tune run: load only the autoencoder weights, fresh
+        # step/optimizer (e.g. decoder-finetune from M5 with a new discriminator).
+        _load_autoencoder_weights(wrapper, str(init_from), use_ema=init_from_ema)
+        if init_from_disc:
+            _load_discriminator_weights(wrapper, str(init_from))
 
     try:
         trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl, ckpt_path=ckpt_path)

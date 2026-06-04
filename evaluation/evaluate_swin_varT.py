@@ -149,7 +149,8 @@ def main() -> None:
     world_size = int(os.environ.get("SLURM_NTASKS_PER_NODE", 1))
     device     = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
 
-    all_ckpts = [Path(c).expanduser().resolve() for c in args.checkpoint]
+    # Use .absolute() instead of .resolve() to keep the symlink name
+    all_ckpts = [Path(c).expanduser().absolute() for c in args.checkpoint]
     my_ckpts  = all_ckpts[local_rank::world_size]
 
     if not my_ckpts:

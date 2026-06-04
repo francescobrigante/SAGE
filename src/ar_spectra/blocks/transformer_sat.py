@@ -1,10 +1,12 @@
 
 # =============================================================================
 # SAT-style transformer building blocks: TransformerBlock (pre-norm, RoPE,
-# differential attention, DYT/RMS norm, conformer, GLU-FFN, LayerScale) and
+# differential attention, DYT/RMS norm, conformer, GLU-FFN, LayerScale, optional
+# AdaLN global-cond), ContinuousTransformer (minimal DiT-capable backbone) and
 # TransformerResamplingBlock (strided encoder for discriminators).
-# Stripped from stable-audio-tools: no global/local cond, no flash-attn,
-# no flex_attention, no varlen — pure SDPA with optional sliding-window mask.
+# Stripped from stable-audio-tools: no local cond, no flash-attn, no flex_attention,
+# no varlen — pure SDPA with optional sliding-window mask. AdaLN global-cond kept
+# (DiT timestep conditioning, LATENT_ALIGNMENT_PLAN Fase 6).
 # =============================================================================
 
 import math
@@ -359,6 +361,7 @@ class TransformerBlock(nn.Module):
         conformer: bool = False,
         layer_scale: bool = False,
         add_rope: bool = False,
+        global_cond_dim: Optional[int] = None,
         norm_type: Literal['layer_norm', 'rms_norm', 'dyt'] = 'dyt',
         attn_kwargs: dict = {},
         ff_kwargs: dict = {},
@@ -390,15 +393,47 @@ class TransformerBlock(nn.Module):
 
         self.rope = RotaryEmbedding(min(dim_heads, dim) // 2) if add_rope else None
 
+        # AdaLN timestep/global conditioning (DiT-style). Inert unless global_cond_dim
+        # is set: a per-block 6-way scale/shift/gate, faithful to stable-audio-tools'
+        # adaLN. Modulation sits on top of DyT (SAME §2.2) — norm-agnostic.
+        self.global_cond_dim = global_cond_dim
+        if global_cond_dim is not None:
+            self.to_scale_shift_gate = nn.Parameter(torch.randn(6 * dim) / dim ** 0.5)
+
     def forward(
         self,
         x: torch.Tensor,
         rotary_pos_emb: Optional[Tuple] = None,
+        global_cond: Optional[torch.Tensor] = None,
         self_attention_flash_sliding_window: Optional[List[int]] = None,
-        **kwargs,  # absorb unused SAT kwargs (context, global_cond, etc.)
+        **kwargs,  # absorb unused SAT kwargs (context, etc.)
     ) -> torch.Tensor:
         if rotary_pos_emb is None and self.add_rope:
             rotary_pos_emb = self.rope.forward_from_seq_len(x.shape[-2])  # (T, D)
+
+        if self.global_cond_dim is not None and global_cond is not None:
+            # AdaLN-zero path: cond (B, 6*dim) → per-block scale/shift/gate ×2.
+            scale_self, shift_self, gate_self, scale_ff, shift_ff, gate_ff = (
+                self.to_scale_shift_gate + global_cond).unsqueeze(1).chunk(6, dim=-1)  # 6×(B,1,C)
+
+            residual = x                                                      # self-attn w/ adaLN
+            x = self.pre_norm(x)
+            x = x * (1 + scale_self) + shift_self
+            x = self.self_attn(x, rotary_pos_emb=rotary_pos_emb,
+                               flash_attn_sliding_window=self_attention_flash_sliding_window)
+            x = x * torch.sigmoid(1 - gate_self)
+            x = residual + self.self_attn_scale(x)                           # (B, T, C)
+
+            if self.conformer is not None:
+                x = x + self.conformer_scale(self.conformer(x))             # (B, T, C)
+
+            residual = x                                                     # feed-forward w/ adaLN
+            x = self.ff_norm(x)
+            x = x * (1 + scale_ff) + shift_ff
+            x = self.ff(x)
+            x = x * torch.sigmoid(1 - gate_ff)
+            x = residual + self.ff_scale(x)                                  # (B, T, C)
+            return x
 
         x = x + self.self_attn_scale(self.self_attn(
             self.pre_norm(x),
@@ -411,6 +446,72 @@ class TransformerBlock(nn.Module):
 
         x = x + self.ff_scale(self.ff(self.ff_norm(x)))                    # (B, T, C)
         return x
+
+
+class ContinuousTransformer(nn.Module):
+    """Minimal continuous transformer with optional AdaLN timestep/global conditioning.
+
+    Reproduces only the subset of stable-audio-tools' ContinuousTransformer needed by
+    the flow-matching LatentDiT (LATENT_ALIGNMENT_PLAN Fase 6): in/out projections, a
+    global-cond AdaLN path, and a stack of TransformerBlocks. Uses SAME's transformer
+    primitives (differential attention + QK-norm + RoPE + DyT + GLU-FFN, zero-init
+    branches — the TransformerBlock defaults, §2.2). The heavyweight features of the
+    monolith (cross-attend, memory tokens, sliding-window/varlen, abs/sinusoidal
+    pos-emb) are intentionally omitted.
+
+    Args:
+        dim: transformer width.
+        depth: number of TransformerBlocks.
+        dim_in/dim_out: optional in/out projection dims (else Identity).
+        global_cond_dim: if set, enables AdaLN conditioning on a (B, global_cond_dim)
+            vector (e.g. a Fourier timestep embedding) via a Linear→SiLU→Linear(6*dim).
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        depth: int,
+        *,
+        dim_in: Optional[int] = None,
+        dim_out: Optional[int] = None,
+        dim_heads: int = 64,
+        global_cond_dim: Optional[int] = None,
+        rotary_pos_emb: bool = True,
+        zero_init_branch_outputs: bool = True,
+        conformer: bool = False,
+        norm_type: Literal['layer_norm', 'rms_norm', 'dyt'] = 'dyt',
+        **block_kwargs,
+    ):
+        super().__init__()
+        self.dim = dim
+        self.project_in = nn.Linear(dim_in, dim, bias=False) if dim_in is not None else nn.Identity()
+        self.project_out = nn.Linear(dim, dim_out, bias=False) if dim_out is not None else nn.Identity()
+
+        self.global_cond_embedder = None
+        if global_cond_dim is not None:
+            self.global_cond_embedder = nn.Sequential(
+                nn.Linear(global_cond_dim, dim),
+                nn.SiLU(),
+                nn.Linear(dim, dim * 6),
+            )
+
+        self.layers = nn.ModuleList([
+            TransformerBlock(
+                dim, dim_heads=dim_heads, global_cond_dim=global_cond_dim,
+                zero_init_branch_outputs=zero_init_branch_outputs, conformer=conformer,
+                norm_type=norm_type, add_rope=rotary_pos_emb, **block_kwargs,
+            )
+            for _ in range(depth)
+        ])
+
+    def forward(self, x: torch.Tensor, global_cond: Optional[torch.Tensor] = None) -> torch.Tensor:
+        x = self.project_in(x)                                             # (B, T, dim)
+        g = None
+        if self.global_cond_embedder is not None and global_cond is not None:
+            g = self.global_cond_embedder(global_cond)                    # (B, 6*dim)
+        for layer in self.layers:                                          # each block builds/applies its own RoPE
+            x = layer(x, global_cond=g)                                   # (B, T, dim)
+        return self.project_out(x)                                        # (B, T, dim_out)
 
 
 # ---------------------------------------------------------------------------

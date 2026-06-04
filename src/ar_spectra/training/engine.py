@@ -6,7 +6,7 @@ import torch.nn as nn
 from typing import Optional, Literal, Dict, Any, Tuple
 
 from ..models.autoencoder import AutoEncoder
-from ar_spectra.utils.console import warn, err
+from ar_spectra.utils.console import ok, warn, err
 from ar_spectra.utils.audio import trim_to_shortest
 from ar_spectra.utils.tensors import align_freq_bins, align_time_frames
 
@@ -27,6 +27,7 @@ class AutoencoderEngine(nn.Module):
                  warmup_steps: int = 0,
                  warmup_mode: Literal["adv", "full"] = "adv",
                  encoder_freeze_on_warmup: bool = False,
+                 freeze_encoder: bool = False,
                  force_input_mono: bool = False,
                  latent_mask_ratio: float = 0.0,
                  teacher_model: Optional[AutoEncoder] = None,
@@ -54,6 +55,18 @@ class AutoencoderEngine(nn.Module):
         self.warmup_steps = warmup_steps
         self.warmup_mode = warmup_mode
         self.encoder_freeze_on_warmup = encoder_freeze_on_warmup
+
+        # freeze_encoder: always-on (decoupled from warmup). Decoder-finetune mode —
+        # freezes the encoder so only the decoder trains. The VAE bottleneck of the
+        # real model is parameter-free (μ/logvar split + reparam), so freezing the
+        # encoder freezes everything up to the latent.
+        self.freeze_encoder = freeze_encoder
+        if self.freeze_encoder:
+            self.autoencoder.encoder.requires_grad_(False)
+            n = sum(p.numel() for p in self.autoencoder.encoder.parameters())
+            ok(f"freeze_encoder=True → encoder frozen ({n/1e6:.2f}M params, requires_grad=False); "
+               "only the decoder will train.", prefix="MODEL")
+
         self.force_input_mono = force_input_mono
         self.latent_mask_ratio = latent_mask_ratio
 
@@ -131,6 +144,7 @@ class AutoencoderEngine(nn.Module):
         # we store transformed target and original waveforms
         loss_info["encoder_input"] = spectral_target
         loss_info["reals"] = orig_waveforms
+        loss_info["global_step"] = global_step  # consumed by latent-alignment losses for detached-warmup
 
         warmed_up = (global_step >= self.warmup_steps)
 

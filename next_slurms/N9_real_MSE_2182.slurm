@@ -1,22 +1,22 @@
 #!/bin/bash
 # ============================================================
-# M7_Perceiver_Cplx: Swin V2 Complex VAE with Perceiver Compression
-#   - 4-stage Swin V2 Complex VAE
-#   - embed_dim=64, depths=[2,2,6,2]
-#   - patch_size=[4,1], window_size=8
-#   - Perceiver Compression: 512 tokens -> 128 tokens
-#   - Precision: 32 (FP32)
+# N9_real_MSE_2182: Real-valued baseline with stft_MSE only loss
+#   - 3-stage Swin V2 Real VAE
+#   - embed_dim=256, depths=[2,6,2]
+#   - patch_size=[64,1], window_size=[4,32]
+#   - stft_mse=1.0, mrstft=0.0 (stft_MSE only loss)
+#   - Precision: 32 (FP32) to prevent numerical explosion under bf16
 # ============================================================
-#SBATCH --job-name=M7_Perceiver_Cplx
+#SBATCH --job-name=N9_real_MSE_2182
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
-#SBATCH --gres=gpu:4                   # 4x A100 DDP
+#SBATCH --ntasks-per-node=2
+#SBATCH --gres=gpu:2                   # 2x A100 DDP
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=18:00:00
+#SBATCH --time=23:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -44,26 +44,34 @@ set +a
 cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
-# ─── Auto-resume (checkpoint only; fresh W&B run each submit) ──────────────────────────────
-LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/${SLURM_JOB_NAME}"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+# ─── Auto-resume: W&B run_id + last checkpoint ──────────────────────────────
+RUN_ID_FILE="$WORK/C-VAE/.run_ids/N9_real_MSE_2182"
+
+# Override hardcoded WANDB vars with persisted run_id if available
+if [ -f "$RUN_ID_FILE" ]; then
+    export WANDB_RESUME=must
+    export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
+    echo "[RESUME] W&B run: $WANDB_RUN_ID"
+fi
+
+# Auto-detect newest last.ckpt (finds pre-crash checkpoint on first launch too)
+LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/N9_real_MSE_2182"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
 CKPT_ARG=""
 if [ -n "$LATEST_CKPT" ]; then
     CKPT_ARG="+ckpt_path=$LATEST_CKPT"
     echo "[RESUME] Checkpoint: $LATEST_CKPT"
 fi
 
-# ─── Retry loop ───────
+# ─── Retry loop (up to 8 attempts — recovers from DataLoader timeouts) ───────
 MAX_ATTEMPTS=8
 attempt=1
 while [ $attempt -le $MAX_ATTEMPTS ]; do
     echo "[$(date '+%T')] Training attempt $attempt/$MAX_ATTEMPTS"
 
     srun --kill-on-bad-exit=1 python train.py \
-        models=swin_cplx_perceiver \
-        data.train_dataset.cac=false \
-        data.eval_dataset.cac=false \
-        data.demo.istft_params.cac=false \
-        data.model_channels=2 \
+        models=swin_real_baseline \
+        "models.model.encoder.depths=[2,18,2]" \
+        "models.model.decoder.depths=[2,18,2]" \
         trainer.trainer.epochs=97 \
         trainer.loss_config.bottleneck.weights.kl=1e-5 \
         trainer.loss_config.spectral.weights.stft_mse=1.0 \
@@ -74,8 +82,8 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         trainer.trainer.precision="32" \
         "+trainer.trainer.compile=false" \
         trainer.wandb.use_wandb=true \
-        trainer.trainer.ckpt_dir=checkpoints/${SLURM_JOB_NAME} \
-        trainer.wandb.name=${SLURM_JOB_NAME} \
+        trainer.trainer.ckpt_dir=checkpoints/N9_real_MSE_2182 \
+        trainer.wandb.name=N9_real_MSE_2182 \
         $CKPT_ARG
 
     EXIT=$?
@@ -85,6 +93,10 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
     sleep 15
     attempt=$((attempt + 1))
 
-    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/${SLURM_JOB_NAME}"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+    if [ -f "$RUN_ID_FILE" ]; then
+        export WANDB_RESUME=must
+        export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
+    fi
+    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/N9_real_MSE_2182"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
     [ -n "$LATEST_CKPT" ] && CKPT_ARG="+ckpt_path=$LATEST_CKPT"
 done

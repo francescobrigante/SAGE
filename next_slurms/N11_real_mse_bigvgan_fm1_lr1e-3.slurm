@@ -1,15 +1,24 @@
 #!/bin/bash
-
-#SBATCH --job-name=Swin_Baseline_Example
+# ============================================================
+# N11_real_mse_bigvgan_fm1_lr1e-3: Real baseline (M5) + BigVGAN Disc
+#   - 3-stage Swin V2 Real VAE (embed_dim=256, depths=[2,6,2])
+#   - stft_mse=1.0, mrstft=0.0
+#   - BigVGAN Discriminator (MPD + CQT)
+#   - disc_lr=1e-3 (up from 3e-4: keep disc competitive like N7)
+#   - fm=1.0 (up from 0.5: stronger feature-level signal)
+#   - generator_lr=1e-3
+#   - Precision: 32 (FP32)
+# ============================================================
+#SBATCH --job-name=N11_real_mse_bigvgan_fm1_lr1e-3
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=2
-#SBATCH --gres=gpu:2                   # 2x A100 DDP
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=23:00:00
+#SBATCH --time=1-08:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -38,7 +47,7 @@ cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
 # ─── Auto-resume: W&B run_id + last checkpoint ──────────────────────────────
-RUN_ID_FILE="$WORK/C-VAE/.run_ids/${SLURM_JOB_NAME}"
+RUN_ID_FILE="$WORK/C-VAE/.run_ids/N11_real_mse_bigvgan_fm1_lr1e-3"
 
 if [ -f "$RUN_ID_FILE" ]; then
     export WANDB_RESUME=must
@@ -46,33 +55,41 @@ if [ -f "$RUN_ID_FILE" ]; then
     echo "[RESUME] W&B run: $WANDB_RUN_ID"
 fi
 
-LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/${SLURM_JOB_NAME}"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/N11_real_mse_bigvgan_fm1_lr1e-3"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
 CKPT_ARG=""
 if [ -n "$LATEST_CKPT" ]; then
     CKPT_ARG="+ckpt_path=$LATEST_CKPT"
     echo "[RESUME] Checkpoint: $LATEST_CKPT"
 fi
 
-# ─── Retry loop (up to 8 attempts — recovers from DataLoader timeouts) ───────
+# ─── Retry loop ─────────────────────────────────────────────────────────────
 MAX_ATTEMPTS=8
 attempt=1
 while [ $attempt -le $MAX_ATTEMPTS ]; do
     echo "[$(date '+%T')] Training attempt $attempt/$MAX_ATTEMPTS"
 
     srun --kill-on-bad-exit=1 python train.py \
-        models=swin_cplx_baseline \
+        models=swin_real_baseline \
         trainer.trainer.epochs=97 \
-        trainer.loss_config.bottleneck.weights.kl=1e-5 \
-        trainer.loss_config.spectral.weights.stft_mse=0.0 \
-        trainer.loss_config.spectral.weights.mrstft=1.0 \
+        trainer.loss_config.bottleneck.weights.kl=1e-4 \
+        trainer.loss_config.spectral.weights.stft_mse=1.0 \
+        trainer.loss_config.spectral.weights.mrstft=0.0 \
         trainer.optimizer.lr=1e-3 \
+        "++trainer.disc_optimizer._target_=torch.optim.AdamW" \
+        "++trainer.disc_optimizer.lr=1e-3" \
+        "++trainer.disc_optimizer.betas=[0.8,0.99]" \
+        "++trainer.disc_optimizer.weight_decay=1e-3" \
+        "++trainer.loss_config.discriminator.type=big_vgan" \
+        "++trainer.loss_config.discriminator.config.periods=[2,3,5,7,11]" \
+        "++trainer.loss_config.discriminator.weights.adversarial=0.1" \
+        "++trainer.loss_config.discriminator.weights.feature_matching=1.0" \
         trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
         trainer.trainer.strategy=ddp_find_unused_parameters_true \
         trainer.trainer.precision="32" \
         "+trainer.trainer.compile=false" \
         trainer.wandb.use_wandb=true \
-        trainer.trainer.ckpt_dir=checkpoints/EXAMPLE \
-        trainer.wandb.name=Swin_Baseline_Example \
+        trainer.trainer.ckpt_dir=checkpoints/N11_real_mse_bigvgan_fm1_lr1e-3 \
+        trainer.wandb.name=N11_real_mse_bigvgan_fm1_lr1e-3 \
         $CKPT_ARG
 
     EXIT=$?
@@ -86,6 +103,6 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         export WANDB_RESUME=must
         export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
     fi
-    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/${SLURM_JOB_NAME}"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/N11_real_mse_bigvgan_fm1_lr1e-3"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
     [ -n "$LATEST_CKPT" ] && CKPT_ARG="+ckpt_path=$LATEST_CKPT"
 done

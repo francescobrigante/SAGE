@@ -111,8 +111,10 @@ class MultiScaleSTFTDiscriminator(nn.Module):
         return logits, fmaps
 
 
+from .types import IndividualDiscriminatorOut, get_hinge_losses, get_relativistic_losses, get_sigmoid_relgan_losses
+
 class EncodecDiscriminator(nn.Module):
-    def __init__(self, normalize_losses=False, loss_type: tp.Literal["hinge", "rpgan"]="hinge", *args, **kwargs):
+    def __init__(self, normalize_losses=False, loss_type: tp.Literal["hinge", "rpgan", "sigmoid_relgan"]="hinge", *args, **kwargs):
         super().__init__()
         self.discriminators = MultiScaleSTFTDiscriminator(*args, **kwargs)
         self.normalize_losses = normalize_losses
@@ -142,8 +144,12 @@ class EncodecDiscriminator(nn.Module):
 
             if self.loss_type == "hinge":
                 _dis, _adv = get_hinge_losses(logits_true[i], logits_fake[i])
-            else:  # rpgan
+            elif self.loss_type == "rpgan":
                 _dis, _adv = get_relativistic_losses(logits_true[i], logits_fake[i])
+            elif self.loss_type == "sigmoid_relgan":
+                _dis, _adv = get_sigmoid_relgan_losses(logits_true[i], logits_fake[i])
+            else:
+                _dis, _adv = get_hinge_losses(logits_true[i], logits_fake[i])
 
             dis_loss = dis_loss + _dis 
             adv_loss = adv_loss + _adv

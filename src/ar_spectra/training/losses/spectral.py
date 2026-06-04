@@ -6,6 +6,36 @@ from typing_extensions import Literal
 
 from ar_spectra.utils.spectral import to_complex_spectrogram
 from .signal import FIRFilter
+import numpy as np
+import scipy.signal
+
+def get_k_weight_curve(n_fft: int, fs: float) -> torch.Tensor:
+    """Returns the K-weight frequency magnitude response curve for STFT bins."""
+    f_hp, Q_hp = 38.135, 0.5
+    w_hp = 2 * np.pi * f_hp
+    NUM_hp = [1, 0, 0]                  
+    DEN_hp = [1, w_hp/Q_hp, w_hp**2]    
+
+    f_shelf, Q_shelf, G_shelf = 1681.974, 1.69, 4.0
+    k = 10**(G_shelf/20.0)
+    w_s = 2 * np.pi * f_shelf
+    NUM_shelf = [k, (k*w_s)/Q_shelf, w_s**2]
+    DEN_shelf = [1,    w_s /Q_shelf, w_s**2]
+
+    NUMs = np.polymul(NUM_hp, NUM_shelf)
+    DENs = np.polymul(DEN_hp, DEN_shelf)
+
+    b, a = scipy.signal.bilinear(NUMs, DENs, fs=fs)
+
+    freqs = np.linspace(0.0, fs/2.0, num=n_fft // 2 + 1, endpoint=True)
+    _, H = scipy.signal.freqz(b, a, worN=freqs, fs=fs)
+    Hmag = np.abs(H)
+
+    # Normalize roughly to 1 at 1kHz
+    _, H_ref = scipy.signal.freqz(b, a, worN=[1000.0], fs=fs)
+    Hmag = Hmag / np.abs(H_ref[0])
+
+    return torch.from_numpy(Hmag.astype(np.float32))
 
 class ComplexMSE(nn.Module):
     def __init__(
@@ -49,6 +79,24 @@ class ComplexMSE(nn.Module):
             return loss_tensor.mean(dim=reduce_dims, keepdim=self.keepdim)
         else:  # sum
             return loss_tensor.sum(dim=reduce_dims, keepdim=self.keepdim)
+
+class PerceptualComplexMSE(ComplexMSE):
+    """
+    ComplexMSE that weights the frequency bins using the K-weighting curve.
+    Exactly identical to filtering the waveform if `power_norm_alpha` matches the VAE's compression.
+    """
+    def __init__(self, sample_rate: int = 44100, n_fft: int = 2048, power_norm_alpha: float = 1.0, **kwargs):
+        super().__init__(**kwargs)
+        curve = get_k_weight_curve(n_fft=n_fft, fs=sample_rate)
+        curve = curve.pow(power_norm_alpha)
+        # Reshape to (1, 1, F, 1) to broadcast over (B, C, F, T)
+        self.register_buffer("freq_weight", curve.view(1, 1, -1, 1))
+
+    def forward(self, S_hat: torch.Tensor, S: torch.Tensor, weight: Optional[torch.Tensor] = None) -> torch.Tensor:
+        w = self.freq_weight
+        if weight is not None:
+            w = w * weight
+        return super().forward(S_hat, S, weight=w)
 
 class PhaseCosineDistance(nn.Module):
     def __init__(
@@ -147,6 +195,32 @@ class ComplexSpectralConvergence(nn.Module):
             return sc.mean()
         else:
             raise ValueError(f"Invalid reduction: {self.reduction}")
+
+class SpectralContrastLoss(nn.Module):
+    """Spectral contrast loss: symmetric, scale-invariant spectral distance.
+    
+    Computes the ratio ||x - y||_F / ||x + y||_F over the input magnitudes,
+    where the numerator is the Frobenius norm of the difference and the
+    denominator is the Frobenius norm of the sum.
+    
+    Adapted from stable-audio-tools.
+    """
+    def __init__(self, eps=1e-4):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, x_mag, y_mag):
+        # Allow complex spectrograms (take magnitude first)
+        if torch.is_complex(x_mag):
+            x_mag = x_mag.abs()
+        if torch.is_complex(y_mag):
+            y_mag = y_mag.abs()
+            
+        x_mag = x_mag.float()
+        y_mag = y_mag.float()
+        numerator = torch.norm(y_mag - x_mag, p="fro", dim=[-1, -2])
+        denominator = torch.norm(x_mag + y_mag, p="fro", dim=[-1, -2]).clamp_min(self.eps)
+        return (numerator / denominator).mean()
 
 class MultiResSpectralConvergence(nn.Module):
     def __init__(
@@ -458,3 +532,88 @@ class MultiResolutionSpectrogramLoss(nn.Module):
         if self.return_details:
             return total_loss, losses_per_res
         return total_loss
+
+class InstantaneousFrequencyGroupDelayLoss(nn.Module):
+    def __init__(self, eps=1e-3, w_floor=1e-3, is_complex=False, n_fft=2048, hop_length=512, win_length=2048):
+        super().__init__()
+        self.eps = eps
+        self.w_floor = w_floor
+        self.is_complex = is_complex
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.win_length = win_length
+        if not is_complex:
+            self.register_buffer("_window", torch.hann_window(win_length))
+
+    def forward(self, x_hat, x_gt):
+        if not self.is_complex:
+            if x_hat.ndim == 2:
+                x_hat = x_hat.unsqueeze(1)
+                x_gt = x_gt.unsqueeze(1)
+            B, C, T = x_hat.shape
+            x_hat = x_hat.reshape(B*C, T)
+            x_gt = x_gt.reshape(B*C, T)
+            window = self._window.to(x_hat.device, dtype=x_hat.dtype)
+            Xp = torch.stft(x_hat.float(), n_fft=self.n_fft, hop_length=self.hop_length, win_length=self.win_length, window=window.float(), center=True, return_complex=True, pad_mode="reflect")
+            Xr = torch.stft(x_gt.float(), n_fft=self.n_fft, hop_length=self.hop_length, win_length=self.win_length, window=window.float(), center=True, return_complex=True, pad_mode="reflect")
+            Xp = Xp.view(B, C, Xp.shape[-2], Xp.shape[-1])
+            Xr = Xr.view(B, C, Xr.shape[-2], Xr.shape[-1])
+        else:
+            Xp = to_complex_spectrogram(x_hat)
+            Xr = to_complex_spectrogram(x_gt)
+
+        # ---- time increments (IF) ----
+        Rt_p = Xp[..., :, 1:] * torch.conj(Xp[..., :, :-1])
+        Rt_r = Xr[..., :, 1:] * torch.conj(Xr[..., :, :-1])
+        denom_t_p = (Xp[..., :, 1:].abs() * Xp[..., :, :-1].abs()).clamp_min(self.eps)
+        denom_t_r = (Xr[..., :, 1:].abs() * Xr[..., :, :-1].abs()).clamp_min(self.eps)
+        Ut_p = Rt_p / denom_t_p
+        Ut_r = Rt_r / denom_t_r
+        wt = torch.sqrt(denom_t_p * denom_t_r).clamp_min(self.w_floor).detach()
+        wt = wt / wt.mean().clamp_min(1e-7)
+        Lt = (1.0 - (Ut_p * torch.conj(Ut_r)).real) * wt
+
+        # ---- frequency increments (GD) ----
+        Rf_p = Xp[..., 1:, :] * torch.conj(Xp[..., :-1, :])
+        Rf_r = Xr[..., 1:, :] * torch.conj(Xr[..., :-1, :])
+        denom_f_p = (Xp[..., 1:, :].abs() * Xp[..., :-1, :].abs()).clamp_min(self.eps)
+        denom_f_r = (Xr[..., 1:, :].abs() * Xr[..., :-1, :].abs()).clamp_min(self.eps)
+        Uf_p = Rf_p / denom_f_p
+        Uf_r = Rf_r / denom_f_r
+        wf = torch.sqrt(denom_f_p * denom_f_r).clamp_min(self.w_floor).detach()
+        wf = wf / wf.mean().clamp_min(1e-7)
+        Lf = (1.0 - (Uf_p * torch.conj(Uf_r)).real) * wf
+
+        return Lt.mean() + Lf.mean()
+
+class NormalizedComplexDistanceLoss(nn.Module):
+    def __init__(self, eps=1e-5, is_complex=False, n_fft=2048, hop_length=512, win_length=2048):
+        super().__init__()
+        self.eps = eps
+        self.is_complex = is_complex
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.win_length = win_length
+        if not is_complex:
+            self.register_buffer("_window", torch.hann_window(win_length))
+
+    def forward(self, x_hat, x_gt):
+        if not self.is_complex:
+            if x_hat.ndim == 2:
+                x_hat = x_hat.unsqueeze(1)
+                x_gt = x_gt.unsqueeze(1)
+            B, C, T = x_hat.shape
+            x_hat = x_hat.reshape(B*C, T)
+            x_gt = x_gt.reshape(B*C, T)
+            window = self._window.to(x_hat.device, dtype=x_hat.dtype)
+            Xp = torch.stft(x_hat.float(), n_fft=self.n_fft, hop_length=self.hop_length, win_length=self.win_length, window=window.float(), center=True, return_complex=True, pad_mode="reflect")
+            Xr = torch.stft(x_gt.float(), n_fft=self.n_fft, hop_length=self.hop_length, win_length=self.win_length, window=window.float(), center=True, return_complex=True, pad_mode="reflect")
+            Xp = Xp.view(B, C, Xp.shape[-2], Xp.shape[-1])
+            Xr = Xr.view(B, C, Xr.shape[-2], Xr.shape[-1])
+        else:
+            Xp = to_complex_spectrogram(x_hat)
+            Xr = to_complex_spectrogram(x_gt)
+
+        numerator = (Xp - Xr).abs() ** 2
+        return torch.log(numerator / numerator.std(dim=[-1, -2], keepdim=True).detach().clamp(min=self.eps) + 1).mean()
+

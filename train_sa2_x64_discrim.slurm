@@ -16,7 +16,7 @@
 #SBATCH --gres=gpu:4                   # 4x A100 64GB
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=23:00:00
+#SBATCH --time=1-12:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -57,6 +57,7 @@ srun python train_fma.py \
     --checkpoint-every 50000 \
     --val-every 2500 \
     --subset large \
-    --ckpt-path $WORK/C-VAE/runs/SAO160M_Disc/2026-05-24_21-55-56/checkpoints/sa2-step=200000.ckpt \
+    --max-steps 520000 \
+    --ckpt-path $WORK/C-VAE/runs/SAO160M_Disc/2026-05-24_21-55-56/checkpoints/sa2-step=400000.ckpt \
     --wandb-id tks7fffq \
     --run-dir $WORK/C-VAE/runs/SAO160M_Disc/2026-05-24_21-55-56

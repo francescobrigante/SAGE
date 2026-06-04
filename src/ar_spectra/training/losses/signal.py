@@ -52,45 +52,123 @@ class SumAndDifference(torch.nn.Module):
 
 
 class FIRFilter(torch.nn.Module):
-    def __init__(self, filter_type="hp", coef=0.85, fs=44100, ntaps=101, plot=False):
+    """
+    Psychoacoustic prefilter (hp/fd/A-weight/K-weight) as a fixed FIR, stable for AMP/DDP.
+    - Fixes K-shelf gain (→ k, not k^2).
+    - Proper padding derived from kernel length.
+    - Kernel registered as a buffer and cast to input dtype/device at runtime.
+    """
+    def __init__(self, filter_type="kw", coef=0.85, fs=44100, ntaps=257, pad_mode="reflect", ref_hz=1000.0, plot=False):
         super(FIRFilter, self).__init__()
         self.filter_type = filter_type
         self.coef = coef
         self.fs = fs
         self.ntaps = ntaps
+        self.pad_mode = pad_mode
+        self.ref_hz = ref_hz
         self.plot = plot
 
         if ntaps % 2 == 0:
             raise ValueError(f"ntaps must be odd (ntaps={ntaps}).")
 
         if filter_type == "hp":
-            self.fir = torch.nn.Conv1d(1, 1, kernel_size=3, bias=False, padding=1)
-            self.fir.weight.requires_grad = False
-            self.fir.weight.data = torch.tensor([1, -coef, 0]).view(1, 1, -1)
+            taps = np.zeros(2, dtype=np.float64)  # length-2 pre-emphasis [1, -a]
+            taps[0] = 1.0
+            taps[1] = -self.coef
         elif filter_type == "fd":
-            self.fir = torch.nn.Conv1d(1, 1, kernel_size=3, bias=False, padding=1)
-            self.fir.weight.requires_grad = False
-            self.fir.weight.data = torch.tensor([1, 0, -coef]).view(1, 1, -1)
-        elif filter_type == "aw":
-            f1 = 20.598997
-            f2 = 107.65265
-            f3 = 737.86223
-            f4 = 12194.217
-            A1000 = 1.9997
-            NUMs = [(2 * np.pi * f4) ** 2 * (10 ** (A1000 / 20)), 0, 0, 0, 0]
-            DENs = np.polymul([1, 4 * np.pi * f4, (2 * np.pi * f4) ** 2], [1, 4 * np.pi * f1, (2 * np.pi * f1) ** 2])
-            DENs = np.polymul(np.polymul(DENs, [1, 2 * np.pi * f3]), [1, 2 * np.pi * f2])
-            b, a = scipy.signal.bilinear(NUMs, DENs, fs=fs)
-            w_iir, h_iir = scipy.signal.freqz(b, a, worN=512, fs=fs)
-            taps = scipy.signal.firls(ntaps, w_iir, abs(h_iir), fs=fs)
-            self.fir = torch.nn.Conv1d(1, 1, kernel_size=ntaps, bias=False, padding=ntaps // 2)
-            self.fir.weight.requires_grad = False
-            self.fir.weight.data = torch.tensor(taps.astype("float32")).view(1, 1, -1)
+            # simple 2-sample difference y[n] = x[n] - a x[n-2]
+            taps = np.zeros(3, dtype=np.float64)
+            taps[0] = 1.0
+            taps[2] = -self.coef
+        elif filter_type in {"aw", "kw"}:
+            taps = self._design_weighting_fir(filter_type)
+        else:
+            raise ValueError(f"Unsupported filter type: {filter_type}")
 
-    def forward(self, input, target):
-        input = torch.nn.functional.conv1d(input, self.fir.weight.data, padding=self.ntaps // 2)
-        target = torch.nn.functional.conv1d(target, self.fir.weight.data, padding=self.ntaps // 2)
-        return input, target
+        # normalise to unity gain at ref_hz
+        if filter_type in {"aw", "kw"}:
+            w = 2 * np.pi * self.ref_hz / self.fs
+            n = np.arange(len(taps))
+            H_ref = np.abs(np.sum(taps * np.exp(-1j * w * n)))
+            if H_ref > 0:
+                taps = taps / H_ref
+
+        # register as buffer, not parameter
+        k = torch.from_numpy(taps.astype(np.float32))[None, None, :]
+        self.register_buffer("kernel", k, persistent=False)
+
+    def _design_weighting_fir(self, which: str) -> np.ndarray:
+        fs = self.fs
+        ntaps = self.ntaps
+
+        if which == "aw":
+            f1, f2, f3, f4 = 20.598997, 107.65265, 737.86223, 12194.217
+            A1000 = 1.9997  # dB
+            NUMs = [(2*np.pi*f4)**2 * 10**(A1000/20), 0, 0, 0, 0]
+            DENs = np.polymul([1, 4*np.pi*f4, (2*np.pi*f4)**2],
+                              [1, 4*np.pi*f1, (2*np.pi*f1)**2])
+            DENs = np.polymul(np.polymul(DENs, [1, 2*np.pi*f3]),
+                              [1, 2*np.pi*f2])
+        elif which == "kw":
+            # Stage 1: 2nd-order HP (critical damping)
+            f_hp, Q_hp = 38.135, 0.5
+            w_hp = 2*np.pi*f_hp
+            NUM_hp = [1, 0, 0]                  # s^2
+            DEN_hp = [1, w_hp/Q_hp, w_hp**2]    # s^2 + (w/Q)s + w^2
+
+            # Stage 2: high-shelf (→ gain k at HF, 1 at LF)
+            f_shelf, Q_shelf, G_shelf = 1681.974, 1.69, 4.0
+            k = 10**(G_shelf/20.0)
+            w_s = 2*np.pi*f_shelf
+            NUM_shelf = [k, (k*w_s)/Q_shelf, w_s**2]
+            DEN_shelf = [1,    w_s /Q_shelf, w_s**2]
+
+            NUMs = np.polymul(NUM_hp, NUM_shelf)
+            DENs = np.polymul(DEN_hp, DEN_shelf)
+        else:
+            raise RuntimeError
+
+        # Bilinear to digital IIR
+        b, a = scipy.signal.bilinear(NUMs, DENs, fs=fs)
+
+        # Endpoint-safe grid for firwin2
+        freq = np.linspace(0.0, fs/2.0, num=8193, endpoint=True)  # Hz, exact 0 and fs/2
+        _, H = scipy.signal.freqz(b, a, worN=freq, fs=fs)
+        Hmag = np.abs(H)
+
+        # FIR fit
+        taps = scipy.signal.firwin2(ntaps, freq, Hmag, fs=fs)
+        return taps
+
+    def forward(self, input, target=None):
+        B, C, T = input.shape
+        x = input.reshape(B*C, 1, T)
+
+        # ensure kernel is on the right device/dtype
+        k = self.kernel.to(dtype=x.dtype, device=x.device)
+        pad = (k.shape[-1] - 1) // 2
+
+        if self.pad_mode in {"reflect", "replicate", "constant"}:
+            mode = self.pad_mode if self.pad_mode != "constant" else "constant"
+            x = torch.nn.functional.pad(x, (pad, pad), mode=mode)
+            y = torch.nn.functional.conv1d(x, k, padding=0)
+        else:
+            y = torch.nn.functional.conv1d(x, k, padding=pad)
+            
+        y = y.reshape(B, C, -1)
+        
+        if target is not None:
+            B, C, T = target.shape
+            t = target.reshape(B*C, 1, T)
+            if self.pad_mode in {"reflect", "replicate", "constant"}:
+                mode = self.pad_mode if self.pad_mode != "constant" else "constant"
+                t = torch.nn.functional.pad(t, (pad, pad), mode=mode)
+                y_t = torch.nn.functional.conv1d(t, k, padding=0)
+            else:
+                y_t = torch.nn.functional.conv1d(t, k, padding=pad)
+            y_t = y_t.reshape(B, C, -1)
+            return y, y_t
+        return y
 
 class SpectralConvergenceLoss(torch.nn.Module):
     def __init__(self):

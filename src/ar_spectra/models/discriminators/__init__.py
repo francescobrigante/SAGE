@@ -17,3 +17,18 @@ from .transformer import (
     TransformerMultiChromaDiscriminator,
 )
 from .hil import HILDiscriminator, MultiFilterBankDiscriminator
+
+__all__ = [
+    "EncodecDiscriminator", "SharedDiscriminatorConvNet",
+    "MultiScaleDiscriminator", "MultiPeriodDiscriminator", "MultiDiscriminator",
+    "OobleckDiscriminator", "MPD", "MSD", "MRD",
+    "MultiScaleSubbandCQTDiscriminator",
+    "DACDiscriminator", "DACGANLoss",
+    "BigVGANDiscriminator",
+    "MultiTransformerDiscriminator",
+    "TransformerMultiSTFTDiscriminator",
+    "TransformerMultiPatchedDiscriminator",
+    "TransformerMultiWaveletDiscriminator",
+    "TransformerMultiChromaDiscriminator",
+    "HILDiscriminator", "MultiFilterBankDiscriminator",
+]
