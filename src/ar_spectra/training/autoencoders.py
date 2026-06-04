@@ -95,6 +95,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         warmup_steps: int = 0,
         warmup_mode: Literal["adv", "full"] = "adv",
         encoder_freeze_on_warmup: bool = False,
+        freeze_encoder: bool = False,
         force_input_mono: bool = False,
         latent_mask_ratio: float = 0.0,
         teacher_model: Optional[AutoEncoder] = None,
@@ -107,6 +108,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         optimizer_spec: Optional[dict] = None,
         scheduler_spec: Optional[dict] = None,
         disc_optimizer_spec: Optional[dict] = None,  # if set, used for disc instead of optimizer_spec
+        aux_optimizer_spec: Optional[dict] = None,    # 3rd optimizer for latent-alignment modules
         pre_transform_spec: Optional[dict] = None,
         accumulate_grad_batches: int = 1,
     ):
@@ -126,6 +128,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         self._optimizer_spec = optimizer_spec
         self._scheduler_spec = scheduler_spec
         self._disc_optimizer_spec = disc_optimizer_spec  # None → falls back to _optimizer_spec
+        self._aux_optimizer_spec = aux_optimizer_spec    # None → opt_aux not created (unless aux params exist)
 
         self.engine = AutoencoderEngine(
             autoencoder=autoencoder,
@@ -135,6 +138,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             warmup_steps=warmup_steps,
             warmup_mode=warmup_mode,
             encoder_freeze_on_warmup=encoder_freeze_on_warmup,
+            freeze_encoder=freeze_encoder,
             force_input_mono=force_input_mono,
             latent_mask_ratio=latent_mask_ratio,
             teacher_model=teacher_model,
@@ -278,6 +282,22 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         else:
             disc_lr_log = "n/a"
 
+        # --- Aux optimizer (latent-alignment modules; LATENT_ALIGNMENT_PLAN.md §0.4) ---
+        # opt_gen optimizes only the autoencoder, so learnable alignment modules
+        # (MERT proj, chroma/ILD regressors, contrastive critic, flow DiT) need their
+        # own optimizer. None when no alignment block is active → today's behavior.
+        opt_aux = None
+        aux_params = self.engine.loss_manager.aux_parameters()
+        if aux_params:
+            aux_spec_raw = self._aux_optimizer_spec if self._aux_optimizer_spec else opt_spec
+            aux_spec = deepcopy(aux_spec_raw) if isinstance(aux_spec_raw, dict) else deepcopy(opt_spec)
+            if "_target_" not in aux_spec:
+                aux_spec["_target_"] = opt_spec.get("_target_", default_opt["_target_"])
+            aux_spec.pop("weight_decay_exclude_1d", None)  # alignment modules use a flat param list
+            opt_aux = hydra_instantiate(aux_spec, params=aux_params, _convert_="all")
+            ok(f"Aux optimizer for {len(aux_params)} alignment params (lr={aux_spec.get('lr','?')}).",
+               prefix="TRAINER")
+
         # Create schedulers via Hydra instantiate
         sched_gen = hydra_instantiate(sched_spec, optimizer=opt_gen, _convert_="all") if sched_spec else None
         sched_disc = hydra_instantiate(sched_spec, optimizer=opt_disc, _convert_="all") if (sched_spec and opt_disc is not None) else None
@@ -291,24 +311,28 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         # --- Build Lightning return value ---
         # Step-based: return dict format so Lightning calls scheduler.step() every batch.
         # Epoch-based (default): return list format, unchanged from before.
+        # opt_aux (if any) is appended last with no scheduler — its lr stays fixed.
         if sched_interval == "step":
             def _lr_cfg(sched):
                 return {"scheduler": sched, "interval": "step", "frequency": 1}
+            configs = [{"optimizer": opt_gen, "lr_scheduler": _lr_cfg(sched_gen)}]
             if self.use_disc and opt_disc is not None and sched_disc is not None:
-                return (
-                    {"optimizer": opt_gen, "lr_scheduler": _lr_cfg(sched_gen)},
-                    {"optimizer": opt_disc, "lr_scheduler": _lr_cfg(sched_disc)},
-                )
-            return {"optimizer": opt_gen, "lr_scheduler": _lr_cfg(sched_gen)}
+                configs.append({"optimizer": opt_disc, "lr_scheduler": _lr_cfg(sched_disc)})
+            if opt_aux is not None:
+                configs.append({"optimizer": opt_aux})
+            return tuple(configs) if len(configs) > 1 else configs[0]
         else:
+            optimizers = [opt_gen]
+            schedulers = [sched_gen] if sched_gen is not None else []
             if self.use_disc and opt_disc is not None:
-                if sched_gen is not None and sched_disc is not None:
-                    return [opt_gen, opt_disc], [sched_gen, sched_disc]
-                return [opt_gen, opt_disc]
-            else:
-                if sched_gen is not None:
-                    return [opt_gen], [sched_gen]
-                return [opt_gen]
+                optimizers.append(opt_disc)
+                if sched_disc is not None:
+                    schedulers.append(sched_disc)
+            if opt_aux is not None:
+                optimizers.append(opt_aux)
+            if schedulers:
+                return optimizers, schedulers
+            return optimizers
     def forward(self, reals):
         enc_out = self.engine.autoencoder.encode(reals, return_info=True)
         latents = enc_out[0] if isinstance(enc_out, tuple) else enc_out
@@ -339,23 +363,25 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         num_train_batches = int(getattr(self.trainer, "num_training_batches", 0) or 0)
         is_last_batch = (num_train_batches > 0 and (batch_idx + 1) >= num_train_batches)
 
-        # Prendi optimizer e scheduler da Lightning (gestione robusta lista/singolo)
+        # Optimizers from Lightning. Order matches configure_optimizers:
+        # [opt_gen, (opt_disc), (opt_aux)] — disc only if use_disc, aux only if
+        # latent-alignment modules exist. Robust to single-vs-list returns.
+        opts = self.optimizers()
+        opts = list(opts) if isinstance(opts, (list, tuple)) else [opts]
+        opt_gen = opts[0]
+        idx = 1
+        opt_disc = None
         if self.use_disc:
-            opt_gen, opt_disc = self.optimizers()
-            schedulers = self.lr_schedulers()
-            if isinstance(schedulers, (list, tuple)):
-                sched_gen = schedulers[0] if len(schedulers) > 0 else None
-                sched_disc = schedulers[1] if len(schedulers) > 1 else None
-            else:
-                sched_gen, sched_disc = schedulers, None
+            opt_disc = opts[idx]
+            idx += 1
+        opt_aux = opts[idx] if idx < len(opts) else None  # None unless an alignment block is active
+
+        schedulers = self.lr_schedulers()
+        if isinstance(schedulers, (list, tuple)):
+            sched_gen = schedulers[0] if len(schedulers) > 0 else None
+            sched_disc = schedulers[1] if (self.use_disc and len(schedulers) > 1) else None
         else:
-            opt_gen = self.optimizers()
-            schedulers = self.lr_schedulers()
-            if isinstance(schedulers, (list, tuple)):
-                sched_gen = schedulers[0] if len(schedulers) > 0 else None
-            else:
-                sched_gen = schedulers
-            opt_disc = sched_disc = None
+            sched_gen, sched_disc = schedulers, None
 
         # DISC step
         if phase == "disc" and self.use_disc:
@@ -395,15 +421,21 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
 
             if self._accum_steps_gen == 0:
                 opt_gen.zero_grad()
-            self.manual_backward(gen_loss / accum_batches)
+                if opt_aux is not None:
+                    opt_aux.zero_grad()
+            self.manual_backward(gen_loss / accum_batches)  # fills grads on AE + alignment modules (same graph)
             self._accum_steps_gen += 1
             if (self._accum_steps_gen % accum_batches == 0) or is_last_batch:
                 if self.clip_grad_norm > 0.0:
                     torch.nn.utils.clip_grad_norm_(self.autoencoder.parameters(), self.clip_grad_norm)
                 opt_gen.step()
+                if opt_aux is not None:
+                    opt_aux.step()
                 if sched_gen is not None:
                     sched_gen.step()
                 opt_gen.zero_grad()
+                if opt_aux is not None:
+                    opt_aux.zero_grad()
                 self._accum_steps_gen = 0
                 # Log once per optimizer step.
                 log_dict = {}

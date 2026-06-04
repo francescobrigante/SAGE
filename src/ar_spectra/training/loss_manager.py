@@ -12,7 +12,17 @@ from ..models.bottlenecks import VAEBottleneck
 from .losses.base import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss, SelfLoss
 from .losses.perceptual import MelSpectrogramLoss, HubertLoss
 from .losses import signal
-from .losses.spectral import MultiResSpectralConvergence, ComplexMSE, MultiResolutionSpectrogramLoss, PhaseCosineDistance, STFTConsistencyLoss
+from .losses.spectral import (
+    MultiResSpectralConvergence,
+    MultiResolutionSpectrogramLoss,
+    PhaseCosineDistance,
+    ComplexMSE,
+    PerceptualComplexMSE,
+    STFTConsistencyLoss,
+    InstantaneousFrequencyGroupDelayLoss,
+    NormalizedComplexDistanceLoss,
+    SpectralContrastLoss
+)
 from ar_spectra.utils.console import ok, warn
 
 def create_loss_modules_from_bottleneck(bottleneck, loss_config):
@@ -66,11 +76,29 @@ class LossManager(nn.Module):
             self.apply_pre_transform_to_wave_losses = False
 
         if spectral_cfg and isinstance(spectral_cfg, dict):
-            stft_mse_block = spectral_cfg.get("stft_mse", {}) or {}
-            configs_stft_mse = stft_mse_block.get("config", {}) or {}
-            self.stft_mse = ComplexMSE(**configs_stft_mse)
+            if "perceptual_mse" in spectral_cfg:
+                pmse_block = spectral_cfg.get("perceptual_mse", {}) or {}
+                configs_pmse = pmse_block.get("config", {}) or {}
+                configs_pmse.setdefault("sample_rate", self.sample_rate)
+                alpha = 1.0
+                if getattr(autoencoder, "pre_transform", None) is not None:
+                    alpha = getattr(autoencoder.pre_transform, "alpha", 1.0)
+                configs_pmse.setdefault("power_norm_alpha", alpha)
+                self.stft_mse = PerceptualComplexMSE(**configs_pmse)
+                self._stft_mse_name = 'perceptual_mse_loss'
+                self._stft_mse_key = 'perceptual_mse'
+            elif "stft_mse" in spectral_cfg:
+                stft_mse_block = spectral_cfg.get("stft_mse", {}) or {}
+                configs_stft_mse = stft_mse_block.get("config", {}) or {}
+                self.stft_mse = ComplexMSE(**configs_stft_mse)
+                self._stft_mse_name = 'pwc_mse_loss'
+                self._stft_mse_key = 'stft_mse'
+            else:
+                self.stft_mse = None
+                self._stft_mse_key = 'stft_mse'
         else:
             self.stft_mse = None
+            self._stft_mse_key = 'stft_mse'
 
         self.mrstft = None
         self.phase_loss = None
@@ -120,6 +148,27 @@ class LossManager(nn.Module):
                 raise TypeError(f"Expected dict for spectral.stft_consistency.config, got {type(cons_cfg).__name__}")
             self.consistency_loss = STFTConsistencyLoss(**cons_cfg)
 
+        self.if_gd_loss = None
+        if spectral_cfg and isinstance(spectral_cfg, dict) and "if_gd" in spectral_cfg:
+            if_gd_cfg = spectral_cfg.get("if_gd", {}).get("config", {}) or {}
+            if not isinstance(if_gd_cfg, dict):
+                if_gd_cfg = dict(if_gd_cfg)
+            self.if_gd_loss = InstantaneousFrequencyGroupDelayLoss(**if_gd_cfg)
+
+        self.ncd_loss = None
+        if spectral_cfg and isinstance(spectral_cfg, dict) and "normalized_complex_distance" in spectral_cfg:
+            ncd_cfg = spectral_cfg.get("normalized_complex_distance", {}).get("config", {}) or {}
+            if not isinstance(ncd_cfg, dict):
+                ncd_cfg = dict(ncd_cfg)
+            self.ncd_loss = NormalizedComplexDistanceLoss(**ncd_cfg)
+
+        self.scl_loss = None
+        if spectral_cfg and isinstance(spectral_cfg, dict) and "spectral_contrast" in spectral_cfg:
+            scl_cfg = spectral_cfg.get("spectral_contrast", {}).get("config", {}) or {}
+            if not isinstance(scl_cfg, dict):
+                scl_cfg = dict(scl_cfg)
+            self.scl_loss = SpectralContrastLoss(**scl_cfg)
+
         self.discriminator = None
         if self.use_disc:
             disc_type = self.loss_config['discriminator']['type']
@@ -147,13 +196,13 @@ class LossManager(nn.Module):
         stft_loss_decay = spectral_cfg.get('decay', 1.0) if spectral_cfg else 1.0
         if spectral_cfg:
             if self.stft_mse is not None:
-                stft_mse_weight = spectral_cfg['weights'].get('stft_mse', 0.0)
+                stft_mse_weight = spectral_cfg['weights'].get(self._stft_mse_key, 0.0)
                 if stft_mse_weight > 0.0:
                     gen_loss_modules.append(
                         LossWithTarget(
                             self.stft_mse,
                             input_key='sp_decoded', target_key='encoder_input',
-                            name='pwc_mse_loss', weight=stft_mse_weight, decay=stft_loss_decay,
+                            name=self._stft_mse_name, weight=stft_mse_weight, decay=stft_loss_decay,
                         )
                     )
             if self.mrstft is not None:
@@ -186,6 +235,43 @@ class LossManager(nn.Module):
                             name='stft_consistency_loss', weight=cons_weight, decay=stft_loss_decay,
                         )
                     )
+            if self.if_gd_loss is not None:
+                if_gd_weight = spectral_cfg['weights'].get('if_gd', 0.0)
+                if if_gd_weight > 0.0:
+                    in_key = 'sp_decoded' if getattr(self.if_gd_loss, 'is_complex', False) else 'decoded'
+                    tgt_key = 'encoder_input' if getattr(self.if_gd_loss, 'is_complex', False) else 'reals'
+                    gen_loss_modules.append(
+                        LossWithTarget(
+                            self.if_gd_loss,
+                            input_key=in_key, target_key=tgt_key,
+                            name='if_gd_loss', weight=if_gd_weight, decay=stft_loss_decay,
+                        )
+                    )
+            if self.ncd_loss is not None:
+                ncd_weight = spectral_cfg['weights'].get('normalized_complex_distance', 0.0)
+                if ncd_weight > 0.0:
+                    in_key = 'sp_decoded' if getattr(self.ncd_loss, 'is_complex', False) else 'decoded'
+                    tgt_key = 'encoder_input' if getattr(self.ncd_loss, 'is_complex', False) else 'reals'
+                    gen_loss_modules.append(
+                        LossWithTarget(
+                            self.ncd_loss,
+                            input_key=in_key, target_key=tgt_key,
+                            name='normalized_complex_distance_loss', weight=ncd_weight, decay=stft_loss_decay,
+                        )
+                    )
+            if self.scl_loss is not None:
+                scl_weight = spectral_cfg['weights'].get('spectral_contrast', 0.0)
+                if scl_weight > 0.0:
+                    in_key = 'sp_decoded'
+                    tgt_key = 'encoder_input'
+                    gen_loss_modules.append(
+                        LossWithTarget(
+                            self.scl_loss,
+                            input_key=in_key, target_key=tgt_key,
+                            name='spectral_contrast_loss', weight=scl_weight, decay=stft_loss_decay,
+                        )
+                    )
+
 
         if "mrmel" in self.loss_config:
              mrmel_weight = self.loss_config["mrmel"]["weights"]["mrmel"]
@@ -222,6 +308,12 @@ class LossManager(nn.Module):
 
         self.losses_gen = MultiLoss(gen_loss_modules)
 
+        # Names of learnable latent-alignment submodules (set by per-phase loss blocks,
+        # LATENT_ALIGNMENT_PLAN.md Fasi 1-4/6). Collected by aux_parameters() so they
+        # land in opt_aux — opt_gen only sees the autoencoder, so without this any
+        # learnable loss-module weights would never be updated.
+        self._aux_module_names = ("vf_proj", "distill_proj", "chroma_ild", "contr_proj", "flow_dit")
+
         self.losses_disc = None
         if self.use_disc:
             self.losses_disc = MultiLoss([ValueLoss(key='loss_dis', weight=1.0, name='discriminator_loss')])
@@ -247,6 +339,20 @@ class LossManager(nn.Module):
             if getattr(loss_module, 'name', '') == 'kl_loss':
                 return loss_module
         return None
+
+    def aux_parameters(self) -> list:
+        """Learnable params of latent-alignment submodules, for the aux optimizer.
+
+        opt_gen is built from the autoencoder only, so these modules need their own
+        optimizer (LATENT_ALIGNMENT_PLAN.md §0.4). Returns [] when no alignment block
+        is active — today's behavior is then unchanged (opt_aux is not created).
+        """
+        params = []
+        for name in self._aux_module_names:
+            module = getattr(self, name, None)
+            if module is not None:
+                params += [p for p in module.parameters() if p.requires_grad]
+        return params
 
     def _extract_hparams(self, module: nn.Module) -> dict:
         simple = {}
@@ -281,6 +387,10 @@ class LossManager(nn.Module):
             ok(f"{type(self.phase_loss).__name__}: {params}", prefix="LOSS")
         if self.consistency_loss is not None:
             ok(f"STFTConsistencyLoss: {self._extract_hparams(self.consistency_loss)}", prefix="LOSS")
+        if getattr(self, "if_gd_loss", None) is not None:
+            ok(f"InstantaneousFrequencyGroupDelayLoss: {self._extract_hparams(self.if_gd_loss)}", prefix="LOSS")
+        if getattr(self, "ncd_loss", None) is not None:
+            ok(f"NormalizedComplexDistanceLoss: {self._extract_hparams(self.ncd_loss)}", prefix="LOSS")
         if spectral_cfg:
             ok(f"Spectral weights: {spectral_cfg.get('weights', {})}", prefix="LOSS")
 

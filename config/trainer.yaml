@@ -18,6 +18,17 @@ optimizer:
 #   betas: [0.8, 0.99]
 #   weight_decay: 1e-3
 
+# aux_optimizer: 3rd optimizer for learnable latent-alignment modules (MERT proj,
+# chroma/ILD regressors, contrastive critic, flow-matching DiT — see
+# LATENT_ALIGNMENT_PLAN.md §0.4). opt_gen only optimizes the autoencoder, so these
+# aux modules need their own optimizer. If omitted, opt_aux is None (today's behavior).
+# Inert until the Fase 0 infra (aux_parameters + opt_aux wiring) is implemented.
+# aux_optimizer:
+#   _target_: torch.optim.AdamW
+#   lr: 1e-4
+#   betas: [0.9, 0.95]
+#   weight_decay: 1e-4
+
 scheduler:
   _target_: ar_spectra.training.schedulers.InverseLR
   inv_gamma: 200000       # SAO params: LR ~93% at 32k steps, ~70% at 200k steps
@@ -45,7 +56,8 @@ trainer:
   log_model_structure: false      # if true, on train it prints entire model structure
   warmup_steps: 0
   warmup_mode: adv
-  encoder_freeze_on_warmup: false
+  encoder_freeze_on_warmup: false   # freeze encoder only AFTER warmup_steps
+  freeze_encoder: false             # freeze encoder ALWAYS (decoder-finetune mode)
   profiler_dir: lightning_profiler
   val_check_interval: 1.0
   check_val_every_n_epoch: 1

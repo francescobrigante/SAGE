@@ -1,22 +1,15 @@
 #!/bin/bash
-# ============================================================
-# M7_Perceiver_Cplx: Swin V2 Complex VAE with Perceiver Compression
-#   - 4-stage Swin V2 Complex VAE
-#   - embed_dim=64, depths=[2,2,6,2]
-#   - patch_size=[4,1], window_size=8
-#   - Perceiver Compression: 512 tokens -> 128 tokens
-#   - Precision: 32 (FP32)
-# ============================================================
-#SBATCH --job-name=M7_Perceiver_Cplx
+
+#SBATCH --job-name=L9_complex_MRSTFT
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
-#SBATCH --gres=gpu:4                   # 4x A100 DDP
+#SBATCH --ntasks-per-node=2
+#SBATCH --gres=gpu:2                   # 2x A100 DDP
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=18:00:00
+#SBATCH --time=23:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -52,22 +45,18 @@ if [ -n "$LATEST_CKPT" ]; then
     echo "[RESUME] Checkpoint: $LATEST_CKPT"
 fi
 
-# ─── Retry loop ───────
+# ─── Retry loop (up to 8 attempts — recovers from DataLoader timeouts) ───────
 MAX_ATTEMPTS=8
 attempt=1
 while [ $attempt -le $MAX_ATTEMPTS ]; do
     echo "[$(date '+%T')] Training attempt $attempt/$MAX_ATTEMPTS"
 
     srun --kill-on-bad-exit=1 python train.py \
-        models=swin_cplx_perceiver \
-        data.train_dataset.cac=false \
-        data.eval_dataset.cac=false \
-        data.demo.istft_params.cac=false \
-        data.model_channels=2 \
+        models=swin_cplx_baseline \
         trainer.trainer.epochs=97 \
         trainer.loss_config.bottleneck.weights.kl=1e-5 \
-        trainer.loss_config.spectral.weights.stft_mse=1.0 \
-        trainer.loss_config.spectral.weights.mrstft=0.0 \
+        trainer.loss_config.spectral.weights.stft_mse=0.0 \
+        trainer.loss_config.spectral.weights.mrstft=1.0 \
         trainer.optimizer.lr=1e-3 \
         trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
         trainer.trainer.strategy=ddp_find_unused_parameters_true \
