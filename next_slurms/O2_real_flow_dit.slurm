@@ -1,12 +1,17 @@
 #!/bin/bash
 # ============================================================
-# M11_real_softnorm: Real-valued baseline with SoftNormBottleneck
-#   - 3-stage Swin V2 Real VAE
-#   - embed_dim=256, depths=[2,6,2]
-#   - parameters_to_predict=1, SoftNormBottleneck(dim=16, auto_scale=True)
+# O2_real_flow_dit: M5 real baseline + flow-matching DiT alignment (Fase 6)
+#   - 3-stage Swin V2 Real VAE (swin_real_baseline = M5 baseline)
+#   - Reconstruction = M5 baseline: stft_MSE=1.0 (mrstft=0), kl=1e-5, plus default mrmel
+#   - + latent_flow=1.0: small DiT (4 layers, 768-dim — SAME §3.3.1) trained jointly
+#     via flow-matching; grad flows into the encoder (detached warmup 10k steps).
+#     DiT params optimized by opt_aux (AdamW lr=1e-4).
+#   - All experiment config lives in config/experiment/O2_real_flow_dit.yaml
+#     (trainer.yaml is NOT modified) → invoked via +experiment=O2_real_flow_dit
+#   - Generative family: measured on FAD / LDM tractability, NOT MAEB.
 #   - Precision: 32 (FP32)
 # ============================================================
-#SBATCH --job-name=M11_real_softnorm
+#SBATCH --job-name=O2_real_flow_dit
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -44,17 +49,15 @@ cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
 # ─── Auto-resume: W&B run_id + last checkpoint ──────────────────────────────
-RUN_ID_FILE="$WORK/C-VAE/.run_ids/M11_real_softnorm"
+RUN_ID_FILE="$WORK/C-VAE/.run_ids/O2_real_flow_dit"
 
-# Override hardcoded WANDB vars with persisted run_id if available
 if [ -f "$RUN_ID_FILE" ]; then
     export WANDB_RESUME=must
     export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
     echo "[RESUME] W&B run: $WANDB_RUN_ID"
 fi
 
-# Auto-detect newest last.ckpt (finds pre-crash checkpoint on first launch too)
-LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/M11_real_softnorm"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/O2_real_flow_dit"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
 CKPT_ARG=""
 if [ -n "$LATEST_CKPT" ]; then
     CKPT_ARG="+ckpt_path=$LATEST_CKPT"
@@ -68,34 +71,16 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
     echo "[$(date '+%T')] Training attempt $attempt/$MAX_ATTEMPTS"
 
     srun --kill-on-bad-exit=1 python train.py \
-        models=swin_real_baseline \
-        models.model.parameters_to_predict=1 \
-        models.model.bottleneck._target_="ar_spectra.models.bottlenecks.SoftNormBottleneck" \
-        +models.model.bottleneck.dim=16 \
-        +models.model.bottleneck.auto_scale=true \
-        +models.model.bottleneck.noise_regularize=true \
+        +experiment=O2_real_flow_dit \
         trainer.trainer.epochs=97 \
-        trainer.loss_config.bottleneck.weights.kl=0.0 \
-        trainer.loss_config.spectral.weights.stft_mse=1.0 \
-        trainer.loss_config.spectral.weights.mrstft=0.0 \
-        +trainer.aux_optimizer._target_="torch.optim.AdamW" \
-        +trainer.aux_optimizer.lr=1e-3 \
-        "+trainer.aux_optimizer.betas=[0.9,0.95]" \
-        +trainer.aux_optimizer.weight_decay=1e-4 \
-        +trainer.loss_config.latent_flow.weights.flow=1.0 \
-        +trainer.loss_config.latent_flow.config.latent_dim=16 \
-        +trainer.loss_config.latent_flow.config.hidden=768 \
-        +trainer.loss_config.latent_flow.config.depth=4 \
-        +trainer.loss_config.latent_flow.config.fourier_dim=256 \
-        +trainer.loss_config.latent_flow.detach_warmup_steps=20000 \
         trainer.optimizer.lr=1e-3 \
         trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
         trainer.trainer.strategy=ddp_find_unused_parameters_true \
         trainer.trainer.precision="32" \
         "+trainer.trainer.compile=false" \
         trainer.wandb.use_wandb=true \
-        trainer.trainer.ckpt_dir=checkpoints/M11_real_softnorm \
-        trainer.wandb.name=M11_real_softnorm \
+        trainer.trainer.ckpt_dir=checkpoints/O2_real_flow_dit \
+        trainer.wandb.name=O2_real_flow_dit \
         $CKPT_ARG
 
     EXIT=$?
@@ -109,6 +94,6 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         export WANDB_RESUME=must
         export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
     fi
-    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/M11_real_softnorm"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/O2_real_flow_dit"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
     [ -n "$LATEST_CKPT" ] && CKPT_ARG="+ckpt_path=$LATEST_CKPT"
 done

@@ -291,7 +291,7 @@ def main(cfg: DictConfig):
         persistent_workers=(dl_cfg.get("persistent_workers", False) if num_workers > 0 else False),
         prefetch_factor=int(dl_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
         collate_fn=collate_stft,
-        timeout=config.DEFAULT_DATALOADER_TIMEOUT,  # 1 min timeout per batch to detect stuck workers
+        timeout=0 if dl_cfg.get("num_workers", 0) == 0 else config.DEFAULT_DATALOADER_TIMEOUT,
     )
 
     eval_dl = None
@@ -386,6 +386,7 @@ def main(cfg: DictConfig):
         scheduler_spec=OmegaConf.to_container(trainer_cfg.get("scheduler", {}), resolve=True) or None,
         disc_optimizer_spec=OmegaConf.to_container(trainer_cfg.get("disc_optimizer") or OmegaConf.create({}), resolve=True) or None,
         aux_optimizer_spec=OmegaConf.to_container(trainer_cfg.get("aux_optimizer") or OmegaConf.create({}), resolve=True) or None,
+        aux_scheduler_spec=OmegaConf.to_container(trainer_cfg.get("aux_scheduler") or OmegaConf.create({}), resolve=True) or None,
         pre_transform_spec=pre_transform_spec,
         accumulate_grad_batches=int(trainer_cfg.trainer.get("accumulate_grad_batches", 1)),
         clip_grad_norm=float(trainer_cfg.trainer.get("clip_grad_norm", 0.0)),

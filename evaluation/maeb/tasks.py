@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # =============================================================================
 # evaluation/maeb/tasks.py
-# Task resolution for the FMA-local MAEB suite: the 6 FMA music tasks plus one
-# upstream music pair task (NMSQA). Audio-only filtering + name resolution.
+# Task resolution for the MAEB suite: the 6 FMA music tasks (default) plus opt-in
+# upstream MTEB music tasks (EXTRA_TASKS). Audio-only filtering + name resolution.
 # =============================================================================
 from __future__ import annotations
 
@@ -11,8 +11,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# FMA-local music-semantic suite (defined in fma_tasks.py) + one upstream music
-# pair task. These run entirely on the FMA large test set (NMSQA from the hub).
+# FMA-local music-semantic suite (defined in fma_tasks.py). Default per ogni eval.
 FMA_SUITE = [
     "FMAGenreClassification",
     "FMAGenreClustering",
@@ -21,10 +20,37 @@ FMA_SUITE = [
     "FMAGenreAudioReranking",
     "FMAArtistPairClassification",
 ]
-FMA_SUITE_EXTRA = ["NMSQAPairClassification"]   # upstream mteb music-similarity task
+# Task MTEB musicali upstream (hub, già in cache su $FAST). NON nel default: si
+# attivano via flag — `--with-extra` le aggiunge a FMA, `--extra-only` solo queste.
+# (NMSQA rimosso: pair task di speech, saturo ~0.49, fuori dominio musicale.)
+EXTRA_TASKS = [
+    "GTZANGenre",
+    "MusicGenreClustering",
+]
 
 # The complete set of task names these CLIs may run.
-ALLOWED_TASKS = FMA_SUITE + FMA_SUITE_EXTRA
+ALLOWED_TASKS = FMA_SUITE + EXTRA_TASKS
+
+
+def select_task_names(
+    subset: list[str] | None,
+    *,
+    with_extra: bool = False,
+    extra_only: bool = False,
+) -> list[str]:
+    """Pick which task names to run, given the two opt-in flags.
+
+    Precedence: an explicit ``subset`` (``--tasks``) always wins; otherwise
+    ``extra_only`` runs only :data:`EXTRA_TASKS`; otherwise ``with_extra``
+    appends them to :data:`FMA_SUITE`; otherwise the default is the FMA suite.
+    """
+    if subset:
+        return list(subset)
+    if extra_only:
+        return list(EXTRA_TASKS)
+    if with_extra:
+        return FMA_SUITE + EXTRA_TASKS
+    return list(FMA_SUITE)
 
 
 def is_audio_only_task(task: Any) -> bool:
@@ -82,7 +108,7 @@ def get_tasks_by_name(
             f"{ALLOWED_TASKS}."
         )
     fma_names = [n for n in names if n in FMA_TASK_REGISTRY]
-    other_names = [n for n in names if n not in FMA_TASK_REGISTRY]   # only NMSQA
+    other_names = [n for n in names if n not in FMA_TASK_REGISTRY]   # hub tasks (es. GTZAN/NSynth)
     tasks = get_fma_tasks(fma_names, max_files=max_files)
     if other_names:
         import mteb

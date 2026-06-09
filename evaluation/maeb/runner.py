@@ -151,7 +151,21 @@ def run_maeb(
     else:
         summary_path = output_dir / "summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
-    payload: dict[str, Any] = {**(summary_extra or {}), "results": summary}
+    # Merge into any existing summary so a partial run (e.g. --extra-only) EXTENDS
+    # earlier results for the same model instead of clobbering them.
+    merged_extra: dict[str, Any] = {}
+    merged_results: dict[str, float | None] = {}
+    if summary_path.exists():
+        try:
+            prev = json.loads(summary_path.read_text())
+            merged_extra = {k: v for k, v in prev.items()
+                            if k not in ("results", "failed_tasks")}
+            merged_results = dict(prev.get("results", {}))
+        except (json.JSONDecodeError, OSError):
+            log.warning("Could not read existing summary at %s; overwriting.", summary_path)
+    merged_extra.update(summary_extra or {})
+    merged_results.update(summary)
+    payload: dict[str, Any] = {**merged_extra, "results": merged_results}
     if failed:
         payload["failed_tasks"] = failed
     with open(summary_path, "w") as f:

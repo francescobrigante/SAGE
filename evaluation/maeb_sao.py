@@ -7,13 +7,18 @@
 """
 MAEB evaluation for the Stable Audio Open ACE (SAO-ACE) autoencoder, FMA suite.
 
-Runs the 6 FMA music tasks + NMSQAPairClassification on the FMA large test set.
+Runs the 6 FMA music tasks (default) on the FMA large test set; i task musicali
+MTEB upstream (GTZAN/NSynth/…) sono opt-in via --with-extra / --extra-only.
 Run from the ISOLATED maeb_dl venv (see CINECA.md §5.4); SAO is a plain conv
 VAE and does NOT need cineca's custom torch.
 
 Usage examples:
-  # Full FMA suite, config from ckpt:
+  # Default (solo FMA), config from ckpt:
   python evaluation/maeb_sao.py --ckpt /path/to/alrurt2n_4330k.ckpt
+
+  # FMA + extra, oppure solo extra:
+  python evaluation/maeb_sao.py --ckpt model.ckpt --with-extra
+  python evaluation/maeb_sao.py --ckpt model.ckpt --extra-only
 
   # Checkpoint without embedded model_config → pass the ACE JSON explicitly:
   python evaluation/maeb_sao.py --ckpt model.ckpt --model-config ace_vae.json
@@ -61,8 +66,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-config", default=None,
                    help="ACE model JSON. Only needed if the ckpt lacks an embedded model_config.")
     p.add_argument("--tasks", nargs="*", default=None,
-                   help=f"Subset of the FMA suite to run. Default: all. "
+                   help=f"Explicit task subset (overrides --with-extra/--extra-only). "
                         f"Allowed: {maeb_tasks.ALLOWED_TASKS}.")
+    grp = p.add_mutually_exclusive_group()
+    grp.add_argument("--with-extra", action="store_true",
+                     help=f"Aggiunge i task musicali EXTRA alla suite FMA di default: "
+                          f"{maeb_tasks.EXTRA_TASKS}.")
+    grp.add_argument("--extra-only", action="store_true",
+                     help="Esegue SOLO i task EXTRA (per estendere run già valutate sulle FMA).")
     p.add_argument("--max-files", type=int, default=0,
                    help="Per-FMA-task sample cap: min(task_samples, max_files). 0 = all.")
     p.add_argument("--output-dir", default=None,
@@ -81,12 +92,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def _resolve_tasks(args: argparse.Namespace) -> list:
-    """Resolve the FMA suite (or a --tasks subset of it) into task objects."""
-    names = args.tasks or (maeb_tasks.FMA_SUITE + maeb_tasks.FMA_SUITE_EXTRA)
+    """Resolve the selected task names (FMA default / +extra / extra-only) into objects."""
+    names = maeb_tasks.select_task_names(
+        args.tasks, with_extra=args.with_extra, extra_only=args.extra_only,
+    )
     tasks = maeb_tasks.get_tasks_by_name(
         names, encoder_label=_ENCODER_LABEL, max_files=args.max_files,
     )
-    log.info("FMA suite: %s (max_files=%d)",
+    log.info("MAEB tasks: %s (max_files=%d)",
              [t.metadata.name for t in tasks], args.max_files)
     return tasks
 

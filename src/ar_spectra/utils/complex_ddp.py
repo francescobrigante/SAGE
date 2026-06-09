@@ -54,8 +54,13 @@ def make_complex_model_ddp_compatible(module: nn.Module):
                     real_b = getattr(m, mangled_name)
                     setattr(m, orig_name, torch.view_as_complex(real_b))
             
-            # Register the hook (with_kwargs=False ensures compatibility across PyTorch versions)
-            submodule.register_forward_pre_hook(pre_forward_hook, with_kwargs=False)
+            # Register the hook (with_kwargs=False ensures compatibility across PyTorch versions).
+            # prepend=True: this restore-hook MUST run before any other pre-forward hook that
+            # consumes the complex param (e.g. ComplexWeightNorm._recompute_weight reads
+            # `weight_v`). Otherwise that hook sees a stale, pre-`.to(device)` CPU view and
+            # builds a CPU weight → "weight CPU / input CUDA" crash + grads not reaching the
+            # real-view parameter.
+            submodule.register_forward_pre_hook(pre_forward_hook, with_kwargs=False, prepend=True)
             
             # Trigger the hook once manually. This ensures the complex attributes exist
             # in __dict__ immediately (e.g., for initialization logic or weight inspection

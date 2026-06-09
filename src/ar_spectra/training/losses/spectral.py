@@ -2,6 +2,7 @@ import warnings
 from typing import Any, Optional, Sequence, Tuple
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing_extensions import Literal
 
 from ar_spectra.utils.spectral import to_complex_spectrogram
@@ -534,7 +535,23 @@ class MultiResolutionSpectrogramLoss(nn.Module):
         return total_loss
 
 class InstantaneousFrequencyGroupDelayLoss(nn.Module):
-    def __init__(self, eps=1e-3, w_floor=1e-3, is_complex=False, n_fft=2048, hop_length=512, win_length=2048):
+    def __init__(
+        self,
+        eps=1e-3,
+        w_floor=1e-3,
+        is_complex=False,
+        n_fft=2048,
+        hop_length=512,
+        win_length=2048,
+        # Multi-resolution extensions to match MRSTFTSame:
+        fft_sizes: Optional[Sequence[int]] = None,
+        overlap: float = 0.75,
+        sample_rate: int = 44100,
+        k_weighting: bool = False,
+        ms_lr: bool = False,
+        complex_distance: bool = False,
+        ncd_eps: float = 1e-5,
+    ):
         super().__init__()
         self.eps = eps
         self.w_floor = w_floor
@@ -542,10 +559,70 @@ class InstantaneousFrequencyGroupDelayLoss(nn.Module):
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.win_length = win_length
-        if not is_complex:
-            self.register_buffer("_window", torch.hann_window(win_length))
+
+        self.fft_sizes = tuple(int(n) for n in fft_sizes) if fft_sizes is not None else None
+        if self.fft_sizes is not None:
+            self.hop_sizes = tuple(max(1, int(round(n * (1.0 - overlap)))) for n in self.fft_sizes)
+            self.sample_rate = sample_rate
+            self.k_weighting = k_weighting
+            self.ms_lr = ms_lr
+            self.complex_distance = complex_distance
+
+            # Sub-modules
+            self.base_ifgd_loss = InstantaneousFrequencyGroupDelayLoss(
+                eps=eps, w_floor=w_floor, is_complex=True)
+            self.ncd_loss = NormalizedComplexDistanceLoss(eps=ncd_eps, is_complex=True) if complex_distance else None
+
+            for i, n_fft_val in enumerate(self.fft_sizes):
+                self.register_buffer(f"_win_{i}", torch.hann_window(n_fft_val), persistent=False)
+                if k_weighting:
+                    curve = get_k_weight_curve(n_fft=n_fft_val, fs=sample_rate)
+                    self.register_buffer(f"_kw_{i}", curve.view(1, 1, -1, 1), persistent=False)
+        else:
+            if not is_complex:
+                self.register_buffer("_window", torch.hann_window(win_length))
+
+    def _to_channels(self, wav: torch.Tensor) -> torch.Tensor:
+        if wav.ndim == 2:
+            wav = wav.unsqueeze(1)
+        if self.ms_lr and wav.shape[1] == 2:
+            left, right = wav[:, 0:1], wav[:, 1:2]
+            mid, side = 0.5 * (left + right), 0.5 * (left - right)
+            wav = torch.cat([left, right, mid, side], dim=1)
+        return wav
+
+    def _stft(self, x: torch.Tensor, i: int) -> torch.Tensor:
+        B, C, N = x.shape
+        n_fft = self.fft_sizes[i]
+        window = getattr(self, f"_win_{i}").to(device=x.device, dtype=torch.float32)
+        Z = torch.stft(
+            x.reshape(B * C, N).float(), n_fft=n_fft, hop_length=self.hop_sizes[i],
+            win_length=n_fft, window=window, center=True, return_complex=True,
+            pad_mode="reflect",
+        )
+        Z = Z.view(B, C, Z.shape[-2], Z.shape[-1])
+        if self.k_weighting:
+            Z = Z * getattr(self, f"_kw_{i}").to(Z.device)
+        return Z
 
     def forward(self, x_hat, x_gt):
+        if getattr(self, "fft_sizes", None) is not None:
+            if x_hat.shape != x_gt.shape:
+                raise ValueError(f"Shape mismatch: {x_hat.shape} vs {x_gt.shape}")
+            x = self._to_channels(x_hat)
+            y = self._to_channels(x_gt)
+
+            losses_per_res = []
+            for i in range(len(self.fft_sizes)):
+                X = self._stft(x, i)
+                Y = self._stft(y, i)
+                l_ifgd = self.base_ifgd_loss(X, Y)
+                if self.ncd_loss is not None:
+                    l_ifgd = l_ifgd + self.ncd_loss(X, Y)
+                losses_per_res.append(l_ifgd)
+            return torch.stack(losses_per_res).mean()
+
+        # Original single-resolution path:
         if not self.is_complex:
             if x_hat.ndim == 2:
                 x_hat = x_hat.unsqueeze(1)
@@ -616,4 +693,135 @@ class NormalizedComplexDistanceLoss(nn.Module):
 
         numerator = (Xp - Xr).abs() ** 2
         return torch.log(numerator / numerator.std(dim=[-1, -2], keepdim=True).detach().clamp(min=self.eps) + 1).mean()
+
+
+def adaptive_log_mag(x_mag: torch.Tensor, y_mag: torch.Tensor, eps: float = 1e-4) -> torch.Tensor:
+    """SAME §3.1 (eq.4) adaptive, σ-normalized log-magnitude L1 distance.
+
+    Replaces the fixed-``eps`` log compression of ``MultiResolutionSpectrogramLoss``
+    with a per-channel data-adaptive floor ``σ = √(std(X)² + std(Y)²)`` (detached), so
+    the term is invariant to a common scaling of the pair. Translated from auraloss'
+    ``STFTMagnitudeLoss`` (stable-audio-tools).
+
+    Args:
+        x_mag: ``(B, C, F, T)`` magnitude spectrogram (prediction).
+        y_mag: ``(B, C, F, T)`` magnitude spectrogram (target).
+        eps: floor on each per-channel std, guards silent channels.
+
+    Returns:
+        Scalar L1 loss between the σ-normalized log-magnitudes.
+    """
+    log_eps = torch.sqrt(                                                  # (B, C, 1, 1) detached
+        x_mag.std(dim=(-1, -2), keepdim=True).detach().clamp(min=eps) ** 2 +
+        y_mag.std(dim=(-1, -2), keepdim=True).detach().clamp(min=eps) ** 2
+    )
+    return F.l1_loss(torch.log(x_mag / log_eps + 1.0),                     # log(X/σ + 1)
+                     torch.log(y_mag / log_eps + 1.0))
+
+
+class MRSTFTSame(nn.Module):
+    """SAME §3.1 multi-resolution STFT reconstruction loss.
+
+    For each FFT resolution, over both the L/R and (optionally) mid/side channel
+    representations of K-weighted complex spectrograms, sums three bounded /
+    scale-invariant terms and averages across resolutions:
+
+      - spectral contrast (eq.3, bounded)            → ``SpectralContrastLoss``
+      - adaptive σ-normalized log-magnitude (eq.4)   → ``adaptive_log_mag``
+      - phase-aware IFGD: ``L_IFGD = L_IF + L_GD + L_cd`` (eq.5-7), i.e. the
+        instantaneous-freq / group-delay cosine terms (``InstantaneousFrequency
+        GroupDelayLoss``) **plus** the normalized complex-distance penalty
+        (``NormalizedComplexDistanceLoss``, eq.7) — all three as in SAME.
+
+    All sub-terms are scale-invariant, so the chosen mid/side normalization is
+    irrelevant. Reuses the existing primitives; the only new piece is
+    ``adaptive_log_mag``. Operates in the waveform domain
+    (``forward(wav_hat, wav_gt)``), mirroring ``MultiResolutionSpectrogramLoss``.
+    SAME uses this as the *sole* reconstruction loss (no spectrogram MSE).
+    """
+
+    def __init__(
+        self,
+        fft_sizes: Sequence[int] = (32, 64, 128, 256, 512, 1024, 2048),  # 7 SAME resolutions
+        overlap: float = 0.75,                       # hop = n_fft * (1 - overlap)
+        sample_rate: int = 44100,                    # for the K-weight curve
+        k_weighting: bool = True,                    # perceptually weight the magnitudes
+        w_sc: float = 1.0,                           # spectral-contrast term weight
+        w_lm: float = 1.0,                           # adaptive log-mag term weight
+        w_ifgd: float = 1.0,                         # phase-aware (IF+GD+cd) term weight
+        ms_lr: bool = True,                          # process mid/side in addition to L/R
+        complex_distance: bool = True,               # include L_cd (eq.7) inside L_IFGD
+        sc_eps: float = 1e-4,                        # SpectralContrast denominator floor
+        lm_eps: float = 1e-4,                        # adaptive_log_mag std floor
+        ifgd_eps: float = 1e-3,                      # IFGD phasor-denominator floor
+        ifgd_w_floor: float = 1e-3,                  # IFGD energy-weight floor
+        ncd_eps: float = 1e-5,                        # L_cd (eq.7) self-norm std floor
+    ):
+        super().__init__()
+        self.fft_sizes = tuple(int(n) for n in fft_sizes)
+        self.hop_sizes = tuple(max(1, int(round(n * (1.0 - overlap)))) for n in self.fft_sizes)
+        self.sample_rate = sample_rate
+        self.k_weighting = k_weighting
+        self.w_sc = w_sc
+        self.w_lm = w_lm
+        self.w_ifgd = w_ifgd
+        self.ms_lr = ms_lr                           # append mid/side to L/R channels when stereo
+        self.lm_eps = lm_eps
+
+        self.sc_loss = SpectralContrastLoss(eps=sc_eps)
+        # is_complex=True → operates directly on the spectrograms we compute here (no inner STFT)
+        self.ifgd_loss = InstantaneousFrequencyGroupDelayLoss(
+            eps=ifgd_eps, w_floor=ifgd_w_floor, is_complex=True)
+        # L_cd (eq.7): normalized complex-distance penalty — third term of SAME's L_IFGD
+        self.ncd_loss = NormalizedComplexDistanceLoss(eps=ncd_eps, is_complex=True) if complex_distance else None
+
+        # One Hann window + one K-weight curve per resolution (registered buffers → move with module)
+        for i, n_fft in enumerate(self.fft_sizes):
+            self.register_buffer(f"_win_{i}", torch.hann_window(n_fft), persistent=False)
+            if k_weighting:
+                curve = get_k_weight_curve(n_fft=n_fft, fs=sample_rate)   # (n_fft//2+1,)
+                self.register_buffer(f"_kw_{i}", curve.view(1, 1, -1, 1), persistent=False)
+
+    def _to_channels(self, wav: torch.Tensor) -> torch.Tensor:
+        """``(B, C, N)`` → ``(B, C', N)``: append mid/side to L/R when stereo and enabled."""
+        if wav.ndim == 2:
+            wav = wav.unsqueeze(1)                                        # (B, 1, N)
+        if self.ms_lr and wav.shape[1] == 2:
+            left, right = wav[:, 0:1], wav[:, 1:2]                        # (B, 1, N) each
+            mid, side = 0.5 * (left + right), 0.5 * (left - right)        # (B, 1, N) each
+            wav = torch.cat([left, right, mid, side], dim=1)             # (B, 4, N)
+        return wav
+
+    def _stft(self, x: torch.Tensor, i: int) -> torch.Tensor:
+        """K-weighted complex STFT at resolution ``i`` → ``(B, C, F, T)`` complex."""
+        B, C, N = x.shape
+        n_fft = self.fft_sizes[i]
+        window = getattr(self, f"_win_{i}").to(device=x.device, dtype=torch.float32)
+        Z = torch.stft(                                                  # (B*C, F, T) complex64
+            x.reshape(B * C, N).float(), n_fft=n_fft, hop_length=self.hop_sizes[i],
+            win_length=n_fft, window=window, center=True, return_complex=True,
+            pad_mode="reflect",
+        )
+        Z = Z.view(B, C, Z.shape[-2], Z.shape[-1])                       # (B, C, F, T)
+        if self.k_weighting:
+            Z = Z * getattr(self, f"_kw_{i}").to(Z.device)              # scale magnitude, keep phase
+        return Z
+
+    def forward(self, wav_hat: torch.Tensor, wav_gt: torch.Tensor) -> torch.Tensor:
+        if wav_hat.shape != wav_gt.shape:
+            raise ValueError(f"Shape mismatch: {wav_hat.shape} vs {wav_gt.shape}")
+        x = self._to_channels(wav_hat)                                   # (B, C', N)
+        y = self._to_channels(wav_gt)                                    # (B, C', N)
+
+        losses_per_res = []
+        for i in range(len(self.fft_sizes)):
+            X = self._stft(x, i)                                         # (B, C', F, T) complex
+            Y = self._stft(y, i)                                         # (B, C', F, T) complex
+            l_sc = self.sc_loss(X, Y)                                    # bounded, scale-invariant
+            l_lm = adaptive_log_mag(X.abs(), Y.abs(), eps=self.lm_eps)   # σ-normalized log-mag
+            l_ifgd = self.ifgd_loss(X, Y)                                # L_IF + L_GD (eq.5-6)
+            if self.ncd_loss is not None:
+                l_ifgd = l_ifgd + self.ncd_loss(X, Y)                    # + L_cd (eq.7)
+            losses_per_res.append(self.w_sc * l_sc + self.w_lm * l_lm + self.w_ifgd * l_ifgd)
+        return torch.stack(losses_per_res).mean()
 

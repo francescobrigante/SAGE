@@ -17,6 +17,7 @@ from .transformer import (
     TransformerMultiChromaDiscriminator,
 )
 from .hil import HILDiscriminator, MultiFilterBankDiscriminator
+from .wavtokenizer import WavTokenizerDiscriminator, WavTokenizerGANLoss
 
 __all__ = [
     "EncodecDiscriminator", "SharedDiscriminatorConvNet",
@@ -31,4 +32,5 @@ __all__ = [
     "TransformerMultiWaveletDiscriminator",
     "TransformerMultiChromaDiscriminator",
     "HILDiscriminator", "MultiFilterBankDiscriminator",
+    "WavTokenizerDiscriminator", "WavTokenizerGANLoss",
 ]

@@ -18,16 +18,15 @@ optimizer:
 #   betas: [0.8, 0.99]
 #   weight_decay: 1e-3
 
-# aux_optimizer: 3rd optimizer for learnable latent-alignment modules (MERT proj,
-# chroma/ILD regressors, contrastive critic, flow-matching DiT — see
-# LATENT_ALIGNMENT_PLAN.md §0.4). opt_gen only optimizes the autoencoder, so these
-# aux modules need their own optimizer. If omitted, opt_aux is None (today's behavior).
-# Inert until the Fase 0 infra (aux_parameters + opt_aux wiring) is implemented.
-# aux_optimizer:
-#   _target_: torch.optim.AdamW
-#   lr: 1e-4
-#   betas: [0.9, 0.95]
-#   weight_decay: 1e-4
+# aux_scheduler: scheduler for opt_aux. If omitted, falls back to the global
+# `scheduler:` above (same as disc). Override per-experiment if aux modules need
+# a different schedule (e.g. MERT projector with cosine-decay vs DiT with InverseLR).
+# aux_scheduler:
+#   _target_: ar_spectra.training.schedulers.InverseLR
+#   inv_gamma: 200000
+#   power: 0.5
+#   warmup: 0.999
+#   interval: step
 
 scheduler:
   _target_: ar_spectra.training.schedulers.InverseLR
@@ -136,6 +135,21 @@ loss_config:
       pow: 2.0            # exponent for power spectrogram (1.0 = mag, 2.0 = power)
       log_weight: 1.0
       mag_weight: 1.0
+  # SAME-MRSTFT reconstruction loss (LATENT_ALIGNMENT_PLAN.md Fase 5): per-resolution
+  # spectral-contrast (bounded) + adaptive σ-normalized log-mag + IF/GD on normalized
+  # phasors, K-weighted, over L/R + mid/side. Default weight 0.0 → inert (existing runs
+  # unchanged); set mrstft_same=1.0 via CLI to enable (see S1_real_same_mrstft.slurm).
+  mrstft_same:
+    weights:
+      mrstft_same: 0.0
+    config:
+      fft_sizes: [32, 64, 128, 256, 512, 1024, 2048]   # 7 SAME resolutions
+      overlap: 0.75        # hop = n_fft * (1 - overlap)
+      k_weighting: true    # perceptual K-weight on magnitudes
+      w_sc: 1.0            # spectral-contrast term
+      w_lm: 1.0            # adaptive log-mag term
+      w_ifgd: 1.0          # instantaneous-freq / group-delay term
+      ms_lr: true          # process mid/side in addition to L/R
   bottleneck:
     weights:
       kl: 1.0e-3          # annealed from 0 to kl_beta_target over kl_annealing_epochs

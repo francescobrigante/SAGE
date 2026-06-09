@@ -177,6 +177,11 @@ class MRD(nn.Module):
         self.channels = channels
 
         n_fft = window_length // 2 + 1
+        # `bands` may be given as explicit (lo, hi) fraction pairs, or as a flat list of
+        # band-limits [0, .1, .25, .5, .75, 1.0] (the `types.BANDS` format) — in the latter
+        # case pair up consecutive limits, which reproduces the DAC band layout.
+        if bands and not isinstance(bands[0], (tuple, list)):
+            bands = list(zip(bands[:-1], bands[1:]))
         bands = [(int(b[0] * n_fft), int(b[1] * n_fft)) for b in bands]
         self.bands = bands
 
