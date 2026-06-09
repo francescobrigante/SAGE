@@ -6,16 +6,16 @@
 # CDPAM skipped at scale (too slow); run debug job for it.
 # Use --resume to restart safely after preemption.
 # ============================================================
-#SBATCH --job-name=eval_swin_n11
+#SBATCH --job-name=eval_O4b_O5_large
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:1
+#SBATCH --ntasks-per-node=2
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -42,16 +42,34 @@ source $WORK/.envs/c_vae/bin/activate
 CACHE_DIR="$SCRATCH/eval_cache"
 mkdir -p "$CACHE_DIR"
 
-# Checkpoints to evaluate (default: N7 + N8). Each rank/GPU handles one checkpoint
-# (evaluate_swin_varT.py splits --checkpoint round-robin across ranks). Pass extra
-# checkpoint paths as CLI args to override the default list.
-CKPTS=("$@")
+CKPTS=()
+EXTRA_ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --*)
+            if [ $# -gt 1 ] && [[ "$2" != --* ]]; then
+                EXTRA_ARGS+=("$1" "$2")
+                shift 2
+            else
+                EXTRA_ARGS+=("$1")
+                shift 1
+            fi
+            ;;
+        *)
+            CKPTS+=("$1")
+            shift 1
+            ;;
+    esac
+done
+
 if [ ${#CKPTS[@]} -eq 0 ]; then
     CKPTS=(
-        checkpoints/N11_real_mse_bigvgan_fm05.ckpt
+        checkpoints/O4b_real_distill_mert.ckpt
+        checkpoints/O5_real_chroma_ild.ckpt
     )
 fi
 echo "Evaluating checkpoints: ${CKPTS[*]}"
+echo "Extra args: ${EXTRA_ARGS[*]}"
 
 srun python evaluation/evaluate_swin_varT.py \
     --checkpoint "${CKPTS[@]}" \
@@ -60,4 +78,5 @@ srun python evaluation/evaluate_swin_varT.py \
     --cache-dir  "$CACHE_DIR" \
     --num-workers 16 \
     --max-files 2500 \
+    "${EXTRA_ARGS[@]}" \
     --resume

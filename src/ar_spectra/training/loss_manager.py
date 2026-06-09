@@ -6,11 +6,18 @@ from typing import Optional
 
 from ..models.discriminators import (
     EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, BigVGANDiscriminator,
-    MultiTransformerDiscriminator, HILDiscriminator,
+    MultiTransformerDiscriminator, HILDiscriminator, WavTokenizerGANLoss,
 )
 from ..models.bottlenecks import VAEBottleneck
 from .losses.base import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss, SelfLoss
 from .losses.perceptual import MelSpectrogramLoss, HubertLoss
+from .losses.generative import LatentFlowMatchingLoss
+from .losses.semantic import (
+    MERTTeacher, CLAPTeacher, LatentVFLoss, LatentCosineDistillLoss,
+    OctaveChromaTarget, ILDTarget, LatentChromaILDLoss,
+    LatentContrastiveLoss,
+)
+from ..models.latent_dit import LatentDiT
 from .losses import signal
 from .losses.spectral import (
     MultiResSpectralConvergence,
@@ -21,7 +28,8 @@ from .losses.spectral import (
     STFTConsistencyLoss,
     InstantaneousFrequencyGroupDelayLoss,
     NormalizedComplexDistanceLoss,
-    SpectralContrastLoss
+    SpectralContrastLoss,
+    MRSTFTSame,
 )
 from ar_spectra.utils.console import ok, warn
 
@@ -185,6 +193,8 @@ class LossManager(nn.Module):
                 self.discriminator = MultiTransformerDiscriminator(in_channels=self.audio_channels, **disc_cfg)
             elif disc_type == 'hil':
                 self.discriminator = HILDiscriminator(in_channels=self.audio_channels, sample_rate=sample_rate, **disc_cfg)
+            elif disc_type == 'wavtokenizer':
+                self.discriminator = WavTokenizerGANLoss(channels=self.audio_channels, sample_rate=sample_rate, **disc_cfg)
 
         gen_loss_modules = []
         if self.use_disc:
@@ -286,12 +296,153 @@ class LossManager(nn.Module):
                  )
                  gen_loss_modules.append(LossWithTarget(self.mrmel, "reals", "decoded", name="mrmel_loss", weight=mrmel_weight))
 
+        if "mrstft_same" in self.loss_config:
+            mrstft_same_weight = self.loss_config["mrstft_same"]["weights"]["mrstft_same"]
+            if mrstft_same_weight > 0.0:
+                mrstft_same_cfg = self.loss_config["mrstft_same"].get("config", {}) or {}
+                mrstft_same_cfg = dict(mrstft_same_cfg)
+                mrstft_same_cfg.setdefault("sample_rate", self.sample_rate)
+                self.mrstft_same = MRSTFTSame(**mrstft_same_cfg)
+                gen_loss_modules.append(
+                    LossWithTarget(
+                        self.mrstft_same, target_key="reals", input_key="decoded",
+                        name="mrstft_same_loss", weight=mrstft_same_weight,
+                        decay=self.loss_config["mrstft_same"].get("decay", 1.0),
+                    )
+                )
+
         if "hubert" in self.loss_config:
             hubert_weight = self.loss_config["hubert"]["weights"]["hubert"]
             if hubert_weight > 0.0:
                 hubert_cfg = self.loss_config["hubert"].get("config", {})
                 self.hubert = HubertLoss(weight=1.0, **hubert_cfg)
                 gen_loss_modules.append(LossWithTarget(self.hubert, target_key="reals", input_key="decoded", name="hubert_loss", weight=hubert_weight, decay=self.loss_config["hubert"].get("decay", 1.0)))
+
+        if "semantic_vf" in self.loss_config:
+            vf_weight = self.loss_config["semantic_vf"]["weights"]["vf"]      # = w_hyper
+            if vf_weight > 0.0:
+                import config as _root_config                                # root config.py → MERT_MODEL_DIR
+
+                vf_cfg = dict(self.loss_config["semantic_vf"].get("config", {}) or {})
+                warmup = self.loss_config["semantic_vf"].get("detach_warmup_steps", 0)
+                adaptive = bool(vf_cfg.pop("adaptive", True))                 # VA-VAE grad-norm weighting
+                proj_dim = int(vf_cfg.pop("proj_dim", 768))
+                latent_dim = int(vf_cfg.pop("latent_dim"))                   # C*F_lat of featurized latent
+                if getattr(self, "mert_teacher", None) is None:              # shared frozen teacher (Fasi 1/2)
+                    self.mert_teacher = MERTTeacher(str(_root_config.MERT_MODEL_DIR), src_sr=self.sample_rate)
+                self.vf_proj = nn.Linear(latent_dim, proj_dim)               # → aux_parameters() → opt_aux
+                # adaptive on → module returns raw VF (weight=1), engine applies w_hyper*w_adaptive
+                module_weight = 1.0 if adaptive else vf_weight
+                gen_loss_modules.append(
+                    LatentVFLoss(self.vf_proj, self.mert_teacher, weight=module_weight,
+                                 detach_warmup_steps=warmup, **vf_cfg)        # vf_cfg = {m1, m2, w_cos, w_dist}
+                )
+                if adaptive:
+                    self.vf_adaptive = True                                  # consumed by engine.compute
+                    self.vf_hyper = float(vf_weight)                         # w_hyper
+                    self.vf_loss_name = "vf_loss"
+                    self.vf_recon_name = getattr(self, "_stft_mse_name", "pwc_mse_loss")
+
+        if "semantic_distill" in self.loss_config:
+            distill_weight = self.loss_config["semantic_distill"]["weights"]["distill"]
+            if distill_weight > 0.0:
+                import config as _root_config
+                distill_cfg = dict(self.loss_config["semantic_distill"].get("config", {}) or {})
+                warmup = self.loss_config["semantic_distill"].get("detach_warmup_steps", 25000)
+                latent_dim = int(distill_cfg.pop("latent_dim"))
+                proj_dim = int(distill_cfg.pop("proj_dim", 768))
+                # Separate branch — never active together with semantic_vf; own teacher instantiation.
+                teacher_type = self.loss_config["semantic_distill"].get("teacher_type", "mert")
+                self.distill_proj = nn.Linear(latent_dim, proj_dim)   # → aux_parameters() → opt_aux
+                
+                if teacher_type == "clap":
+                    self.clap_teacher = CLAPTeacher(
+                        str(_root_config.MODELS_DIR / "LAION_CLAP" / "music_audioset_epoch_15_esc_90.14.pt"),
+                        src_sr=self.sample_rate
+                    )
+                    gen_loss_modules.append(
+                        LatentCosineDistillLoss(
+                            self.distill_proj, self.clap_teacher, weight=distill_weight,
+                            detach_warmup_steps=warmup, **distill_cfg
+                        )
+                    )
+                else:
+                    self.mert_teacher = MERTTeacher(str(_root_config.MERT_MODEL_DIR), src_sr=self.sample_rate)
+                    gen_loss_modules.append(
+                        LatentCosineDistillLoss(
+                            self.distill_proj, self.mert_teacher, weight=distill_weight,
+                            detach_warmup_steps=warmup, **distill_cfg
+                        )
+                    )
+
+        if "semantic_regression" in self.loss_config:
+            reg_weight = self.loss_config["semantic_regression"]["weights"].get("regression", 0.0)
+            if reg_weight > 0.0:
+                reg_cfg = dict(self.loss_config["semantic_regression"].get("config", {}) or {})
+                warmup = self.loss_config["semantic_regression"].get("detach_warmup_steps", 25000)
+                D = int(reg_cfg.get("latent_dim", 64))
+                _OCTAVES = [(1, 1.0), (5, 1.5), (9, 1.0)]                # (center_octave, width)
+                chroma_heads = nn.ModuleList([nn.Conv1d(D, 128, 1) for _ in _OCTAVES])
+                ild_head = nn.Conv1d(D, 32, 1)
+                chroma_targets = nn.ModuleList([
+                    OctaveChromaTarget(oct, w, sr=self.sample_rate) for oct, w in _OCTAVES
+                ])
+                ild_target = ILDTarget(sr=self.sample_rate)
+                # chroma_ild registers learnable heads → aux_parameters() → opt_aux
+                self.chroma_ild = nn.ModuleDict({
+                    "chroma": chroma_heads,
+                    "ild": nn.ModuleList([ild_head]),
+                })
+                gen_loss_modules.append(
+                    LatentChromaILDLoss(
+                        chroma_heads=chroma_heads,
+                        ild_head=ild_head,
+                        chroma_targets=chroma_targets,
+                        ild_target=ild_target,
+                        weight=reg_weight,
+                        detach_warmup_steps=int(warmup),
+                    )
+                )
+
+        if "latent_flow" in self.loss_config:
+            flow_weight = self.loss_config["latent_flow"]["weights"]["flow"]
+            if flow_weight > 0.0:
+                flow_cfg = dict(self.loss_config["latent_flow"].get("config", {}) or {})
+                warmup = self.loss_config["latent_flow"].get("detach_warmup_steps", 10000)
+                scale_invariant = self.loss_config["latent_flow"].get("scale_invariant", True)
+                latent_dim = flow_cfg.pop("latent_dim")          # channels of featurized latent
+                # DiT registered as self.flow_dit → aux_parameters() collects it into opt_aux
+                # (opt_gen only sees the autoencoder, LATENT_ALIGNMENT_PLAN.md §0.4).
+                self.flow_dit = LatentDiT(latent_dim=latent_dim, **flow_cfg)
+                gen_loss_modules.append(
+                    LatentFlowMatchingLoss(
+                        self.flow_dit, weight=flow_weight, detach_warmup_steps=warmup,
+                        scale_invariant=scale_invariant,
+                    )
+                )
+
+        if "contrastive" in self.loss_config:
+            contr_weight = self.loss_config["contrastive"]["weights"].get("contr", 0.0)
+            if contr_weight > 0.0:
+                contr_cfg = dict(self.loss_config["contrastive"].get("config", {}) or {})
+                warmup = self.loss_config["contrastive"].get("detach_warmup_steps", 20000)
+                latent_dim = int(contr_cfg.pop("latent_dim", 64))
+                proj_dim = int(contr_cfg.pop("proj_dim", 256))
+                tau = float(contr_cfg.pop("tau", 0.1))
+                
+                # Proiettore MLP: Linear -> SiLU -> Linear
+                self.contr_proj = nn.Sequential(
+                    nn.Linear(latent_dim, proj_dim),
+                    nn.SiLU(),
+                    nn.Linear(proj_dim, proj_dim)
+                )
+                gen_loss_modules.append(
+                    LatentContrastiveLoss(
+                        self.contr_proj, tau=tau,
+                        weight=contr_weight, detach_warmup_steps=warmup
+                    )
+                )
+                self.contrastive_enabled = True
 
         if "time" in self.loss_config:
             if self.loss_config["time"]["weights"].get("l1", 0.0) > 0.0:

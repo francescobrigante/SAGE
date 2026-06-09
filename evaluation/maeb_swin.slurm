@@ -41,8 +41,12 @@ export PYTHONUNBUFFERED=1
 export TF_CPP_MIN_LOG_LEVEL=3
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-CKPT="${1:?Usage: sbatch evaluation/maeb_swin.slurm <ckpt.ckpt> [extra maeb_swin.py args]}"
-shift   # remaining args ("$@") forwarded to maeb_swin.py (e.g. --tasks --max-files)
+if [ $# -eq 0 ] || [[ "$1" == --* ]]; then
+    CKPT="checkpoints/O1_real_same_mrstft.ckpt"
+else
+    CKPT="$1"
+    shift
+fi
 
 echo "============================================================"
 echo "MAEB Swin C-VAE — FMA suite — 1 GPU"

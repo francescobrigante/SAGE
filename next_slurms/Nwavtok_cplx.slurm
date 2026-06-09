@@ -1,21 +1,26 @@
 #!/bin/bash
 # ============================================================
-# M11_real_softnorm: Real-valued baseline with SoftNormBottleneck
-#   - 3-stage Swin V2 Real VAE
-#   - embed_dim=256, depths=[2,6,2]
-#   - parameters_to_predict=1, SoftNormBottleneck(dim=16, auto_scale=True)
-#   - Precision: 32 (FP32)
+# Nwavtok_cplx: Complex baseline (L3_prec32) + WavTokenizer-full Discriminator (RpGAN)
+#   - 3-stage Swin V2 Complex VAE (embed_dim=256, depths=[2,6,2], latent_channels=8)
+#   - stft_mse=1.0, mrstft=0.0
+#   - WavTokenizer Discriminator: Vocos MPD + Vocos legacy magnitude MRD + DAC Discriminator
+#   - loss_type=rpgan (Relativistic GAN for direct comparison against N7)
+#   - preprocess=true (Strictly faithful to paper: per-sample DC-removal and peak-normalization on)
+#   - disc_lr=2e-4 (WavTokenizer paper learning rate)
+#   - generator_lr=1e-3
+#   - adv=0.1, fm=0.2 (Correctly scaled weights to keep the paper's fm/adv = 2.0 ratio under stft_mse=1.0)
+#   - Precision 32 (FP32)
 # ============================================================
-#SBATCH --job-name=M11_real_softnorm
+#SBATCH --job-name=Nwavtok_cplx
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=2
-#SBATCH --gres=gpu:2                   # 2x A100 DDP
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=23:00:00
+#SBATCH --time=1-08:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -44,58 +49,55 @@ cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
 # ─── Auto-resume: W&B run_id + last checkpoint ──────────────────────────────
-RUN_ID_FILE="$WORK/C-VAE/.run_ids/M11_real_softnorm"
+RUN_ID_FILE="$WORK/C-VAE/.run_ids/Nwavtok_cplx"
 
-# Override hardcoded WANDB vars with persisted run_id if available
 if [ -f "$RUN_ID_FILE" ]; then
     export WANDB_RESUME=must
     export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
     echo "[RESUME] W&B run: $WANDB_RUN_ID"
 fi
 
-# Auto-detect newest last.ckpt (finds pre-crash checkpoint on first launch too)
-LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/M11_real_softnorm"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/Nwavtok_cplx"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
 CKPT_ARG=""
 if [ -n "$LATEST_CKPT" ]; then
     CKPT_ARG="+ckpt_path=$LATEST_CKPT"
     echo "[RESUME] Checkpoint: $LATEST_CKPT"
 fi
 
-# ─── Retry loop (up to 8 attempts — recovers from DataLoader timeouts) ───────
+# ─── Retry loop ─────────────────────────────────────────────────────────────
 MAX_ATTEMPTS=8
 attempt=1
 while [ $attempt -le $MAX_ATTEMPTS ]; do
     echo "[$(date '+%T')] Training attempt $attempt/$MAX_ATTEMPTS"
 
     srun --kill-on-bad-exit=1 python train.py \
-        models=swin_real_baseline \
-        models.model.parameters_to_predict=1 \
-        models.model.bottleneck._target_="ar_spectra.models.bottlenecks.SoftNormBottleneck" \
-        +models.model.bottleneck.dim=16 \
-        +models.model.bottleneck.auto_scale=true \
-        +models.model.bottleneck.noise_regularize=true \
+        models=swin_cplx_baseline \
         trainer.trainer.epochs=97 \
-        trainer.loss_config.bottleneck.weights.kl=0.0 \
+        trainer.loss_config.bottleneck.weights.kl=1e-4 \
         trainer.loss_config.spectral.weights.stft_mse=1.0 \
         trainer.loss_config.spectral.weights.mrstft=0.0 \
-        +trainer.aux_optimizer._target_="torch.optim.AdamW" \
-        +trainer.aux_optimizer.lr=1e-3 \
-        "+trainer.aux_optimizer.betas=[0.9,0.95]" \
-        +trainer.aux_optimizer.weight_decay=1e-4 \
-        +trainer.loss_config.latent_flow.weights.flow=1.0 \
-        +trainer.loss_config.latent_flow.config.latent_dim=16 \
-        +trainer.loss_config.latent_flow.config.hidden=768 \
-        +trainer.loss_config.latent_flow.config.depth=4 \
-        +trainer.loss_config.latent_flow.config.fourier_dim=256 \
-        +trainer.loss_config.latent_flow.detach_warmup_steps=20000 \
         trainer.optimizer.lr=1e-3 \
+        "++trainer.disc_optimizer._target_=torch.optim.AdamW" \
+        "++trainer.disc_optimizer.lr=2e-4" \
+        "++trainer.disc_optimizer.betas=[0.8,0.99]" \
+        "++trainer.disc_optimizer.weight_decay=1e-3" \
+        "++trainer.loss_config.discriminator.type=wavtokenizer" \
+        "++trainer.loss_config.discriminator.config.loss_type=rpgan" \
+        "++trainer.loss_config.discriminator.config.periods=[2,3,5,7,11]" \
+        "++trainer.loss_config.discriminator.config.fft_sizes=[2048,1024,512]" \
+        "++trainer.loss_config.discriminator.config.preprocess=true" \
+        "++trainer.loss_config.discriminator.weights.adversarial=0.1" \
+        "++trainer.loss_config.discriminator.weights.feature_matching=0.2" \
+        data.train_dataloader.batch_size=8 \
+        data.eval_dataloader.batch_size=8 \
+        trainer.trainer.accumulate_grad_batches=2 \
         trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
         trainer.trainer.strategy=ddp_find_unused_parameters_true \
         trainer.trainer.precision="32" \
         "+trainer.trainer.compile=false" \
         trainer.wandb.use_wandb=true \
-        trainer.trainer.ckpt_dir=checkpoints/M11_real_softnorm \
-        trainer.wandb.name=M11_real_softnorm \
+        trainer.trainer.ckpt_dir=checkpoints/Nwavtok_cplx \
+        trainer.wandb.name=Nwavtok_cplx \
         $CKPT_ARG
 
     EXIT=$?
@@ -109,6 +111,6 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         export WANDB_RESUME=must
         export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
     fi
-    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/M11_real_softnorm"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/Nwavtok_cplx"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
     [ -n "$LATEST_CKPT" ] && CKPT_ARG="+ckpt_path=$LATEST_CKPT"
 done

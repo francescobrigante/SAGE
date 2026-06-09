@@ -1,0 +1,51 @@
+# @package _global_
+# ============================================================
+# O4_real_distill_mert — M5 real baseline + clip-level MERT cosine distillation
+#   (SALAD arXiv:2510.07592, eq.8): time-pool featurized latent (D=64) and frozen
+#   MERT features (768-d), align via Linear(64,768) + cosine similarity.
+#
+#     L = (1 − cos(Linear(z_avg), t_avg)).mean()   ∈ [0, 2]
+#
+#   Detached warmup 25k steps: projector pre-aligns before encoder grads flow.
+#   No adaptive weighting. distill_proj trained by opt_aux: AdamW lr=1e-3 CONSTANT.
+#   Config STANDALONE — non modifica trainer.yaml. Uso: +experiment=O4_real_distill_mert
+#
+#   Comparison: M5 (no distill) / O3 (per-frame VF-loss) / O4 (clip-level cosine).
+# ============================================================
+defaults:
+  - override /models: swin_real_baseline
+
+trainer:
+  wandb:
+    name: O4_real_distill_mert
+  trainer:
+    ckpt_dir: checkpoints/O4_real_distill_mert
+  # opt_aux for distill_proj (opt_gen sees only autoencoder, LATENT_ALIGNMENT_PLAN §0.4).
+  # SALAD uses global lr=1e-3 for all params → match here (vs O3 which used VA-VAE lr=1e-4).
+  aux_optimizer:
+    _target_: torch.optim.AdamW
+    lr: 1e-3
+    betas: [0.9, 0.98]   # M5 default (SALAD's 0.5, 0.99 is for adversarial training)
+    weight_decay: 1e-4
+  aux_scheduler:
+    _target_: torch.optim.lr_scheduler.ConstantLR
+    factor: 1.0
+    total_iters: 1
+    interval: step
+  loss_config:
+    # M5 reconstruction baseline: stft_MSE=1.0, kl=1e-5, no mrstft/mrmel/disc.
+    spectral:
+      weights:
+        stft_mse: 1.0
+        mrstft: 0.0
+    bottleneck:
+      weights:
+        kl: 1.0e-5
+    # Fase 2 — SALAD clip-level cosine distillation.
+    semantic_distill:
+      weights:
+        distill: 1.0          # λ=1.0: loss bounded [0,2]; SALAD weight not specified
+      config:
+        proj_dim: 768          # MERT hidden dim (teacher output dim)
+        latent_dim: 64         # D = C·F_lat of featurized latent (real baseline: 16·4=64)
+      detach_warmup_steps: 25000  # projector-only phase before joint encoder training

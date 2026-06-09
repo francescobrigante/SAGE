@@ -1,12 +1,19 @@
 #!/bin/bash
 # ============================================================
-# M11_real_softnorm: Real-valued baseline with SoftNormBottleneck
+# O1_real_same_mrstft: Real baseline (M5) reconstruction = SAME-MRSTFT ONLY
 #   - 3-stage Swin V2 Real VAE
 #   - embed_dim=256, depths=[2,6,2]
-#   - parameters_to_predict=1, SoftNormBottleneck(dim=16, auto_scale=True)
-#   - Precision: 32 (FP32)
+#   - patch_size=[64,1], window_size=[4,32]
+#   - stft_mse=0.0 AND mrmel=0.0 (NO MSE, NO mel — MRSTFT is the SOLE recon loss;
+#     mrmel defaults to 0.3 in trainer.yaml so it MUST be zeroed explicitly)
+#   - mrstft_same=1.0 (LATENT_ALIGNMENT_PLAN.md Fase 5 / SAME §3.1, eq.2-7):
+#     7-res, K-weighted, L/R + mid/side; per res = spectral-contrast (eq.3)
+#     + adaptive log-mag (eq.4) + L_IFGD (L_IF+L_GD+L_cd, eq.5-7)
+#   - kl=1e-5; trained without adversarial losses (SAME ablation recipe, line 411)
+#   - Precision: 32 (FP32) to prevent numerical explosion under bf16
+#   - Compare vs M5 (baseline, stft_MSE) and N2 (M5 + IF/GD only)
 # ============================================================
-#SBATCH --job-name=M11_real_softnorm
+#SBATCH --job-name=O1_real_same_mrstft
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -44,7 +51,7 @@ cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
 # ─── Auto-resume: W&B run_id + last checkpoint ──────────────────────────────
-RUN_ID_FILE="$WORK/C-VAE/.run_ids/M11_real_softnorm"
+RUN_ID_FILE="$WORK/C-VAE/.run_ids/O1_real_same_mrstft"
 
 # Override hardcoded WANDB vars with persisted run_id if available
 if [ -f "$RUN_ID_FILE" ]; then
@@ -54,7 +61,7 @@ if [ -f "$RUN_ID_FILE" ]; then
 fi
 
 # Auto-detect newest last.ckpt (finds pre-crash checkpoint on first launch too)
-LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/M11_real_softnorm"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/O1_real_same_mrstft"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
 CKPT_ARG=""
 if [ -n "$LATEST_CKPT" ]; then
     CKPT_ARG="+ckpt_path=$LATEST_CKPT"
@@ -69,33 +76,20 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
 
     srun --kill-on-bad-exit=1 python train.py \
         models=swin_real_baseline \
-        models.model.parameters_to_predict=1 \
-        models.model.bottleneck._target_="ar_spectra.models.bottlenecks.SoftNormBottleneck" \
-        +models.model.bottleneck.dim=16 \
-        +models.model.bottleneck.auto_scale=true \
-        +models.model.bottleneck.noise_regularize=true \
         trainer.trainer.epochs=97 \
-        trainer.loss_config.bottleneck.weights.kl=0.0 \
-        trainer.loss_config.spectral.weights.stft_mse=1.0 \
+        trainer.loss_config.bottleneck.weights.kl=1e-5 \
+        trainer.loss_config.spectral.weights.stft_mse=0.0 \
         trainer.loss_config.spectral.weights.mrstft=0.0 \
-        +trainer.aux_optimizer._target_="torch.optim.AdamW" \
-        +trainer.aux_optimizer.lr=1e-3 \
-        "+trainer.aux_optimizer.betas=[0.9,0.95]" \
-        +trainer.aux_optimizer.weight_decay=1e-4 \
-        +trainer.loss_config.latent_flow.weights.flow=1.0 \
-        +trainer.loss_config.latent_flow.config.latent_dim=16 \
-        +trainer.loss_config.latent_flow.config.hidden=768 \
-        +trainer.loss_config.latent_flow.config.depth=4 \
-        +trainer.loss_config.latent_flow.config.fourier_dim=256 \
-        +trainer.loss_config.latent_flow.detach_warmup_steps=20000 \
+        trainer.loss_config.mrmel.weights.mrmel=0.0 \
+        trainer.loss_config.mrstft_same.weights.mrstft_same=1.0 \
         trainer.optimizer.lr=1e-3 \
         trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
         trainer.trainer.strategy=ddp_find_unused_parameters_true \
         trainer.trainer.precision="32" \
         "+trainer.trainer.compile=false" \
         trainer.wandb.use_wandb=true \
-        trainer.trainer.ckpt_dir=checkpoints/M11_real_softnorm \
-        trainer.wandb.name=M11_real_softnorm \
+        trainer.trainer.ckpt_dir=checkpoints/O1_real_same_mrstft \
+        trainer.wandb.name=O1_real_same_mrstft \
         $CKPT_ARG
 
     EXIT=$?
@@ -109,6 +103,6 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         export WANDB_RESUME=must
         export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
     fi
-    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/M11_real_softnorm"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/O1_real_same_mrstft"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
     [ -n "$LATEST_CKPT" ] && CKPT_ARG="+ckpt_path=$LATEST_CKPT"
 done

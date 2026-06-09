@@ -7,14 +7,21 @@
 """
 MAEB evaluation for Swin C-VAE (complex and real) checkpoints, on the FMA suite.
 
-Runs the 6 FMA music tasks + NMSQAPairClassification on the FMA large test set.
+Runs the 6 FMA music tasks (default) on the FMA large test set; i task musicali
+MTEB upstream (GTZAN/NSynth/…) sono opt-in via --with-extra / --extra-only.
 Run from the ISOLATED maeb_dl venv (see CINECA.md §5.4).
 complextorch/complexpytorch are pure-Python on PyTorch 2.4.1 complex tensors —
 no cineca-custom torch needed.
 
 Usage examples:
-  # Full FMA suite (6 FMA tasks + NMSQA):
+  # Default: solo le 6 FMA:
   python evaluation/maeb_swin.py --ckpt checkpoints/swin_cplx_4s_x64/best.ckpt
+
+  # FMA + task musicali extra:
+  python evaluation/maeb_swin.py --ckpt model.ckpt --with-extra
+
+  # SOLO i task extra (per estendere run già valutate sulle FMA):
+  python evaluation/maeb_swin.py --ckpt model.ckpt --extra-only
 
   # A subset of the suite, with a small per-task cap for a quick run:
   python evaluation/maeb_swin.py --ckpt model.ckpt \
@@ -51,11 +58,17 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--ckpt", required=True,
-                   help="Path to the Swin C-VAE .ckpt.")
+    p.add_argument("--ckpt", default="checkpoints/O1_real_same_mrstft.ckpt",
+                   help="Path to the Swin C-VAE .ckpt. Default: checkpoints/O1_real_same_mrstft.ckpt")
     p.add_argument("--tasks", nargs="*", default=None,
-                   help=f"Subset of the FMA suite to run. Default: all. "
+                   help=f"Explicit task subset (overrides --with-extra/--extra-only). "
                         f"Allowed: {maeb_tasks.ALLOWED_TASKS}.")
+    grp = p.add_mutually_exclusive_group()
+    grp.add_argument("--with-extra", action="store_true",
+                     help=f"Aggiunge i task musicali EXTRA alla suite FMA di default: "
+                          f"{maeb_tasks.EXTRA_TASKS}.")
+    grp.add_argument("--extra-only", action="store_true",
+                     help="Esegue SOLO i task EXTRA (per estendere run già valutate sulle FMA).")
     p.add_argument("--max-files", type=int, default=0,
                    help="Per-FMA-task sample cap: min(task_samples, max_files). 0 = all.")
     p.add_argument("--output-dir", default=None,
@@ -78,12 +91,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def _resolve_tasks(args: argparse.Namespace) -> list:
-    """Resolve the FMA suite (or a --tasks subset of it) into task objects."""
-    names = args.tasks or (maeb_tasks.FMA_SUITE + maeb_tasks.FMA_SUITE_EXTRA)
+    """Resolve the selected task names (FMA default / +extra / extra-only) into objects."""
+    names = maeb_tasks.select_task_names(
+        args.tasks, with_extra=args.with_extra, extra_only=args.extra_only,
+    )
     tasks = maeb_tasks.get_tasks_by_name(
         names, encoder_label=_ENCODER_LABEL, max_files=args.max_files,
     )
-    log.info("FMA suite: %s (max_files=%d)",
+    log.info("MAEB tasks: %s (max_files=%d)",
              [t.metadata.name for t in tasks], args.max_files)
     return tasks
 

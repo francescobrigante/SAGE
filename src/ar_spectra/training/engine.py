@@ -11,6 +11,28 @@ from ar_spectra.utils.audio import trim_to_shortest
 from ar_spectra.utils.tensors import align_freq_bins, align_time_frames
 
 from .loss_manager import LossManager
+
+
+def select_training_phase(use_disc: bool, warmup_mode: str, disc_phase: bool, warmed_up: bool) -> str:
+    """Decide whether this batch is a 'disc' or 'gen' step.
+
+    ``disc_phase`` is a per-batch alternation flag owned by the training wrapper (a
+    boolean toggled once per batch). It is deliberately NOT derived from
+    ``global_step``: with an auxiliary optimizer present (e.g. MERT distillation), the
+    gen phase calls TWO ``optimizer.step()`` (gen + aux) so ``global_step`` advances by
+    2 on gen batches and 1 on disc batches — using its parity then keeps it even and
+    starves the disc phase. A per-batch toggle alternates correctly regardless of how
+    many optimizers step. The disc phase is additionally gated by ``use_disc`` and the
+    warmup schedule.
+    """
+    is_disc = bool(
+        use_disc
+        and disc_phase
+        and ((warmup_mode == "full" and warmed_up) or warmup_mode == "adv")
+    )
+    return "disc" if is_disc else "gen"
+
+
 class AutoencoderEngine(nn.Module):
     """
     - Costruisce discriminator, loss e metriche eval (se richieste)
@@ -97,7 +119,41 @@ class AutoencoderEngine(nn.Module):
             return None
         return self.teacher_model.encode(encoder_input, return_info=False)
 
-    def compute(self, batch: Tuple[torch.Tensor, torch.Tensor], global_step: int) -> Dict[str, Any]:
+    def _augment_waveform(self, wav: torch.Tensor) -> torch.Tensor:
+        """Apply random lightweight augmentations to a batch of waveforms: gain, shelving EQ, time-shift, and bandpass."""
+        B, C, T = wav.shape
+        import random
+
+        # 1. Random Gain [0.8, 1.2]
+        gain = 0.8 + 0.4 * torch.rand(B, 1, 1, device=wav.device)
+        wav = wav * gain
+
+        # 2. Random stable first-order FIR shelving filter: y[n] = x[n] + alpha * x[n-1]
+        # with alpha in [-0.3, 0.3].
+        alpha = -0.3 + 0.6 * torch.rand(B, 1, 1, device=wav.device)
+        wav_prev = torch.nn.functional.pad(wav[:, :, :-1], (1, 0))
+        wav = wav + alpha * wav_prev
+
+        # 3. Vectorized random circular Time Shift (up to 5% of sequence length)
+        max_shift = int(0.05 * T)
+        if max_shift > 0:
+            shift = torch.randint(-max_shift, max_shift + 1, (B,), device=wav.device)
+            indices = (torch.arange(T, device=wav.device).unsqueeze(0) - shift.unsqueeze(1)) % T
+            wav = torch.gather(wav, -1, indices.unsqueeze(1).expand(-1, C, -1))
+
+        # 4. Random simple highpass + lowpass shelving filter
+        beta = 0.2 * torch.rand(B, 1, 1, device=wav.device)
+        wav_prev_hp = torch.nn.functional.pad(wav[:, :, :-1], (1, 0))
+        wav = wav - beta * wav_prev_hp
+        
+        if random.random() < 0.5:
+            wav_prev_lp = torch.nn.functional.pad(wav[:, :, :-1], (1, 0))
+            wav = 0.5 * (wav + wav_prev_lp)
+
+        return wav
+
+    def compute(self, batch: Tuple[torch.Tensor, torch.Tensor], global_step: int,
+                disc_phase: Optional[bool] = None) -> Dict[str, Any]:
         """Compute forward and loss breakdown for a training batch.
 
         The method orchestrates the end-to-end path ``spectrogram -> encoder ->
@@ -165,6 +221,24 @@ class AutoencoderEngine(nn.Module):
         loss_info["latents"] = latents
         loss_info.update(encoder_info)
         loss_info.update(bottleneck_info)
+
+        # Encode second view for contrastive loss (Fase 4)
+        if getattr(self.loss_manager, "contrastive_enabled", False):
+            # Augment original waveform (gain, EQ, shift, bandpass)
+            aug_waveforms = self._augment_waveform(orig_waveforms)
+            # Compute STFT of augmented waveform
+            sp_aug = self.autoencoder.stft(aug_waveforms)
+            is_complex = getattr(self.autoencoder.encoder, "is_complex", False)
+            if not is_complex:
+                sp_aug = self.autoencoder._pack_complex(sp_aug)
+            
+            # Encode second view
+            if warmed_up and self.encoder_freeze_on_warmup:
+                with torch.no_grad():
+                    augmented_latents = self.autoencoder.encode(sp_aug, return_info=False)
+            else:
+                augmented_latents = self.autoencoder.encode(sp_aug, return_info=False)
+            loss_info["augmented_latents"] = augmented_latents
 
         # Distillation
         teacher_latents = self._encode_teacher_if_needed(encoder_input)
@@ -261,20 +335,43 @@ class AutoencoderEngine(nn.Module):
 
         gen_total, gen_breakdown = self.loss_manager.losses_gen(loss_info)
 
+        # VA-VAE adaptive VF weighting (LATENT_ALIGNMENT_PLAN.md Fase 1). Rescale the VF
+        # loss by w_adaptive = ||∇_z L_rec|| / (||∇_z L_vf|| + eps), taken w.r.t. the latent
+        # z. VA-VAE references the ENCODER's last-layer weight (enc_last_layer); we measure
+        # at the latent activation z instead — equivalent for the ratio, because for a
+        # linear last layer z=W·h the gradient norm factors as ||∇_z L||·||h|| and the
+        # shared activation ||h|| cancels in the rec/vf ratio. Using z is robust (no need
+        # to reach into the Swin encoder) and is already at hand. Gated by the semantic_vf
+        # flag so it only affects the VF run.
+        vf_w_adaptive = None
+        if getattr(self.loss_manager, "vf_adaptive", False):
+            vf_raw = gen_breakdown.get(self.loss_manager.vf_loss_name)
+            nll = gen_breakdown.get(self.loss_manager.vf_recon_name)
+            z = loss_info["latents"]
+            if (vf_raw is not None and nll is not None
+                    and vf_raw.requires_grad and z.requires_grad):
+                g_nll = torch.autograd.grad(nll, z, retain_graph=True)[0]      # ∇_z L_rec
+                g_vf = torch.autograd.grad(vf_raw, z, retain_graph=True)[0]    # ∇_z L_vf
+                vf_w_adaptive = (g_nll.norm() / (g_vf.norm() + 1e-4)).clamp(0.0, 1e8).detach()
+                vf_eff = self.loss_manager.vf_hyper * vf_w_adaptive            # w_hyper · w_adaptive
+                gen_total = gen_total - vf_raw + vf_eff * vf_raw               # rescale VF contribution
+                gen_breakdown[self.loss_manager.vf_loss_name] = (vf_eff * vf_raw).detach()  # logged value
+
         # Stats per logging
         data_std = loss_info["encoder_input"].std()
         latent_std = loss_info["latents"].std()
         stats = {"data_std": data_std, "latent_std": latent_std}
+        if vf_w_adaptive is not None:
+            stats["vf_w_adaptive"] = vf_w_adaptive
 
-        # Alternanza fase
-        use_disc_phase = (
-            self.use_disc
-            and (global_step % 2 == 1)
-            and ((self.warmup_mode == "full" and warmed_up) or self.warmup_mode == "adv")
-        )
+        # Alternanza fase: usa il toggle per-batch del wrapper (robusto a opt_aux /
+        # accumulation). Fallback alla parità di global_step se non passato (back-compat).
+        if disc_phase is None:
+            disc_phase = (global_step % 2 == 1)
+        phase = select_training_phase(self.use_disc, self.warmup_mode, bool(disc_phase), warmed_up)
 
         return {
-            "phase": "disc" if use_disc_phase else "gen",
+            "phase": phase,
             "gen_total": gen_total,
             "gen_breakdown": gen_breakdown,
             "disc_total": disc_total,
