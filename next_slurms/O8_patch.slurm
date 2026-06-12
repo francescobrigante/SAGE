@@ -1,15 +1,16 @@
 #!/bin/bash
 # ============================================================
-# P_fm05: O4b (CLAP Distillation) + WavTokenizer Discriminator
-#   - Combines LAION-CLAP distillation (SALAD-style, proj_dim=512) with WavTokenizer (Perceptual gains)
-#   - Config: config/experiment/O4b_real_distill_mert.yaml (CLAP overrides at runtime)
-#   - WavTokenizer Discriminator: Vocos MPD + Vocos legacy magnitude MRD + DAC Discriminator
-#   - loss_type=rpgan (Relativistic GAN)
-#   - disc_lr=2e-4, generator_lr=1e-3
-#   - adv=0.1, fm=0.2
-#   - Precision 32 (FP32)
+# O8_patch: VALIDATION RUN of the engine patch set against O8.
+#   Identical training recipe to O8_real_distill_clap_wavtok, only the run name /
+#   dirs / W&B id differ so it does NOT resume or overwrite the original O8 run.
+#   Purpose: compare O8_patch (patched code) vs O8 (original) to confirm the
+#   optimizations leave train/* losses unchanged. Expected differences:
+#     - val/* metrics improve (B1: validation no longer double-applies pre_transform)
+#     - EMA-based val/demo shifts slightly (B2: EMA now advances only on gen steps)
+#     - train/* gen+disc losses should match O8 (O1/O4 are speed-only, no math change)
+#   Same as O8: O4b (CLAP distill) + WavTokenizer disc, rpgan, FP32, 2xA100 DDP.
 # ============================================================
-#SBATCH --job-name=P_fm05
+#SBATCH --job-name=O8_patch
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -48,7 +49,7 @@ cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
 # ─── Auto-resume ────────────────────────────────────────────────────────────
-RUN_ID_FILE="$WORK/C-VAE/.run_ids/P_fm05"
+RUN_ID_FILE="$WORK/C-VAE/.run_ids/O8_patch"
 
 if [ -f "$RUN_ID_FILE" ]; then
     export WANDB_RESUME=must
@@ -56,7 +57,7 @@ if [ -f "$RUN_ID_FILE" ]; then
     echo "[RESUME] W&B run: $WANDB_RUN_ID"
 fi
 
-LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/P_fm05"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/O8_patch"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
 CKPT_ARG=""
 if [ -n "$LATEST_CKPT" ]; then
     CKPT_ARG="+ckpt_path=$LATEST_CKPT"
@@ -88,14 +89,14 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         "++trainer.loss_config.discriminator.config.fft_sizes=[2048,1024,512]" \
         "++trainer.loss_config.discriminator.config.preprocess=true" \
         "++trainer.loss_config.discriminator.weights.adversarial=0.1" \
-        "++trainer.loss_config.discriminator.weights.feature_matching=0.5" \
+        "++trainer.loss_config.discriminator.weights.feature_matching=0.2" \
         trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
         trainer.trainer.strategy=ddp_find_unused_parameters_true \
         trainer.trainer.precision="32" \
         "+trainer.trainer.compile=false" \
-        trainer.wandb.use_wandb=false \
-        trainer.trainer.ckpt_dir=checkpoints/P_fm05 \
-        trainer.wandb.name=P_fm05 \
+        trainer.wandb.use_wandb=true \
+        trainer.trainer.ckpt_dir=checkpoints/O8_patch \
+        trainer.wandb.name=O8_patch \
         $CKPT_ARG
 
     EXIT=$?
@@ -109,6 +110,6 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         export WANDB_RESUME=must
         export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
     fi
-    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/P_fm05"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/O8_patch"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
     [ -n "$LATEST_CKPT" ] && CKPT_ARG="+ckpt_path=$LATEST_CKPT"
 done

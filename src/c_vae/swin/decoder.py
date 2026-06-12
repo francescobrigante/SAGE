@@ -16,6 +16,7 @@ from ar_spectra.blocks.conv.causal import SConv2d
 from ar_spectra.models.implementations.abstract_ae import AbstractDecoder
 from .swin_stage import SwinStage
 from .patches import PatchExpand, PatchUnembed, SpatialConvSmooth
+from .postnet import ResidualPostNet
 from .utils import init_swin_weights, make_norm
 from .perceiver import PerceiverDecompression
 
@@ -74,6 +75,8 @@ class SwinDecoder(AbstractDecoder):
         complex_activation: str = "ComplexGELU1d",
         use_smooth_convs: bool = False,
         use_perceiver_compression: bool = False,
+        use_postnet: bool = False,
+        postnet_hidden: int = 64,
     ) -> None:
         super().__init__(channels=channels, is_complex=is_complex)
 
@@ -192,6 +195,14 @@ class SwinDecoder(AbstractDecoder):
         for stage in self.stages:
             stage._init_respostnorm()
 
+        # Optional zero-init residual post-net on the output spectrogram.
+        # Created AFTER init_swin_weights so its zero-init (identity at init)
+        # cannot be overwritten by the global initializer.
+        if use_postnet:
+            if is_complex:
+                raise NotImplementedError("ResidualPostNet supports real-valued decoders only")
+            self.postnet = ResidualPostNet(channels=in_channels, hidden=postnet_hidden)
+
     def forward(self, x: torch.Tensor,encoder_info: Optional[Dict] = None) -> torch.Tensor:
         """Decode a latent sequence back to a stereo STFT spectrogram.
 
@@ -225,5 +236,7 @@ class SwinDecoder(AbstractDecoder):
         x = self.patch_unembed(x)                       # (B, in_channels, F=1024, T=128)
         if hasattr(self, 'output_conv'):
             x = self.output_conv(x)                     # smooth frequency-domain block edges
+        if hasattr(self, 'postnet'):
+            x = self.postnet(x)                         # zero-init residual refiner (identity at init)
 
         return x

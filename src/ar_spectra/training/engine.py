@@ -1,6 +1,7 @@
 # =============================================================================
 # Core autoencoder training logic, computing forwards passes and aggregating losses.
 # =============================================================================
+import contextlib
 import torch
 import torch.nn as nn
 from typing import Optional, Literal, Dict, Any, Tuple
@@ -70,8 +71,6 @@ class AutoencoderEngine(nn.Module):
                 self.teacher_model.set_stft_config(self.stft_params)
             except Exception as exc:
                 warn(f"Failed to propagate STFT config to teacher model ({type(exc).__name__}: {exc})", prefix="MODEL")
-
-        self.val_stft_params = None            # eval params injected by train.py
 
         # training policy
         self.warmup_steps = warmup_steps
@@ -204,92 +203,95 @@ class AutoencoderEngine(nn.Module):
 
         warmed_up = (global_step >= self.warmup_steps)
 
-        # Encode
-        if warmed_up and self.encoder_freeze_on_warmup:
-            with torch.no_grad():
-                enc_out = self.autoencoder.encode(encoder_input, return_info=True)
-        else:
-            enc_out = self.autoencoder.encode(encoder_input, return_info=True)
+        # Resolve the phase up-front: gen losses only on gen steps, disc loss only on
+        # disc steps, and the generator forward under no_grad on disc steps.
+        if disc_phase is None:
+            disc_phase = (global_step % 2 == 1)
+        phase = select_training_phase(self.use_disc, self.warmup_mode, bool(disc_phase), warmed_up)
+        disc_step = (phase == "disc")
 
-        bottleneck_info: Dict[str, Any] = {}
-        if isinstance(enc_out, tuple) and len(enc_out) == 3:
-            latents, encoder_info, bottleneck_info = enc_out
-        elif isinstance(enc_out, tuple):
-            latents, encoder_info = enc_out
-        else:
-            latents, encoder_info = enc_out, {}
-        loss_info["latents"] = latents
-        loss_info.update(encoder_info)
-        loss_info.update(bottleneck_info)
-
-        # Encode second view for contrastive loss (Fase 4)
-        if getattr(self.loss_manager, "contrastive_enabled", False):
-            # Augment original waveform (gain, EQ, shift, bandpass)
-            aug_waveforms = self._augment_waveform(orig_waveforms)
-            # Compute STFT of augmented waveform
-            sp_aug = self.autoencoder.stft(aug_waveforms)
-            is_complex = getattr(self.autoencoder.encoder, "is_complex", False)
-            if not is_complex:
-                sp_aug = self.autoencoder._pack_complex(sp_aug)
-            
-            # Encode second view
-            if warmed_up and self.encoder_freeze_on_warmup:
-                with torch.no_grad():
-                    augmented_latents = self.autoencoder.encode(sp_aug, return_info=False)
-            else:
-                augmented_latents = self.autoencoder.encode(sp_aug, return_info=False)
-            loss_info["augmented_latents"] = augmented_latents
-
-        # Distillation
-        teacher_latents = self._encode_teacher_if_needed(encoder_input)
-        if self.latent_mask_ratio > 0.0:
-            mask = torch.rand_like(latents) < self.latent_mask_ratio
-            latents = torch.where(mask, torch.zeros_like(latents), latents)
-            loss_info["latents"] = latents
-
-        # Decode STFT -> waveform
-        sp_decoded = self.autoencoder.decode(latents, apply_inverse=False)
-        
-        # if has pre-transform, invert it otherwise use decoded as is (linear)
-        sp_decoded_linear = (
-            self.autoencoder.apply_inverse_pre_transform(sp_decoded)
-            if self.autoencoder.has_pre_transform
-            else sp_decoded
+        gen_fwd_ctx = torch.no_grad() if disc_step else contextlib.nullcontext()
+        enc_ctx = (
+            torch.no_grad()
+            if (disc_step or (warmed_up and self.encoder_freeze_on_warmup))
+            else contextlib.nullcontext()
         )
 
-        # select spectrogram for losses: if we applied pre-transform to target, use decoded with pre-transform;
-        # if we applied inverse pre-transform, use linear decoded; otherwise use decoded as is
-        if self.autoencoder.pre_transform_applies_to_target:
-            sp_decoded_for_losses = sp_decoded
-        elif self.autoencoder.pre_transform_applies_inverse:
-            sp_decoded_for_losses = sp_decoded_linear
-        else:
-            sp_decoded_for_losses = sp_decoded
+        with gen_fwd_ctx:
+            # Encode
+            with enc_ctx:
+                enc_out = self.autoencoder.encode(encoder_input, return_info=True)
 
-        # Allinea la dimensione in frequenza E tempo per le loss spettrali
-        # FIX: Also align time dimension to prevent misalignment in spectral losses
-        try:
-            sp_decoded_aligned = align_freq_bins(sp_decoded_for_losses, spectral_target)
-            sp_decoded_aligned = align_time_frames(sp_decoded_aligned, spectral_target)
-        except Exception as e:
-            # conservative fallback: maintain the original but clearly report
-            err(f"Failed to align spectrogram F dimension ({e}).", prefix="MODEL")
-            sp_decoded_aligned = sp_decoded_for_losses
+            bottleneck_info: Dict[str, Any] = {}
+            
+            if isinstance(enc_out, tuple) and len(enc_out) == 3:
+                latents, encoder_info, bottleneck_info = enc_out
+            elif isinstance(enc_out, tuple):
+                latents, encoder_info = enc_out
+            else:
+                latents, encoder_info = enc_out, {}
 
-        # we prepare the aligned spectrogram for waveform reconstruction
-        # FIX: Align BOTH frequency AND time dimensions to prevent waveform loss misalignment
-        # The decoder may produce more time frames due to non-integer downsampling ratios
-        try:
-            sp_decoded_linear_aligned = align_freq_bins(sp_decoded_linear, encoder_input)
-            sp_decoded_linear_aligned = align_time_frames(sp_decoded_linear_aligned, encoder_input)
-        except Exception as e:
-            err(f"Failed to align spectrogram for waveform losses ({e}).", prefix="MODEL")
-            sp_decoded_linear_aligned = sp_decoded_linear
+            loss_info["latents"] = latents
+            loss_info.update(encoder_info)
+            loss_info.update(bottleneck_info)
 
-        decoded = self.autoencoder.istft(sp_decoded_linear_aligned, target_length=orig_waveforms.shape[-1])
+            # Encode second view for contrastive loss (Fase 4) -- gen step only.
+            if (not disc_step) and getattr(self.loss_manager, "contrastive_enabled", False):
+                aug_waveforms = self._augment_waveform(orig_waveforms)
+                sp_aug = self.autoencoder.stft(aug_waveforms)
+                is_complex = getattr(self.autoencoder.encoder, "is_complex", False)
+                if not is_complex:
+                    sp_aug = self.autoencoder._pack_complex(sp_aug)
+                if warmed_up and self.encoder_freeze_on_warmup:
+                    with torch.no_grad():
+                        augmented_latents = self.autoencoder.encode(sp_aug, return_info=False)
+                else:
+                    augmented_latents = self.autoencoder.encode(sp_aug, return_info=False)
+                loss_info["augmented_latents"] = augmented_latents
 
-        # allinea alle waveform reali (non usare l’inversione dell’input)
-        decoded, orig_waveforms = trim_to_shortest(decoded, orig_waveforms)
+            # Optional latent masking (denoising-VAE augmentation), before decode.
+            if self.latent_mask_ratio > 0.0:
+                mask = torch.rand_like(latents) < self.latent_mask_ratio
+                latents = torch.where(mask, torch.zeros_like(latents), latents)
+                loss_info["latents"] = latents
+
+            # encoder_info passed explicitly: the contrastive encode overwrites the cached _last_encoder_info
+            sp_decoded = self.autoencoder.decode(latents, encoder_info=encoder_info, apply_inverse=False)
+
+            # if has pre-transform, invert it otherwise use decoded as is (linear)
+            sp_decoded_linear = (
+                self.autoencoder.apply_inverse_pre_transform(sp_decoded)
+                if self.autoencoder.has_pre_transform
+                else sp_decoded
+            )
+
+            # select spectrogram for losses
+            if self.autoencoder.pre_transform_applies_to_target:
+                sp_decoded_for_losses = sp_decoded
+            elif self.autoencoder.pre_transform_applies_inverse:
+                sp_decoded_for_losses = sp_decoded_linear
+            else:
+                sp_decoded_for_losses = sp_decoded
+
+            # Align freq + time for the spectral losses
+            try:
+                sp_decoded_aligned = align_freq_bins(sp_decoded_for_losses, spectral_target)
+                sp_decoded_aligned = align_time_frames(sp_decoded_aligned, spectral_target)
+            except Exception as e:
+                err(f"Failed to align spectrogram F dimension ({e}).", prefix="MODEL")
+                sp_decoded_aligned = sp_decoded_for_losses
+
+            # Align freq + time for waveform reconstruction
+            try:
+                sp_decoded_linear_aligned = align_freq_bins(sp_decoded_linear, encoder_input)
+                sp_decoded_linear_aligned = align_time_frames(sp_decoded_linear_aligned, encoder_input)
+            except Exception as e:
+                err(f"Failed to align spectrogram for waveform losses ({e}).", prefix="MODEL")
+                sp_decoded_linear_aligned = sp_decoded_linear
+
+            decoded = self.autoencoder.istft(sp_decoded_linear_aligned, target_length=orig_waveforms.shape[-1])
+            # align to the real waveforms (do not use the inverse of the input)
+            decoded, orig_waveforms = trim_to_shortest(decoded, orig_waveforms)
 
         loss_info["decoded"] = decoded              # waveform pred
         loss_info["reals"] = orig_waveforms         # waveform GT
@@ -303,6 +305,10 @@ class AutoencoderEngine(nn.Module):
             loss_info["reals_left"] = orig_waveforms[:, 0:1, :]
             loss_info["reals_right"] = orig_waveforms[:, 1:2, :]
 
+        # Teacher (SAO-style AE latent distillation) -- gen step only.
+        teacher_latents = None
+        if not disc_step:
+            teacher_latents = self._encode_teacher_if_needed(encoder_input)
         if teacher_latents is not None:
             with torch.no_grad():
                 teacher_decoded = self.teacher_model.decode(teacher_latents)
@@ -313,49 +319,42 @@ class AutoencoderEngine(nn.Module):
             loss_info['own_latents_teacher_decoded'] = own_latents_teacher_decoded
             loss_info['teacher_latents_own_decoded'] = teacher_latents_own_decoded
 
-        # Discriminator (solo computo loss)
+        gen_total = None
+        gen_breakdown: Dict[str, torch.Tensor] = {}
         disc_total = None
         disc_breakdown: Dict[str, torch.Tensor] = {}
-        if self.use_disc:
-            if warmed_up:
-                loss_dis, loss_adv, feat_match = self.loss_manager.discriminator.loss(reals=orig_waveforms, fakes=decoded)
-            else:
-                if self.warmup_mode == "adv":
-                    loss_dis, _, _ = self.loss_manager.discriminator.loss(reals=orig_waveforms, fakes=decoded)
-                else:
-                    loss_dis = torch.tensor(0.0, device=decoded.device)
-                loss_adv = torch.tensor(0.0, device=decoded.device)
-                feat_match = torch.tensor(0.0, device=decoded.device)
-
-            loss_info["loss_dis"] = loss_dis
-            loss_info["loss_adv"] = loss_adv
-            loss_info["feature_matching_distance"] = feat_match
-
-            disc_total, disc_breakdown = self.loss_manager.losses_disc(loss_info)
-
-        gen_total, gen_breakdown = self.loss_manager.losses_gen(loss_info)
-
-        # VA-VAE adaptive VF weighting (LATENT_ALIGNMENT_PLAN.md Fase 1). Rescale the VF
-        # loss by w_adaptive = ||∇_z L_rec|| / (||∇_z L_vf|| + eps), taken w.r.t. the latent
-        # z. VA-VAE references the ENCODER's last-layer weight (enc_last_layer); we measure
-        # at the latent activation z instead — equivalent for the ratio, because for a
-        # linear last layer z=W·h the gradient norm factors as ||∇_z L||·||h|| and the
-        # shared activation ||h|| cancels in the rec/vf ratio. Using z is robust (no need
-        # to reach into the Swin encoder) and is already at hand. Gated by the semantic_vf
-        # flag so it only affects the VF run.
         vf_w_adaptive = None
-        if getattr(self.loss_manager, "vf_adaptive", False):
-            vf_raw = gen_breakdown.get(self.loss_manager.vf_loss_name)
-            nll = gen_breakdown.get(self.loss_manager.vf_recon_name)
-            z = loss_info["latents"]
-            if (vf_raw is not None and nll is not None
-                    and vf_raw.requires_grad and z.requires_grad):
-                g_nll = torch.autograd.grad(nll, z, retain_graph=True)[0]      # ∇_z L_rec
-                g_vf = torch.autograd.grad(vf_raw, z, retain_graph=True)[0]    # ∇_z L_vf
-                vf_w_adaptive = (g_nll.norm() / (g_vf.norm() + 1e-4)).clamp(0.0, 1e8).detach()
-                vf_eff = self.loss_manager.vf_hyper * vf_w_adaptive            # w_hyper · w_adaptive
-                gen_total = gen_total - vf_raw + vf_eff * vf_raw               # rescale VF contribution
-                gen_breakdown[self.loss_manager.vf_loss_name] = (vf_eff * vf_raw).detach()  # logged value
+
+        if disc_step:
+            # decoded is detached (no_grad forward) → disc.loss() updates only the disc
+            loss_dis, _, _ = self.loss_manager.discriminator.loss(reals=orig_waveforms, fakes=decoded)
+            loss_info["loss_dis"] = loss_dis
+            disc_total, disc_breakdown = self.loss_manager.losses_disc(loss_info)
+        else:
+            if self.use_disc:
+                if warmed_up:
+                    _, loss_adv, feat_match = self.loss_manager.discriminator.loss(reals=orig_waveforms, fakes=decoded)
+                else:
+                    loss_adv = torch.zeros((), device=decoded.device)
+                    feat_match = torch.zeros((), device=decoded.device)
+                loss_info["loss_adv"] = loss_adv
+                loss_info["feature_matching_distance"] = feat_match
+
+            gen_total, gen_breakdown = self.loss_manager.losses_gen(loss_info)
+
+            # VA-VAE adaptive VF weighting (Fase 1): rescale VF by ||grad_z L_rec|| / ||grad_z L_vf||
+            if getattr(self.loss_manager, "vf_adaptive", False):
+                vf_raw = gen_breakdown.get(self.loss_manager.vf_loss_name)
+                nll = gen_breakdown.get(self.loss_manager.vf_recon_name)
+                z = loss_info["latents"]
+                if (vf_raw is not None and nll is not None
+                        and vf_raw.requires_grad and z.requires_grad):
+                    g_nll = torch.autograd.grad(nll, z, retain_graph=True)[0]
+                    g_vf = torch.autograd.grad(vf_raw, z, retain_graph=True)[0]
+                    vf_w_adaptive = (g_nll.norm() / (g_vf.norm() + 1e-4)).clamp(0.0, 1e8).detach()
+                    vf_eff = self.loss_manager.vf_hyper * vf_w_adaptive
+                    gen_total = gen_total - vf_raw + vf_eff * vf_raw
+                    gen_breakdown[self.loss_manager.vf_loss_name] = (vf_eff * vf_raw).detach()
 
         # Stats per logging
         data_std = loss_info["encoder_input"].std()
@@ -363,12 +362,6 @@ class AutoencoderEngine(nn.Module):
         stats = {"data_std": data_std, "latent_std": latent_std}
         if vf_w_adaptive is not None:
             stats["vf_w_adaptive"] = vf_w_adaptive
-
-        # Alternanza fase: usa il toggle per-batch del wrapper (robusto a opt_aux /
-        # accumulation). Fallback alla parità di global_step se non passato (back-compat).
-        if disc_phase is None:
-            disc_phase = (global_step % 2 == 1)
-        phase = select_training_phase(self.use_disc, self.warmup_mode, bool(disc_phase), warmed_up)
 
         return {
             "phase": phase,
@@ -390,10 +383,13 @@ class AutoencoderEngine(nn.Module):
         encoder_input = sp_reals
         if self.force_input_mono and encoder_input.shape[1] > 1:
             encoder_input = encoder_input.mean(dim=1, keepdim=True)
-            
-        if self.autoencoder.pre_transform_applies_to_target:
-            encoder_input = self.autoencoder.apply_pre_transform_to_target(encoder_input)
 
+        # Feed the RAW spectrogram to encode(). AutoEncoder.encode applies the
+        # pre-transform internally (apply_encoder=True), so pre-transforming here
+        # would apply it TWICE → the encoder would see an out-of-distribution input
+        # and every val/* metric would be silently distorted. This mirrors compute(),
+        # which feeds raw input to encode() and keeps the transformed tensor only as a
+        # separate loss target. align_* below uses encoder_input for shape only.
         enc_out = self.autoencoder.encode(encoder_input, return_info=True)
         bottleneck_info: Dict[str, Any] = {}
         if isinstance(enc_out, tuple) and len(enc_out) == 3:

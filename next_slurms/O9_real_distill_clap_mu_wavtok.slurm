@@ -1,21 +1,22 @@
 #!/bin/bash
 # ============================================================
-# P_fm05: O4b (CLAP Distillation) + WavTokenizer Discriminator
-#   - Combines LAION-CLAP distillation (SALAD-style, proj_dim=512) with WavTokenizer (Perceptual gains)
-#   - Config: config/experiment/O4b_real_distill_mert.yaml (CLAP overrides at runtime)
-#   - WavTokenizer Discriminator: Vocos MPD + Vocos legacy magnitude MRD + DAC Discriminator
-#   - loss_type=rpgan (Relativistic GAN)
-#   - disc_lr=2e-4, generator_lr=1e-3
-#   - adv=0.1, fm=0.2
-#   - Precision 32 (FP32)
+# O9_real_distill_clap_mu_wavtok: O8 with distillation on mu instead of z
+#   Ablation: identical to O8_real_distill_clap_wavtok in every respect,
+#   except LatentCosineDistillLoss reads the posterior mean mu
+#   (pre_bottleneck_latents[:, :C]) instead of the sampled latent z.
+#   Rationale: removes the reparameterization-noise Jensen gap and matches
+#   MAEB's deterministic-mu probing protocol exactly (train/test alignment).
+#   Expected: small consistent MAEB gain, reconstruction unchanged.
+#   - CLAP teacher (proj_dim=512), detach warmup 25k, aux_lr=1e-5 (O4b).
+#   - WavTokenizer disc rpgan, adv=0.1, fm=0.2, disc_lr=2e-4. FP32.
 # ============================================================
-#SBATCH --job-name=P_fm05
+#SBATCH --job-name=O9_real_distill_clap_mu_wavtok
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=2
-#SBATCH --gres=gpu:2                   # 4x A100 DDP
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
 #SBATCH --time=23:00:00
@@ -48,7 +49,7 @@ cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
 # ─── Auto-resume ────────────────────────────────────────────────────────────
-RUN_ID_FILE="$WORK/C-VAE/.run_ids/P_fm05"
+RUN_ID_FILE="$WORK/C-VAE/.run_ids/O9_real_distill_clap_mu_wavtok"
 
 if [ -f "$RUN_ID_FILE" ]; then
     export WANDB_RESUME=must
@@ -56,7 +57,7 @@ if [ -f "$RUN_ID_FILE" ]; then
     echo "[RESUME] W&B run: $WANDB_RUN_ID"
 fi
 
-LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/P_fm05"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/O9_real_distill_clap_mu_wavtok"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
 CKPT_ARG=""
 if [ -n "$LATEST_CKPT" ]; then
     CKPT_ARG="+ckpt_path=$LATEST_CKPT"
@@ -73,6 +74,7 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         +experiment=O4b_real_distill_mert \
         "++trainer.loss_config.semantic_distill.teacher_type=clap" \
         "++trainer.loss_config.semantic_distill.config.proj_dim=512" \
+        "++trainer.loss_config.semantic_distill.config.distill_on_mu=true" \
         trainer.trainer.epochs=97 \
         trainer.loss_config.bottleneck.weights.kl=1e-4 \
         trainer.loss_config.spectral.weights.stft_mse=1.0 \
@@ -88,14 +90,14 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         "++trainer.loss_config.discriminator.config.fft_sizes=[2048,1024,512]" \
         "++trainer.loss_config.discriminator.config.preprocess=true" \
         "++trainer.loss_config.discriminator.weights.adversarial=0.1" \
-        "++trainer.loss_config.discriminator.weights.feature_matching=0.5" \
+        "++trainer.loss_config.discriminator.weights.feature_matching=0.2" \
         trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
         trainer.trainer.strategy=ddp_find_unused_parameters_true \
         trainer.trainer.precision="32" \
         "+trainer.trainer.compile=false" \
-        trainer.wandb.use_wandb=false \
-        trainer.trainer.ckpt_dir=checkpoints/P_fm05 \
-        trainer.wandb.name=P_fm05 \
+        trainer.wandb.use_wandb=true \
+        trainer.trainer.ckpt_dir=checkpoints/O9_real_distill_clap_mu_wavtok \
+        trainer.wandb.name=O9_real_distill_clap_mu_wavtok \
         $CKPT_ARG
 
     EXIT=$?
@@ -109,6 +111,6 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         export WANDB_RESUME=must
         export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
     fi
-    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/P_fm05"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/O9_real_distill_clap_mu_wavtok"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
     [ -n "$LATEST_CKPT" ] && CKPT_ARG="+ckpt_path=$LATEST_CKPT"
 done

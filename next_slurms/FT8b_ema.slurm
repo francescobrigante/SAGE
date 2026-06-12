@@ -1,24 +1,32 @@
 #!/bin/bash
 # ============================================================
-# P_fm05: O4b (CLAP Distillation) + WavTokenizer Discriminator
-#   - Combines LAION-CLAP distillation (SALAD-style, proj_dim=512) with WavTokenizer (Perceptual gains)
-#   - Config: config/experiment/O4b_real_distill_mert.yaml (CLAP overrides at runtime)
-#   - WavTokenizer Discriminator: Vocos MPD + Vocos legacy magnitude MRD + DAC Discriminator
-#   - loss_type=rpgan (Relativistic GAN)
-#   - disc_lr=2e-4, generator_lr=1e-3
-#   - adv=0.1, fm=0.2
-#   - Precision 32 (FP32)
+# FT8b_ema: LR COOLDOWN tail of FT5 (WSD-style)
+#   Rationale: FT5's InverseLR ends at ~0.79x of peak; the cooldown closes the
+#   "decay-to-zero" gap (Hagele et al. arXiv:2405.18392; WSD schedule MiniCPM;
+#   HiFi-GAN/BigVGAN end training at low LR via built-in exponential decay).
+#   - Inits LIVE weights (init_from_ema=false: EMA is for eval, training
+#     continues from live) + TRAINED disc (init_from_disc=true: a fresh disc
+#     at decaying LR never becomes useful and unbalances the adversarial game).
+#   - Encoder FROZEN (cooldown = tail of the decoder-FT phase, papers do all
+#     final polishing decoder-only). kl=0. FP32.
+#   - gen lr=8e-5 (= effective LR where FT5 ended: 1e-4*(1+120k/200k)^-0.5),
+#     disc lr=1.6e-4 (2:1 ratio preserved), BOTH cosine-decay to min_lr=1e-6.
+#   - 500-step linear warmup: Adam moments restart from zero (init_from drops
+#     optimizer state) -> tiny ramp avoids the restart kick.
+#   - epochs=20 (~25k steps on medium, ~21% of FT5's 120k). NOTE: keep epochs
+#     and trainer.scheduler.total_steps in sync if you change the length.
+#   - Compare EMA vs FT5 EMA on FAD/CDPAM/CLAP.
 # ============================================================
-#SBATCH --job-name=P_fm05
+#SBATCH --job-name=FT8b_ema
 #SBATCH --account=IscrC_AHNetBio
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=2
-#SBATCH --gres=gpu:2                   # 4x A100 DDP
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=23:00:00
+#SBATCH --time=10:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -31,7 +39,6 @@ export NCCL_DEBUG=INFO
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export HYDRA_FULL_ERROR=1
-export HF_HUB_OFFLINE=1
 
 export http_proxy='http://login07:3150'
 export https_proxy='http://login07:3150'
@@ -47,8 +54,16 @@ set +a
 cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
+# ─── Source weights: FT5's last checkpoint (live + trained disc) ────────────
+FT5_CKPT=$(ls -t "$WORK/C-VAE/runs/FT5_O8_decFT_wavtok"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+if [ ! -f "$FT5_CKPT" ]; then
+    echo "[FATAL] FT5 checkpoint not found under runs/FT5_O8_decFT_wavtok" >&2
+    exit 1
+fi
+echo "[INIT] cooldown init from FT5 (live weights + disc): $FT5_CKPT"
+
 # ─── Auto-resume ────────────────────────────────────────────────────────────
-RUN_ID_FILE="$WORK/C-VAE/.run_ids/P_fm05"
+RUN_ID_FILE="$WORK/C-VAE/.run_ids/FT8b_ema"
 
 if [ -f "$RUN_ID_FILE" ]; then
     export WANDB_RESUME=must
@@ -56,7 +71,7 @@ if [ -f "$RUN_ID_FILE" ]; then
     echo "[RESUME] W&B run: $WANDB_RUN_ID"
 fi
 
-LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/P_fm05"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/FT8b_ema"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
 CKPT_ARG=""
 if [ -n "$LATEST_CKPT" ]; then
     CKPT_ARG="+ckpt_path=$LATEST_CKPT"
@@ -70,16 +85,27 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
     echo "[$(date '+%T')] Training attempt $attempt/$MAX_ATTEMPTS"
 
     srun --kill-on-bad-exit=1 python train.py \
-        +experiment=O4b_real_distill_mert \
-        "++trainer.loss_config.semantic_distill.teacher_type=clap" \
-        "++trainer.loss_config.semantic_distill.config.proj_dim=512" \
-        trainer.trainer.epochs=97 \
-        trainer.loss_config.bottleneck.weights.kl=1e-4 \
+        models=swin_real_baseline \
+        "+init_from=$FT5_CKPT" \
+        +init_from_ema=true \
+        +init_from_disc=true \
+        trainer.trainer.freeze_encoder=true \
+        trainer.trainer.warmup_steps=0 \
+        trainer.trainer.epochs=20 \
+        trainer.loss_config.bottleneck.weights.kl=0.0 \
         trainer.loss_config.spectral.weights.stft_mse=1.0 \
         trainer.loss_config.spectral.weights.mrstft=0.0 \
-        trainer.optimizer.lr=1e-3 \
+        trainer.optimizer.lr=8e-5 \
+        "trainer.scheduler._target_=ar_spectra.training.schedulers.CosineLRWithWarmup" \
+        "~trainer.scheduler.inv_gamma" \
+        "~trainer.scheduler.power" \
+        "~trainer.scheduler.warmup" \
+        "++trainer.scheduler.total_steps=25000" \
+        "++trainer.scheduler.warmup_steps=500" \
+        "++trainer.scheduler.min_lr=1e-6" \
+        "++trainer.scheduler.warmup_lr_init=1e-6" \
         "++trainer.disc_optimizer._target_=torch.optim.AdamW" \
-        "++trainer.disc_optimizer.lr=2e-4" \
+        "++trainer.disc_optimizer.lr=1.6e-4" \
         "++trainer.disc_optimizer.betas=[0.8,0.99]" \
         "++trainer.disc_optimizer.weight_decay=1e-3" \
         "++trainer.loss_config.discriminator.type=wavtokenizer" \
@@ -88,14 +114,14 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         "++trainer.loss_config.discriminator.config.fft_sizes=[2048,1024,512]" \
         "++trainer.loss_config.discriminator.config.preprocess=true" \
         "++trainer.loss_config.discriminator.weights.adversarial=0.1" \
-        "++trainer.loss_config.discriminator.weights.feature_matching=0.5" \
+        "++trainer.loss_config.discriminator.weights.feature_matching=0.2" \
         trainer.trainer.num_gpus=$SLURM_NTASKS_PER_NODE \
         trainer.trainer.strategy=ddp_find_unused_parameters_true \
         trainer.trainer.precision="32" \
         "+trainer.trainer.compile=false" \
-        trainer.wandb.use_wandb=false \
-        trainer.trainer.ckpt_dir=checkpoints/P_fm05 \
-        trainer.wandb.name=P_fm05 \
+        trainer.wandb.use_wandb=true \
+        trainer.trainer.ckpt_dir=checkpoints/FT8b_ema \
+        trainer.wandb.name=FT8b_ema \
         $CKPT_ARG
 
     EXIT=$?
@@ -109,6 +135,6 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         export WANDB_RESUME=must
         export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
     fi
-    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/P_fm05"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
+    LATEST_CKPT=$(ls -t "$WORK/C-VAE/runs/FT8b_ema"/*/checkpoints/last.ckpt 2>/dev/null | head -1)
     [ -n "$LATEST_CKPT" ] && CKPT_ARG="+ckpt_path=$LATEST_CKPT"
 done

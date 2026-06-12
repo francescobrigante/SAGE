@@ -346,6 +346,7 @@ class AutoEncoder(nn.Module):
         inputs: torch.Tensor,
         *,
         return_info: bool = False,
+        deterministic: bool = False,
         debug: bool = False,
     ) -> Union[
         torch.Tensor,
@@ -361,6 +362,10 @@ class AutoEncoder(nn.Module):
             encoder implementation.
         return_info : bool
             If True, also returns encoder and bottleneck metadata.
+        deterministic : bool
+            If True, the VAE bottleneck returns the posterior mean μ instead of
+            a reparameterized sample z.  Use at inference time for reproducible,
+            lower-noise latents.  No effect when bottleneck is not VAEBottleneck.
         debug : bool
             If True, prints shapes at key stages.
 
@@ -410,7 +415,9 @@ class AutoEncoder(nn.Module):
         bottleneck_info: Optional[Dict[str, Any]] = None
 
         if self.bottleneck is not None:
-            latents, bottleneck_info = self.bottleneck.encode(latents, return_info=True)
+            latents, bottleneck_info = self.bottleneck.encode(
+                latents, return_info=True, deterministic=deterministic
+            )
 
         if debug and self.bottleneck is not None:
             print(f"[AutoEncoder.encode] bottleneck output shape={tuple(latents.shape)}")

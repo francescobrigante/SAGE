@@ -110,6 +110,41 @@ def pad_audio_for_swin(
     return wav, orig_samples
 
 
+# ── File-sharding helpers (single-checkpoint 2-GPU mode) ──────
+
+def _file_barrier(metrics_dir: Path, local_rank: int, world_size: int,
+                  timeout: int = 7200) -> bool:
+    """Each rank writes a sentinel; rank 0 waits until all are present."""
+    import time as _time
+    (metrics_dir / f"_rk{local_rank}_barrier").touch()
+    if local_rank != 0:
+        return True
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        if all((metrics_dir / f"_rk{r}_barrier").exists() for r in range(world_size)):
+            for r in range(world_size):
+                (metrics_dir / f"_rk{r}_barrier").unlink(missing_ok=True)
+            return True
+        _time.sleep(5)
+    warn(f"Barrier timeout after {timeout}s — not all ranks finished", prefix="EVAL")
+    return False
+
+
+def _merge_shards(metrics_dir: Path, stem: str, fieldnames: list[str],
+                  world_size: int) -> None:
+    """Merge per-rank CSV shards into final CSV and delete shard files."""
+    import csv as _csv
+    all_rows: list[dict] = []
+    for r in range(world_size):
+        p = metrics_dir / f"{stem}_rk{r}.csv"
+        if p.exists():
+            with open(p, newline="") as f:
+                all_rows.extend(list(_csv.DictReader(f)))
+            p.unlink()
+    if all_rows:
+        write_csv(metrics_dir / f"{stem}.csv", fieldnames, all_rows)
+
+
 # ── Argument parsing ──────────────────────────────────────────
 
 def _parse_args() -> argparse.Namespace:
@@ -136,6 +171,15 @@ def _parse_args() -> argparse.Namespace:
                    help="Only compute SI-SDR, SDR and STFT loss, skipping CDPAM, CLAP, and FAD.")
     p.add_argument("--resume",          action="store_true",
                    help="Skip checkpoint if metrics/_done already exists.")
+    p.add_argument("--deterministic",   action="store_true",
+                   help="Encode with VAE posterior mean μ instead of sampled z. "
+                        "Improves SI-SDR/STFT at inference time. Default: False.")
+    p.add_argument("--shard-files",     action="store_true",
+                   help="When a single checkpoint is evaluated across multiple ranks, "
+                        "shard audio files across ranks instead of leaving rank 1+ idle. "
+                        "Gives ~Nx speedup with N GPUs. All metrics are bit-identical to "
+                        "the single-rank run (FAD is merged on rank 0 after a barrier). "
+                        "Default: False (backward-compatible).")
     return p.parse_args()
 
 
@@ -151,14 +195,24 @@ def main() -> None:
 
     # Use .absolute() instead of .resolve() to keep the symlink name
     all_ckpts = [Path(c).expanduser().absolute() for c in args.checkpoint]
-    my_ckpts  = all_ckpts[local_rank::world_size]
 
-    if not my_ckpts:
-        info(f"Rank {local_rank}: no checkpoints assigned — exiting.", prefix="EVAL")
-        return
-
-    info(f"Rank {local_rank}/{world_size} on {device} — "
-         f"{len(my_ckpts)}/{len(all_ckpts)} checkpoints", prefix="EVAL")
+    # Single-checkpoint file-sharding: both ranks process the same checkpoint on
+    # separate GPUs, splitting the file list.  All metrics are bit-identical to
+    # single-rank evaluation (FAD merged on rank 0 after a barrier).
+    single_ckpt_sharding = (
+        args.shard_files and len(all_ckpts) == 1 and world_size > 1
+    )
+    if single_ckpt_sharding:
+        my_ckpts = all_ckpts  # every rank processes the same checkpoint
+        info(f"Rank {local_rank}/{world_size} on {device} — "
+             f"file-sharding mode (1 ckpt, {world_size} GPUs)", prefix="EVAL")
+    else:
+        my_ckpts = all_ckpts[local_rank::world_size]
+        if not my_ckpts:
+            info(f"Rank {local_rank}: no checkpoints assigned — exiting.", prefix="EVAL")
+            return
+        info(f"Rank {local_rank}/{world_size} on {device} — "
+             f"{len(my_ckpts)}/{len(all_ckpts)} checkpoints", prefix="EVAL")
 
     target_dir  = Path(args.target_dir).expanduser().resolve()
     output_root = Path(args.output_dir).expanduser().resolve()
@@ -227,7 +281,14 @@ def main() -> None:
 
         metrics_dir.mkdir(parents=True, exist_ok=True)
 
-        dataset = _AudioDataset(audio_files, sr, ch, cache_dir=cache_dir)
+        # In sharding mode each rank processes a disjoint file slice
+        my_audio_files = (
+            audio_files[local_rank::world_size] if single_ckpt_sharding else audio_files
+        )
+        if single_ckpt_sharding:
+            info(f"Rank {local_rank}: {len(my_audio_files)}/{len(audio_files)} files", prefix="EVAL")
+
+        dataset = _AudioDataset(my_audio_files, sr, ch, cache_dir=cache_dir)
         loader  = DataLoader(
             dataset,
             batch_size=1,
@@ -257,7 +318,7 @@ def main() -> None:
                 try:
                     wav_padded, orig_len = pad_audio_for_swin(wav, hop_length, num_downsamples)
                     wav_gpu = wav_padded.unsqueeze(0).to(device)             # [1, C, T_pad]
-                    latents = codec.encode(wav_gpu)                           # [1, D, T_lat]
+                    latents = codec.encode(wav_gpu, deterministic=args.deterministic)  # [1, D, T_lat]
                     decoded = codec.decode(latents,
                                            target_length=wav_padded.shape[-1])  # [1, C, T_pad]
                     n       = min(orig_len, decoded.shape[-1])
@@ -313,30 +374,94 @@ def main() -> None:
 
         ok(f"Done — processed: {len(spectral_rows)}  skipped: {skipped}", prefix="EVAL")
 
+        # ── Write per-file metrics (per-rank suffix in sharding mode) ──────────
+        suf = f"_rk{local_rank}" if single_ckpt_sharding else ""
         if spectral_rows:
-            write_csv(metrics_dir / "spectral.csv",
+            write_csv(metrics_dir / f"spectral{suf}.csv",
                       ["file", "si_sdr", "sdr", "stft_loss"], spectral_rows)
-            ok(f"spectral.csv written ({len(spectral_rows)} rows)", prefix="EVAL")
+            ok(f"spectral{suf}.csv written ({len(spectral_rows)} rows)", prefix="EVAL")
         if cdpam_rows:
-            write_csv(metrics_dir / "cdpam.csv", ["file", "cdpam"], cdpam_rows)
-            ok(f"cdpam.csv written", prefix="EVAL")
+            write_csv(metrics_dir / f"cdpam{suf}.csv", ["file", "cdpam"], cdpam_rows)
+            ok(f"cdpam{suf}.csv written", prefix="EVAL")
         if clap_music_rows:
-            write_csv(metrics_dir / "clap_music.csv", ["file", "cosine"], clap_music_rows)
-            ok(f"clap_music.csv written", prefix="EVAL")
+            write_csv(metrics_dir / f"clap_music{suf}.csv", ["file", "cosine"], clap_music_rows)
+            ok(f"clap_music{suf}.csv written", prefix="EVAL")
         if clap_audio_rows:
-            write_csv(metrics_dir / "clap_audio.csv", ["file", "cosine"], clap_audio_rows)
-            ok(f"clap_audio.csv written", prefix="EVAL")
-        if cache_dir and mert_pred_embs:
-            compute_fad_from_embeddings(mert_ml, fad_files, mert_pred_embs, cache_dir,
-                                        metrics_dir / "fad_mert.csv", "MERT-v1-95M")
-            ok(f"fad_mert.csv written", prefix="EVAL")
-        if cache_dir and clap_a_pred_embs:
-            compute_fad_from_embeddings(clap_audio_ml, fad_files, clap_a_pred_embs, cache_dir,
-                                        metrics_dir / "fad_gudgud.csv", "clap-laion-audio")
-            ok(f"fad_gudgud.csv written", prefix="EVAL")
+            write_csv(metrics_dir / f"clap_audio{suf}.csv", ["file", "cosine"], clap_audio_rows)
+            ok(f"clap_audio{suf}.csv written", prefix="EVAL")
 
-        if not args.cdpam_only:
-            (metrics_dir / "_done").touch()
+        if single_ckpt_sharding:
+            # Persist pred embeddings to disk so rank 0 can compute FAD on all files
+            import json as _json
+            if cache_dir and mert_pred_embs:
+                np.save(metrics_dir / f"_shard_rk{local_rank}_mert.npy",
+                        np.concatenate(mert_pred_embs, axis=0))
+            if cache_dir and clap_a_pred_embs:
+                np.save(metrics_dir / f"_shard_rk{local_rank}_clap.npy",
+                        np.concatenate(clap_a_pred_embs, axis=0))
+            if fad_files:
+                (metrics_dir / f"_shard_rk{local_rank}_files.json").write_text(
+                    _json.dumps([str(p) for p in fad_files])
+                )
+
+            ok(f"Rank {local_rank}: waiting at barrier…", prefix="EVAL")
+            _file_barrier(metrics_dir, local_rank, world_size)
+
+            if local_rank == 0:
+                _merge_shards(metrics_dir, "spectral",
+                              ["file", "si_sdr", "sdr", "stft_loss"], world_size)
+                _merge_shards(metrics_dir, "cdpam",      ["file", "cdpam"],  world_size)
+                _merge_shards(metrics_dir, "clap_music", ["file", "cosine"], world_size)
+                _merge_shards(metrics_dir, "clap_audio", ["file", "cosine"], world_size)
+                ok("CSV shards merged.", prefix="EVAL")
+
+                # FAD: load all rank pred embeddings, compute on the full file set
+                if cache_dir:
+                    all_mert: list[np.ndarray] = []
+                    all_clap: list[np.ndarray] = []
+                    all_fad_files: list[Path]  = []
+                    for r in range(world_size):
+                        mf = metrics_dir / f"_shard_rk{r}_mert.npy"
+                        cf = metrics_dir / f"_shard_rk{r}_clap.npy"
+                        ff = metrics_dir / f"_shard_rk{r}_files.json"
+                        if mf.exists():
+                            all_mert.append(np.load(mf)); mf.unlink()
+                        if cf.exists():
+                            all_clap.append(np.load(cf)); cf.unlink()
+                        if ff.exists():
+                            all_fad_files.extend(
+                                [Path(p) for p in _json.loads(ff.read_text())]
+                            )
+                            ff.unlink()
+                    if all_mert and all_fad_files:
+                        # Pass as single pre-concatenated array (compute_fad concatenates again)
+                        compute_fad_from_embeddings(
+                            mert_ml, all_fad_files,
+                            [np.concatenate(all_mert, axis=0)],
+                            cache_dir, metrics_dir / "fad_mert.csv", "MERT-v1-95M")
+                        ok("fad_mert.csv written (merged)", prefix="EVAL")
+                    if all_clap and all_fad_files:
+                        compute_fad_from_embeddings(
+                            clap_audio_ml, all_fad_files,
+                            [np.concatenate(all_clap, axis=0)],
+                            cache_dir, metrics_dir / "fad_gudgud.csv", "clap-laion-audio")
+                        ok("fad_gudgud.csv written (merged)", prefix="EVAL")
+
+                if not args.cdpam_only:
+                    (metrics_dir / "_done").touch()
+        else:
+            # Normal (non-sharding) path: compute FAD directly, write _done
+            if cache_dir and mert_pred_embs:
+                compute_fad_from_embeddings(mert_ml, fad_files, mert_pred_embs, cache_dir,
+                                            metrics_dir / "fad_mert.csv", "MERT-v1-95M")
+                ok("fad_mert.csv written", prefix="EVAL")
+            if cache_dir and clap_a_pred_embs:
+                compute_fad_from_embeddings(clap_audio_ml, fad_files, clap_a_pred_embs, cache_dir,
+                                            metrics_dir / "fad_gudgud.csv", "clap-laion-audio")
+                ok("fad_gudgud.csv written", prefix="EVAL")
+            if not args.cdpam_only:
+                (metrics_dir / "_done").touch()
+
         del codec
         torch.cuda.empty_cache()
 

@@ -222,8 +222,15 @@ class SwinTransformerBlock(nn.Module):
 
         # cached attention mask uses -100.0 for cross-region pairs so softmax -> 0 after exp.
         if max(self.shift_size) > 0:
-            cache_key = (Hp, Wp)
-            if cache_key not in self._attn_mask_cache:
+            # Cache the mask already ON the target device, keyed by (grid, device):
+            # the SW-MSA mask is constant per grid, so building + H2D-copying it on
+            # every forward was a needless per-shifted-block transfer (a sync point).
+            # Keying on device keeps DDP/multi-device correct (each replica caches its
+            # own). This mask only feeds the softmax in WindowAttention and never the
+            # fused CUDA window kernels, so caching it cannot affect them.
+            cache_key = (Hp, Wp, x.device)
+            attn_mask = self._attn_mask_cache.get(cache_key)
+            if attn_mask is None:
                 img_mask = torch.zeros((1, Hp, Wp, 1))
                 h_slices = (slice(0, -wh), slice(-wh, -sh), slice(-sh, None))
                 w_slices = (slice(0, -ww), slice(-ww, -sw), slice(-sw, None))
@@ -235,8 +242,12 @@ class SwinTransformerBlock(nn.Module):
                 mask_windows = window_partition(img_mask, self.window_size)
                 mask_windows = mask_windows.view(-1, wh * ww)
                 mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-                self._attn_mask_cache[cache_key] = mask.masked_fill(mask != 0, -100.0).masked_fill(mask == 0, 0.0)
-            attn_mask = self._attn_mask_cache[cache_key].to(x.device)
+                attn_mask = (
+                    mask.masked_fill(mask != 0, -100.0)
+                        .masked_fill(mask == 0, 0.0)
+                        .to(x.device)
+                )
+                self._attn_mask_cache[cache_key] = attn_mask
         else:
             attn_mask = None
 
