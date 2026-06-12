@@ -117,7 +117,18 @@ class EMACallback(Callback):
         if model is None:
             warn("EMACallback: autoencoder not found in pl_module. Disabling EMA.", prefix="EMA")
             return
-            
+
+        if self.ema_state_dict:
+            # EMA already restored from the checkpoint: PL restores module+callbacks
+            # BEFORE on_fit_start, so re-initializing here would silently reset the
+            # EMA to the live weights at every resume. Checkpoint tensors are loaded
+            # on CPU → move them to the model device for the in-place mul_/add_
+            # updates in on_train_batch_end.
+            device = next(model.parameters()).device
+            self.ema_state_dict = {k: v.to(device) for k, v in self.ema_state_dict.items()}
+            ok(f"EMA state preserved from checkpoint ({len(self.ema_state_dict)} tensors → {device}).", prefix="EMA")
+            return
+
         ok(f"Initializing EMA model with decay={self.decay}...", prefix="EMA")
         # Use a dict of detached tensors instead of deepcopy to survive torch.compile/DDP
         self.ema_state_dict = {
@@ -128,7 +139,16 @@ class EMACallback(Callback):
         model = getattr(pl_module, "autoencoder", None)
         if model is None or not self.ema_state_dict:
             return
-            
+
+        # Only advance the EMA when the generator actually stepped this batch.
+        # With a discriminator the G/D phases alternate, so updating every batch
+        # would decay the EMA on disc batches (where the weights are unchanged),
+        # effectively halving the EMA half-life in generator-update terms. SAO
+        # updates the EMA exclusively inside its generator branch. Default True
+        # keeps the no-disc path (every batch is a gen step) unchanged.
+        if not getattr(pl_module, "_ema_update_this_batch", True):
+            return
+
         decay = self.decay
         with torch.no_grad():
             for k, v in model.state_dict().items():

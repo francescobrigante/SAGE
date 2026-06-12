@@ -102,19 +102,23 @@ def _extract_autoencoder_state(state_dict: Dict[str, Any]) -> Dict[str, Any]:
 def encode_audio(
     autoencoder: AutoEncoder,
     audio: torch.Tensor,
+    deterministic: bool = False,
     debug: bool = False,
 ) -> torch.Tensor:
     """Encode waveform to latents.
-    
+
     Parameters
     ----------
     autoencoder : AutoEncoder
         Model with STFT config set.
     audio : torch.Tensor
         Waveform tensor of shape (T,), (C, T), or (B, C, T).
+    deterministic : bool
+        If True, the VAE bottleneck returns the posterior mean μ instead of
+        a reparameterized sample z.  Recommended at inference time.
     debug : bool
         Print debug info.
-        
+
     Returns
     -------
     torch.Tensor
@@ -146,7 +150,7 @@ def encode_audio(
             print(f"[encode_audio] packed complex shape: {tuple(spec.shape)}")
 
     # Encode
-    latents = autoencoder.encode(spec)
+    latents = autoencoder.encode(spec, deterministic=deterministic)
     if debug:
         print(f"[encode_audio] latents shape: {tuple(latents.shape)}")
 
@@ -317,10 +321,27 @@ class EuleroEncodeDecode:
         return self.autoencoder
 
     @torch.no_grad()
-    def encode(self, audio: torch.Tensor, debug: bool = False) -> torch.Tensor:
-        """Encode waveform to latents."""
+    def encode(
+        self,
+        audio: torch.Tensor,
+        deterministic: bool = False,
+        debug: bool = False,
+    ) -> torch.Tensor:
+        """Encode waveform to latents.
+
+        Parameters
+        ----------
+        audio : torch.Tensor
+            Waveform of shape (T,), (C, T), or (B, C, T).
+        deterministic : bool
+            Return posterior mean μ instead of reparameterized sample z.
+            Recommended for downstream tasks (diffusion, retrieval, probing).
+        """
         self.autoencoder.eval()
-        return encode_audio(self.autoencoder, audio.to(self.device), debug=debug)
+        return encode_audio(
+            self.autoencoder, audio.to(self.device),
+            deterministic=deterministic, debug=debug,
+        )
 
     @torch.no_grad()
     def decode(

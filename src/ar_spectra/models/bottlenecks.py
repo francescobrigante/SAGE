@@ -50,16 +50,26 @@ class VAEBottleneck(Bottleneck):
         super().__init__(is_discrete=False)
         self.parameters_to_predict = parameters_to_predict  # num encoder slots per latent channel
 
-    def encode(self, x, return_info=False, **kwargs):
+    def encode(self, x, return_info=False, deterministic=False, **kwargs):
         info = {}
         assert x.shape[1] % 2 == 0, "VAEBottleneck expects even channels [mu|scale] along dim=1"
         mean, scale = x.chunk(2, dim=1)
-        x, kl = vae_sample(mean, scale)
+        if deterministic:
+            # Return posterior mean μ directly — no reparameterization noise.
+            # KL is still computed so info["kl"] is always valid.
+            was_complex = torch.is_complex(mean)
+            _m = _complex_to_channel_view(mean) if was_complex else mean
+            _s = _complex_to_channel_view(scale) if was_complex else scale
+            stdev = nn.functional.softplus(_s) + 1e-4
+            var = stdev * stdev
+            kl = (_m * _m + var - torch.log(var) - 1).sum(1).mean()
+            x = mean  # original-domain μ (complex if input was complex)
+        else:
+            x, kl = vae_sample(mean, scale)
         info["kl"] = kl
         if return_info:
             return x, info
-        else:
-            return x
+        return x
 
     def decode(self, x):
         return x

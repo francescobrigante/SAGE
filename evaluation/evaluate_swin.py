@@ -105,7 +105,11 @@ class _AudioDataset(Dataset):
 # ── WOLA inference ────────────────────────────────────────────
 
 def swin_infer_wola(
-    codec, wav: torch.Tensor, chunk_samples: int, overlap_samples: int
+    codec,
+    wav: torch.Tensor,
+    chunk_samples: int,
+    overlap_samples: int,
+    deterministic: bool = False,
 ) -> torch.Tensor:
     """Batch encode+decode [C, T] with Hann WOLA stitching.
 
@@ -113,6 +117,9 @@ def swin_infer_wola(
     with Weighted Overlap-Add (synthesis window: Hann fade at edges, flat
     center). Since fade_in[k] + fade_out[k] == 1 for every k in the overlap
     region, the normalised sum recovers the signal without amplitude loss.
+
+    Args:
+        deterministic: if True, encode returns μ instead of sampled z.
 
     Returns reconstructed [C, T] on CPU (same length as input).
     """
@@ -130,7 +137,7 @@ def swin_infer_wola(
         [wav_padded[:, s:e] for s, e in chunk_ranges]
     ).to(codec.device)
 
-    latents = codec.encode(chunks_gpu)                                  # [N, D, T_lat]
+    latents = codec.encode(chunks_gpu, deterministic=deterministic)     # [N, D, T_lat]
     decoded = codec.decode(
         latents, target_length=chunk_samples
     ).cpu().float()                                                     # [N, C, chunk_samples]
@@ -174,6 +181,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--skip-cdpam",   action="store_true")
     p.add_argument("--resume",       action="store_true",
                    help="Skip checkpoint if metrics/_done already exists.")
+    p.add_argument("--deterministic", action="store_true",
+                   help="Encode with VAE posterior mean μ instead of sampled z. "
+                        "Improves SI-SDR/STFT at the cost of a tiny stochasticity "
+                        "that the decoder was trained to ignore. Default: False.")
     return p.parse_args()
 
 
@@ -286,7 +297,8 @@ def main() -> None:
 
                 try:
                     # Single GPU call — all overlapping chunks batched together
-                    pred = swin_infer_wola(codec, wav, chunk_samples, overlap_samples)
+                    pred = swin_infer_wola(codec, wav, chunk_samples, overlap_samples,
+                                           deterministic=args.deterministic)
                     # pred: [C, T]  cpu, same length as wav
                 except Exception as e:
                     err(f"Inference error {stem}: {e}", prefix="EVAL")

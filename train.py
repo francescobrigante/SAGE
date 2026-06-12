@@ -394,18 +394,6 @@ def main(cfg: DictConfig):
         kl_beta_target=kl_beta_target,
     )
 
-    # Provide eval STFT params to engine for validation phase
-    if eval_ds is not None:
-        eval_stft_params = {
-            "sample_rate": int(cfg.data.eval_dataset.sample_rate),
-            "n_fft": int(cfg.data.eval_dataset.n_fft),
-            "hop_length": int(cfg.data.eval_dataset.hop_length),
-            "win_length": int(cfg.data.eval_dataset.win_length),
-            "center": bool(cfg.data.eval_dataset.center),
-            "normalized": bool(cfg.data.eval_dataset.normalized),
-        }
-        wrapper.engine.val_stft_params = eval_stft_params
-
     # ─────────────────────────────────────────────────────────────────────────
     # Logger setup (W&B or TensorBoard)
     # ─────────────────────────────────────────────────────────────────────────
@@ -586,7 +574,7 @@ def main(cfg: DictConfig):
         trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl, ckpt_path=ckpt_path)
     except KeyboardInterrupt:
         warn("Training interrupted by user (Ctrl+C). Exiting gracefully...", prefix="TRAINER")
-        sys._exit(0)
+        sys.exit(0)
     except RuntimeError as e:
         if "out of memory" in str(e).lower() or "not enough memory" in str(e).lower():
             err("="*80, prefix="TRAINER")
@@ -601,7 +589,7 @@ def main(cfg: DictConfig):
             err("="*80 + "\n", prefix="TRAINER")
         elif "is killed by signal: interrupt" in str(e).lower():
             warn("Training interrupted by user (Ctrl+C). Force exiting.", prefix="TRAINER")
-            sys._exit(0)
+            sys.exit(0)
         else:
             raise e
 

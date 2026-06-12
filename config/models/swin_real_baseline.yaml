@@ -86,6 +86,8 @@ models:
       use_checkpoint: ${models.model.swin.use_checkpoint}
       time_frames: 128
       use_smooth_convs: false
+      use_postnet: false                # zero-init residual post-net (decoder-finetune phase only)
+      postnet_hidden: 64                # post-net hidden conv width
 
 # Automatic data configuration overrides for real models to bypass command line boilerplate
 data:

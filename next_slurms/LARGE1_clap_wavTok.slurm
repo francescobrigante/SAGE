@@ -6,8 +6,9 @@
 #       * data.fma_subset=large            (84,353 train / 10,958 val tracks)
 #       * epochs=100                       (~5k steps/epoch on large → ~500k steps total)
 #       * detach_warmup_steps=25000        (explicit; same as medium, step-driven event — NOT scaled)
-#       * --time=90:00:00 + --requeue      (~64h run, one-shot within lprod 96h cap; requeue = node-failure insurance)
+#       * --time=80:00:00 + --requeue      (~64h run, one-shot within lprod 96h cap; requeue = node-failure insurance)
 #       * check_val_every_n_epoch=1        (validation once per epoch; full val set, NOT capped → ~30-50s/epoch, representative)
+#       * save_every_n_epochs=10           (numbered ckpt every 10 ep = ~50k steps on large; last.ckpt still every epoch)
 #   - Same BS=16 / 2 GPU / disc_lr=2e-4 / adv=0.1 / fm=0.2 / kl=1e-4 as O8 (kept identical so 25k warmup
 #     and 500k step counts keep the SAME meaning as medium — do NOT scale GPUs/BS).
 #   - Precision 32 (FP32)
@@ -21,7 +22,7 @@
 #SBATCH --gres=gpu:2                   # 2x A100 DDP (kept = medium for step-count comparability)
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=90:00:00                # ~64h run; lprod cap is 96h → one-shot
+#SBATCH --time=80:00:00                # ~64h run (~25% margin); lprod cap is 96h → one-shot
 #SBATCH --requeue                      # node-failure insurance: SLURM re-queues, auto-resume from last.ckpt
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
@@ -81,6 +82,7 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         "++trainer.loss_config.semantic_distill.detach_warmup_steps=25000" \
         trainer.trainer.epochs=100 \
         trainer.trainer.check_val_every_n_epoch=1 \
+        trainer.trainer.save_every_n_epochs=10 \
         trainer.loss_config.bottleneck.weights.kl=1e-4 \
         trainer.loss_config.spectral.weights.stft_mse=1.0 \
         trainer.loss_config.spectral.weights.mrstft=0.0 \
@@ -100,6 +102,7 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         trainer.trainer.strategy=ddp_find_unused_parameters_true \
         trainer.trainer.precision="32" \
         "+trainer.trainer.compile=false" \
+        "++trainer.trainer.ema_decay=0.9998" \
         trainer.wandb.use_wandb=true \
         trainer.trainer.ckpt_dir=checkpoints/LARGE1_clap_wavTok \
         trainer.wandb.name=LARGE1_clap_wavTok \

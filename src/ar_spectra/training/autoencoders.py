@@ -372,6 +372,10 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         # Per-batch G/D alternation, decoupled from global_step (which advances by a
         # variable number of optimizer.step() per batch when opt_aux is active).
         self._disc_phase = not self._disc_phase
+        # EMA must track the generator weights, so it may only advance on batches
+        # where opt_gen actually steps. Reset here; set True after opt_gen.step()
+        # below. EMACallback reads this flag (SAO updates EMA only on gen steps).
+        self._ema_update_this_batch = False
         out = self.engine.compute(batch, global_step=int(self.global_step),
                                   disc_phase=self._disc_phase)
         phase = out["phase"]
@@ -451,6 +455,8 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                 if self.clip_grad_norm > 0.0:
                     torch.nn.utils.clip_grad_norm_(self.autoencoder.parameters(), self.clip_grad_norm)
                 opt_gen.step()
+                # Generator weights just changed → EMA may advance this batch.
+                self._ema_update_this_batch = True
                 if opt_aux is not None:
                     opt_aux.step()
                 if sched_gen is not None:
@@ -483,8 +489,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                 key = f"train/{name}"
                 self._log_accum_gen[key] = self._log_accum_gen.get(key, 0.0) + value.detach().item()
             self._log_accum_gen_count += 1
-        # Ritorna sempre la loss gen per compatibilità
-        return out["gen_total"]
+        return out["gen_total"] if out["gen_total"] is not None else out["disc_total"]
 
     def validation_step(self, batch, batch_idx):
         val_loss_dict = self.engine.compute_validation(batch)
