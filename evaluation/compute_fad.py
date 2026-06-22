@@ -15,10 +15,38 @@ from ar_spectra.utils.console import ok, warn
 from fadtk.fad import get_cache_embedding_path, calc_frechet_distance
 from fadtk.model_loader import CLAPLaionModel, MERTModel
 
+def compute_incremental_stats(files: list[Path]) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Compute mean and covariance incrementally from cached embedding .npy files to avoid OOM."""
+    n = 0
+    sum_x = None
+    sum_sq_x = None
+    
+    for f in files:
+        if not f.exists(): continue
+        x = np.atleast_2d(np.load(f)).astype(np.float64)
+        if len(x) == 0: continue
+        
+        if sum_x is None:
+            d = x.shape[1]
+            sum_x = np.zeros(d, dtype=np.float64)
+            sum_sq_x = np.zeros((d, d), dtype=np.float64)
+            
+        sum_x += x.sum(axis=0)
+        sum_sq_x += x.T @ x
+        n += len(x)
+        
+    if n < 2:
+        return None, None
+        
+    mu = sum_x / n
+    cov = (sum_sq_x / (n - 1)) - np.outer(mu, mu) * (n / (n - 1))
+    return mu, cov
+
+
 def compute_stats(fad, files: list[Path], cache_dir: Path = None, subfolder: str = None):
     """Compute mean and covariance from cached embedding .npy files."""
     model_name = fad.ml.name
-    embeddings = []
+    paths = []
     
     for f in files:
         if not cache_dir:
@@ -28,19 +56,9 @@ def compute_stats(fad, files: list[Path], cache_dir: Path = None, subfolder: str
                 cp = cache_dir / model_name / subfolder / f"{f.stem}.npy"
             else:
                 cp = cache_dir / model_name / f"{f.stem}.npy"
-        
-        if cp.exists():
-            # (T, D) -> pool to (D,)
-            emb = np.atleast_2d(np.load(cp)).astype(np.float32)
-            embeddings.append(emb)
+        paths.append(cp)
     
-    if not embeddings:
-        return None, None
-        
-    all_embs = np.concatenate(embeddings, axis=0)
-    mu = np.mean(all_embs, axis=0)
-    cov = np.cov(all_embs, rowvar=False)
-    return mu, cov
+    return compute_incremental_stats(paths)
 
 
 def embed_mert(model, wav: torch.Tensor, src_sr: int, device) -> np.ndarray:
@@ -67,35 +85,71 @@ def embed_mert(model, wav: torch.Tensor, src_sr: int, device) -> np.ndarray:
     return out.hidden_states[layer].mean(1).cpu().numpy().astype(np.float16)
 
 
+_FADTK_RESAMPLERS: dict[int, "torchaudio.transforms.Resample"] = {}
+
+
+def _fadtk_resampler(src_sr: int, dst_sr: int = 24000):
+    """torchaudio Resample with the EXACT params fadtk uses in load_audio()
+    (Kaiser window). Cached per source sample rate."""
+    if src_sr not in _FADTK_RESAMPLERS:
+        _FADTK_RESAMPLERS[src_sr] = torchaudio.transforms.Resample(
+            src_sr, dst_sr,
+            lowpass_filter_width=64,
+            rolloff=0.9475937167399596,
+            resampling_method="sinc_interp_kaiser",
+            beta=14.769656459379492,
+        )
+    return _FADTK_RESAMPLERS[src_sr]
+
+
+def embed_mert_framewise(model, wav: torch.Tensor, src_sr: int, device) -> np.ndarray:
+    """Per-frame MERT embedding (N_frames, D), matching fadtk's canonical
+    pipeline (mono mean + Kaiser resample to 24 kHz + MERTModel._get_embedding,
+    NO temporal pooling).
+
+    Use this (NOT embed_mert) whenever predictions are compared against
+    reference statistics produced by the canonical fadtk pipeline, e.g. the
+    pre-computed chunks_mix_original stats, which store per-frame embeddings
+    (≈749 frames / 10 s clip). embed_mert mean-pools over 5 s chunks (≈10
+    vectors / clip), which lives in a DIFFERENT space and inflates FAD ~50×.
+    """
+    msr = 24000
+    x = wav.cpu().mean(0, keepdim=True)               # mono (1, T) — fadtk does mean over ch
+    if src_sr != msr:
+        x = _fadtk_resampler(src_sr, msr)(x)
+    wav_m = x.squeeze(0).contiguous().numpy().astype(np.float32)  # (T,)
+    emb = model.get_embedding(wav_m)                  # fadtk: (N_frames, 768) float16
+    return np.atleast_2d(emb).astype(np.float16)
+
+
 def compute_fad_from_embeddings(
     model,
     target_files:  list[Path],
-    pred_emb_list: list[np.ndarray],
+    pred_emb_files: list[Path],
     shared_cache:  Path,
     csv_path:      Path,
     model_label:   str,
 ) -> Optional[float]:
-    """Compute FAD from cached target .npy embeddings + in-memory pred embeddings.
-
-    Used by evaluate_sao.py / evaluate_swin.py — no WAV files are written to disk.
-    """
+    """Compute FAD from cached target .npy embeddings + pred .npy embeddings incrementally."""
     import csv as _csv
     model_name: str = model.name
-    t_embs = [
-        np.load(shared_cache / model_name / "target" / f"{f.stem}.npy").astype(np.float32)
+    
+    t_paths = [
+        shared_cache / model_name / "target" / f"{f.stem}.npy"
         for f in target_files
-        if (shared_cache / model_name / "target" / f"{f.stem}.npy").exists()
     ]
-    if not t_embs:
+    t_mu, t_cov = compute_incremental_stats(t_paths)
+    
+    if t_mu is None:
         warn(f"No cached target embeddings for {model_name} — FAD skipped.")
         return None
 
-    all_t = np.concatenate(t_embs, axis=0)
-    all_p = np.concatenate(pred_emb_list, axis=0).astype(np.float32)
-    score = calc_frechet_distance(
-        all_t.mean(0), np.cov(all_t, rowvar=False),
-        all_p.mean(0), np.cov(all_p, rowvar=False),
-    )
+    p_mu, p_cov = compute_incremental_stats(pred_emb_files)
+    if p_mu is None:
+        warn(f"No pred embeddings for {model_name} — FAD skipped.")
+        return None
+
+    score = calc_frechet_distance(t_mu, t_cov, p_mu, p_cov)
     ok(f"FAD ({model_label}): {score:.6f}")
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with open(csv_path, "w", newline="") as f:

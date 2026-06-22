@@ -38,7 +38,8 @@ def register_datasets_list_alias() -> None:
     pinned datasets 3.x cannot deserialize 'List' without this alias.
     """
     from datasets.features import features as _hf_features
-    _hf_features._FEATURE_TYPES.setdefault("List", _hf_features.Sequence)
+    if hasattr(_hf_features, "_FEATURE_TYPES"):
+        _hf_features._FEATURE_TYPES.setdefault("List", _hf_features.Sequence)
 
 
 def patch_retrieval_config_names() -> None:

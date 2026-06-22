@@ -44,7 +44,7 @@ import config
 OmegaConf.register_new_resolver("config", lambda key: getattr(config, key))
 OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
-from ar_spectra.training.callbacks import DatasetEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger
+from ar_spectra.training.callbacks import DatasetEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger, ValFADCallback
 from ar_spectra.utils.model_info import extract_model_config
 from ar_spectra.utils.config_guards import check_cac_consistency
 
@@ -433,7 +433,7 @@ def main(cfg: DictConfig):
     # Callbacks setup
     # ─────────────────────────────────────────────────────────────────────────
     pl_trainer_cfg = trainer_cfg.trainer
-    
+
     callbacks = [
         ModelInfoLogger(
             filename=str(run_dir / "model_info.json"),
@@ -454,6 +454,23 @@ def main(cfg: DictConfig):
         DatasetEpochSetter(),
         CompressionStatsLogger(train_dl=train_dl, console=console),
     ]
+
+    # Validation FAD (CLAP) on a fixed test corpus — appended BEFORE EMACallback so
+    # its on_validation_epoch_end runs while EMA weights are still swapped in.
+    _vf_cfg = pl_trainer_cfg.get("val_fad", None)
+    fad_cfg = OmegaConf.to_container(_vf_cfg, resolve=True) if _vf_cfg is not None else {}
+    if bool(fad_cfg.get("enabled", False)):
+        callbacks.append(
+            ValFADCallback(
+                cache_dir=str(fad_cfg["cache_dir"]),
+                fma_csv_path=str(fad_cfg.get("fma_csv_path") or ""),
+                audio_root=str(fad_cfg["audio_root"]),
+                num_files=int(fad_cfg.get("num_files", 2000)),
+                fad_model=str(fad_cfg.get("fad_model", "clap-laion-music")),
+                num_downsamples=fad_cfg.get("num_downsamples", None),
+                enabled=True,
+            )
+        )
 
     use_ema = bool(pl_trainer_cfg.get("use_ema", True))
     ema_decay = float(pl_trainer_cfg.get("ema_decay", 0.9999))

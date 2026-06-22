@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # =============================================================================
 # evaluation/maeb/tasks.py
-# Task resolution for the MAEB suite: the 6 FMA music tasks (default) plus opt-in
-# upstream MTEB music tasks (EXTRA_TASKS). Audio-only filtering + name resolution.
+# Task resolution for the MAEB suite: the 6 FMA music tasks (default), opt-in
+# upstream MTEB music tasks (EXTRA_TASKS), and opt-in MoisesDB tasks.
+# Audio-only filtering + name resolution.
 # =============================================================================
 from __future__ import annotations
 
@@ -28,8 +29,11 @@ EXTRA_TASKS = [
     "MusicGenreClustering",
 ]
 
+# MoisesDB-local tasks (chunks_30s). Opt-in via --with-moisesdb / --moisesdb-only.
+from .moisesdb_tasks import MOISESDB_SUITE  # noqa: E402
+
 # The complete set of task names these CLIs may run.
-ALLOWED_TASKS = FMA_SUITE + EXTRA_TASKS
+ALLOWED_TASKS = FMA_SUITE + EXTRA_TASKS + MOISESDB_SUITE
 
 
 def select_task_names(
@@ -37,20 +41,29 @@ def select_task_names(
     *,
     with_extra: bool = False,
     extra_only: bool = False,
+    with_moisesdb: bool = False,
+    moisesdb_only: bool = False,
 ) -> list[str]:
-    """Pick which task names to run, given the two opt-in flags.
+    """Pick which task names to run, given the opt-in flags.
 
-    Precedence: an explicit ``subset`` (``--tasks``) always wins; otherwise
-    ``extra_only`` runs only :data:`EXTRA_TASKS`; otherwise ``with_extra``
-    appends them to :data:`FMA_SUITE`; otherwise the default is the FMA suite.
+    Precedence:
+    1. An explicit ``subset`` (``--tasks``) always wins.
+    2. ``moisesdb_only`` → only MoisesDB tasks.
+    3. ``extra_only`` → only EXTRA_TASKS.
+    4. Otherwise: FMA suite (default), optionally + extra, optionally + moisesdb.
     """
     if subset:
         return list(subset)
+    if moisesdb_only:
+        return list(MOISESDB_SUITE)
     if extra_only:
         return list(EXTRA_TASKS)
+    result = list(FMA_SUITE)
     if with_extra:
-        return FMA_SUITE + EXTRA_TASKS
-    return list(FMA_SUITE)
+        result += EXTRA_TASKS
+    if with_moisesdb:
+        result += MOISESDB_SUITE
+    return result
 
 
 def is_audio_only_task(task: Any) -> bool:
@@ -82,16 +95,16 @@ def ensure_audio_only_tasks(
 def get_tasks_by_name(
     names: list[str], *, encoder_label: str = "This encoder", max_files: int = 0
 ) -> list[Any]:
-    """Resolve task names into objects, restricted to the allowed FMA suite.
+    """Resolve task names into objects.
 
-    FMA-local names are instantiated from ``fma_tasks.FMA_TASK_REGISTRY`` (with
-    the ``max_files`` cap); ``NMSQAPairClassification`` is loaded from the hub.
-    Any name outside :data:`ALLOWED_TASKS` is rejected.
+    FMA-local names are instantiated from ``fma_tasks.FMA_TASK_REGISTRY``,
+    MoisesDB names from ``moisesdb_tasks.MOISESDB_TASK_REGISTRY``, and
+    upstream hub tasks (GTZAN etc.) are fetched via ``mteb.get_tasks``.
 
     Args:
         names:         Task names to resolve (must be in ALLOWED_TASKS).
         encoder_label: Label used in the audio-only validation error.
-        max_files:     Per-task sample cap for FMA-local tasks (0 = all).
+        max_files:     Per-task sample cap for local tasks (0 = all).
 
     Returns:
         Audio-only-validated list of task objects.
@@ -100,16 +113,21 @@ def get_tasks_by_name(
         ValueError: if any requested name is not in ALLOWED_TASKS.
     """
     from .fma_tasks import FMA_TASK_REGISTRY, get_fma_tasks
+    from .moisesdb_tasks import MOISESDB_TASK_REGISTRY, get_moisesdb_tasks
 
     unknown = [n for n in names if n not in ALLOWED_TASKS]
     if unknown:
         raise ValueError(
-            f"Unsupported task(s) {unknown}. This harness only runs the FMA suite: "
-            f"{ALLOWED_TASKS}."
+            f"Unsupported task(s) {unknown}. Allowed: {ALLOWED_TASKS}."
         )
     fma_names = [n for n in names if n in FMA_TASK_REGISTRY]
-    other_names = [n for n in names if n not in FMA_TASK_REGISTRY]   # hub tasks (es. GTZAN/NSynth)
+    moisesdb_names = [n for n in names if n in MOISESDB_TASK_REGISTRY]
+    # Hub tasks: everything not FMA-local and not MoisesDB-local
+    other_names = [n for n in names
+                   if n not in FMA_TASK_REGISTRY and n not in MOISESDB_TASK_REGISTRY]
+
     tasks = get_fma_tasks(fma_names, max_files=max_files)
+    tasks += get_moisesdb_tasks(moisesdb_names, max_files=max_files)
     if other_names:
         import mteb
         tasks += list(mteb.get_tasks(tasks=other_names))   # max_files n/a for hub tasks

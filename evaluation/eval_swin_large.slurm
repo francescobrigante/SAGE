@@ -71,7 +71,7 @@ fi
 echo "Evaluating checkpoints: ${CKPTS[*]}"
 echo "Extra args: ${EXTRA_ARGS[*]}"
 
-srun python evaluation/evaluate_swin_varT.py \
+srun $WORK/.envs/c_vae/bin/python3 evaluation/evaluate_swin_varT.py \
     --checkpoint "${CKPTS[@]}" \
     --target-dir $FAST/datasets/fma/fma_large \
     --output-dir $WORK/C-VAE/runs/eval_swin_large \

@@ -77,6 +77,7 @@ class SwinDecoder(AbstractDecoder):
         use_perceiver_compression: bool = False,
         use_postnet: bool = False,
         postnet_hidden: int = 64,
+        fold_freq_to_channels: bool = False,
     ) -> None:
         super().__init__(channels=channels, is_complex=is_complex)
 
@@ -110,9 +111,19 @@ class SwinDecoder(AbstractDecoder):
         self._stage_dims = stage_dims
         self._stage_resolutions = stage_resolutions
 
+        # ── Option C: learned freq-unfold input projection (mirror of encoder) ─────
+        # When True, the 1-D latent (channels, T_lat) is projected to
+        # F_lat * stage_dims[0] and unfolded back to the (F_lat, T_lat) grid before
+        # the Swin stages. Default False = legacy per-token projection.
+        self.fold_freq_to_channels = bool(fold_freq_to_channels)
+        self._f_lat = stage_resolutions[0][0]   # latent freq bands at the deepest grid
+
         # Input projection: latent_channels → largest stage dim
         # (B, T, latent_channels=64) → (B, T, stage_dims[0]=384)
-        self.input_proj = NormLinear(channels, stage_dims[0], is_complex=is_complex)
+        # fold mode: latent_channels → F_lat * stage_dims[0] (freq dim re-created)
+        _proj_out_dim = (self._f_lat * stage_dims[0]
+                         if self.fold_freq_to_channels else stage_dims[0])
+        self.input_proj = NormLinear(channels, _proj_out_dim, is_complex=is_complex)
 
         if use_perceiver_compression:
             self.decompressor = PerceiverDecompression(
@@ -219,7 +230,15 @@ class SwinDecoder(AbstractDecoder):
         # [ALTERNATIVE] Input from 2D spatial map (B, C, H=32, W=4):
         # x = x.flatten(2).transpose(1, 2)              # (B, 128,  64)
 
-        x = self.input_proj(x)                          # (B, 128, 384)
+        x = self.input_proj(x)                          # (B, T, F_lat*dim0) if fold else (B, 128, 384)
+
+        # ── Option C: unfold (B, T, F_lat*dim0) -> (B, F_lat*T, dim0) grid ─────────
+        # Exact inverse of the encoder fold (freq-major token order f*T + t).
+        if self.fold_freq_to_channels:
+            B, T_lat, _ = x.shape
+            dim0 = self._stage_dims[0]
+            x = x.view(B, T_lat, self._f_lat, dim0)              # (B, T, F, C)
+            x = x.permute(0, 2, 1, 3).reshape(B, self._f_lat * T_lat, dim0)  # (B, F*T, C)
 
         if hasattr(self, 'decompressor'):
             x = self.decompressor(x)

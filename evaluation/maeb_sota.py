@@ -53,6 +53,10 @@ def parse_args() -> argparse.Namespace:
     grp.add_argument("--with-extra", action="store_true",
                      help=f"Add EXTRA music tasks to the FMA suite: {maeb_tasks.EXTRA_TASKS}.")
     grp.add_argument("--extra-only", action="store_true", help="Run ONLY the EXTRA tasks.")
+    grp.add_argument("--moisesdb-only", action="store_true",
+                     help="Run ONLY the MoisesDB tasks (chunks_30s).")
+    p.add_argument("--with-moisesdb", action="store_true",
+                   help="Add the 7 MoisesDB tasks (chunks_30s) to the default suite.")
     p.add_argument("--max-files", type=int, default=0,
                    help="Per-FMA-task sample cap: min(task_samples, max_files). 0 = all.")
     p.add_argument("--output-dir", default=None,
@@ -67,7 +71,11 @@ def parse_args() -> argparse.Namespace:
 
 def _resolve_tasks(args: argparse.Namespace, encoder_label: str) -> list:
     names = maeb_tasks.select_task_names(
-        args.tasks, with_extra=args.with_extra, extra_only=args.extra_only,
+        args.tasks,
+        with_extra=args.with_extra,
+        extra_only=args.extra_only,
+        with_moisesdb=args.with_moisesdb,
+        moisesdb_only=args.moisesdb_only,
     )
     tasks = maeb_tasks.get_tasks_by_name(
         names, encoder_label=encoder_label, max_files=args.max_files,

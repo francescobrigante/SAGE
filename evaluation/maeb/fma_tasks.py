@@ -656,6 +656,6 @@ def get_fma_tasks(names: list[str] | None = None, *, max_files: int = 0) -> list
     Returns:
         List of instantiated task objects ready for ``run_maeb``.
     """
-    selected = names or list(FMA_TASK_REGISTRY)
+    selected = names if names is not None else list(FMA_TASK_REGISTRY)
     return [FMA_TASK_REGISTRY[n](max_files=max_files)
             for n in selected if n in FMA_TASK_REGISTRY]

@@ -16,7 +16,11 @@
 #     * discriminator.weights.feature_matching          0.2  -> 0.2    (UNCHANGED — paper kept fm
 #         fixed too; our 0.2 is tuned for the wavtok disc, NOT comparable to encodec's 5.0)
 #     * epochs=108                                       (~+18 ep from e89 ≈ ~95-100k steps = paper's 17%)
-#     * save_every_n_epochs=3                            (frequent ckpts for early eval)
+#     * check_val_every_n_epoch=2 / save_every_n_epochs=2 (aligned: validate + ckpt every 2 ep)
+#     * val_fad.* : ValFADCallback logs val/fad_clap (CLAP-FAD on 2000 fixed FMA-test files,
+#         EMA weights, targets reused from $SCRATCH/eval_cache) every 2 epochs → pick best
+#         perceptual ckpt post-hoc from W&B. NOTE: EMA lag → val/fad_clap reliable only after
+#         ~8 ep (≥ epoch ~97); early values track pre-ACE weights. Log-only (no ckpt monitor).
 #   KEEP identical: encoder/decoder/disc weights, optimizer+scheduler state (LR continues
 #     ~5e-4 decaying), EMA 0.9998, CLAP distill, wavtok-RPGAN disc, stft_mse=1.0/mrmel=0.3,
 #     gen lr base 1e-3, disc lr 2e-4, precision 32. Discriminator is NOT reinitialized.
@@ -97,8 +101,14 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         "++trainer.loss_config.semantic_distill.config.proj_dim=512" \
         "++trainer.loss_config.semantic_distill.detach_warmup_steps=25000" \
         trainer.trainer.epochs=108 \
-        trainer.trainer.check_val_every_n_epoch=1 \
-        trainer.trainer.save_every_n_epochs=3 \
+        trainer.trainer.check_val_every_n_epoch=2 \
+        trainer.trainer.save_every_n_epochs=2 \
+        "++trainer.trainer.val_fad.enabled=true" \
+        "++trainer.trainer.val_fad.num_files=2000" \
+        "++trainer.trainer.val_fad.fad_model=clap-laion-music" \
+        "++trainer.trainer.val_fad.cache_dir=$SCRATCH/eval_cache" \
+        "++trainer.trainer.val_fad.fma_csv_path=$FMA_METADATA" \
+        "++trainer.trainer.val_fad.audio_root=$DATA_PATH" \
         trainer.loss_config.bottleneck.weights.kl=0 \
         trainer.loss_config.spectral.weights.stft_mse=1.0 \
         trainer.loss_config.spectral.weights.mrstft=0.0 \
