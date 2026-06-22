@@ -38,7 +38,7 @@ from losses import compute_sdr_and_sisdr, stft_loss, cdpam_score
 from utils import (write_csv, collect_fma_files, atomic_save_npy,
                    load_or_embed, target_cache_path, silence_output)
 from compute_clap_score import embed_clap, cosine_sim
-from compute_fad import embed_mert, compute_fad_from_embeddings
+from compute_fad import embed_mert_framewise, compute_fad_from_embeddings
 from fadtk.model_loader import CLAPLaionModel, MERTModel
 
 # numpy 1.24+ removed np.float — patch for CDPAM internals
@@ -146,6 +146,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--device", default="cuda")
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--max-files", type=int, default=0)
+    p.add_argument("--dataset", choices=["fma", "moisesdb"], default="fma")
+    p.add_argument("--moisesdb-split", choices=["mixtures", "stems"], default="mixtures")
     p.add_argument("--fma-csv-path", default=None)
     p.add_argument("--extensions", default=".wav,.flac,.mp3,.ogg")
     p.add_argument("--cache-dir", type=Path, default=None,
@@ -153,6 +155,13 @@ def _parse_args() -> argparse.Namespace:
                         "Written on first pass; reused for subsequent checkpoints and runs.")
     p.add_argument("--skip-cdpam", action="store_true")
     p.add_argument("--sdr-only", action="store_true")
+    p.add_argument("--fad-only", action="store_true",
+                   help="Compute ONLY fad_mert (framewise MERT, layer 4): skip "
+                        "SI-SDR/STFT, CDPAM, CLAP cosine and fad_gudgud. Overwrites "
+                        "fad_mert.csv, leaves every other metric CSV untouched.")
+    p.add_argument("--fad-gud-only", action="store_true",
+                   help="Compute ONLY fad_gudgud (whole-file CLAP, 48kHz, float): skip "
+                        "all other metrics. Overwrites fad_gudgud.csv.")
     p.add_argument("--resume", action="store_true",
                    help="Skip checkpoint if spectral.csv already exists.")
     return p.parse_args()
@@ -164,11 +173,19 @@ def main() -> None:
     args = _parse_args()
     device = torch.device(args.device)
     target_dir  = Path(args.target_dir).expanduser().resolve()
+        
     output_root = Path(args.output_dir).expanduser().resolve()
 
-    audio_exts = {(e if e.startswith(".") else f".{e}").lower()
-                  for e in args.extensions.split(",")}
-    audio_files = collect_fma_files(target_dir, audio_exts, args.fma_csv_path, args.max_files)
+    if args.dataset == "fma":
+        audio_exts = {(e if e.startswith(".") else f".{e}").lower()
+                      for e in args.extensions.split(",")}
+        audio_files = collect_fma_files(target_dir, audio_exts, args.fma_csv_path, args.max_files)
+    elif args.dataset == "moisesdb":
+        from utils import collect_moisesdb_files
+        audio_files = collect_moisesdb_files(target_dir, args.moisesdb_split, args.max_files)
+    else:
+        raise ValueError(f"Unknown dataset: {args.dataset}")
+
     if not audio_files:
         err(f"No audio files in {target_dir}"); return
     ok(f"Files: {len(audio_files)}", prefix="EVAL")
@@ -176,12 +193,21 @@ def main() -> None:
     stem_to_file: dict[str, Path] = {f.stem: f for f in audio_files}
 
     if not args.sdr_only:
-        # Load embedding models once — heavy, reused across all checkpoints
-        info("Loading CLAP (music/audio) and MERT models...", prefix="EVAL")
-        clap_music_ml = CLAPLaionModel("music")
-        clap_audio_ml = CLAPLaionModel("audio")
-        mert_ml       = MERTModel()
-        for _ml in (clap_music_ml, clap_audio_ml, mert_ml):
+        # Load embedding models once — heavy, reused across all checkpoints.
+        # MERT = layer 4, framewise/fadtk-standard. CLAP only for the non-FAD
+        # metrics → skipped in --fad-only.
+        info("Loading embedding models...", prefix="EVAL")
+        info("Loading embedding models...", prefix="EVAL")
+        embed_models = []
+        if not args.fad_gud_only:
+            mert_ml       = MERTModel(layer=4)
+            embed_models.append(mert_ml)
+            if not args.fad_only:
+                clap_music_ml = CLAPLaionModel("music")
+                clap_audio_ml = CLAPLaionModel("audio")
+                embed_models.extend([clap_music_ml, clap_audio_ml])
+        
+        for _ml in embed_models:
             with silence_output():
                 _ml.load_model()
             _ml.model.to(device)
@@ -192,7 +218,13 @@ def main() -> None:
         metrics_dir = output_root / ckpt_path.stem / "metrics"
         ok(f"=== {ckpt_path.name} ===", prefix="EVAL")
 
-        if args.resume and (metrics_dir / "_done").exists():
+        if args.fad_only:
+            if args.resume and (metrics_dir / "fad_mert.csv").exists():
+                info("[RESUME] fad_mert.csv exists — skipping.", prefix="EVAL"); continue
+        elif args.fad_gud_only:
+            if args.resume and (metrics_dir / "fad_gudgud.csv").exists():
+                info("[RESUME] fad_gudgud.csv exists — skipping.", prefix="EVAL"); continue
+        elif args.resume and (metrics_dir / "_done").exists():
             info(f"[RESUME] already done — skipping.", prefix="EVAL"); continue
 
         metrics_dir.mkdir(parents=True, exist_ok=True)
@@ -218,11 +250,13 @@ def main() -> None:
         cdpam_rows:       list[dict]       = []
         clap_music_rows:  list[dict]       = []
         clap_audio_rows:  list[dict]       = []
-        mert_pred_embs:   list[np.ndarray] = []
-        clap_a_pred_embs: list[np.ndarray] = []
         fad_files:        list[Path]       = []
         skipped = 0
         t0 = time.time()
+        
+        parts_dir = metrics_dir / "parts"
+        pred_root = parts_dir / "pred"
+        parts_dir.mkdir(parents=True, exist_ok=True)
 
         with torch.no_grad():
             for i, (wav, stem) in enumerate(tqdm(loader, desc=ckpt_path.stem,
@@ -252,42 +286,58 @@ def main() -> None:
                 wav_ref = wav[..., :n]                       # [C, n]
                 pred    = decoded[0, ..., :n].cpu().float()  # [C, n]
 
-                sdr_val, sisdr_val = compute_sdr_and_sisdr(wav_ref, pred)
-                spectral_rows.append({
-                    "file":      stem,
-                    "si_sdr":    sisdr_val,
-                    "sdr":       sdr_val,
-                    "stft_loss": stft_loss(wav_ref, pred),
-                })
+                if not args.fad_only and not args.fad_gud_only:
+                    sdr_val, sisdr_val = compute_sdr_and_sisdr(wav_ref, pred)
+                    spectral_rows.append({
+                        "file":      stem,
+                        "si_sdr":    sisdr_val,
+                        "sdr":       sdr_val,
+                        "stft_loss": stft_loss(wav_ref, pred),
+                    })
 
-                if not args.skip_cdpam and not args.sdr_only:
-                    try:
-                        score = cdpam_score(wav_ref, pred, sr, device=device)
-                        cdpam_rows.append({"file": stem, "cdpam": score})
-                    except Exception as e:
-                        warn(f"CDPAM {stem}: {e}", prefix="CDPAM")
+                    if not args.skip_cdpam and not args.sdr_only:
+                        try:
+                            score = cdpam_score(wav_ref, pred, sr, device=device)
+                            cdpam_rows.append({"file": stem, "cdpam": score})
+                        except Exception as e:
+                            warn(f"CDPAM {stem}: {e}", prefix="CDPAM")
 
                 if not args.sdr_only:
-                    # CLAP cosine similarity + FAD embeddings (target cached, pred in-memory)
+                    # CLAP cosine (skipped in --fad-only and --fad-gud-only) + FAD embeddings
+                    # (target cached, pred in-memory)
                     try:
-                        t_cm = load_or_embed(clap_music_ml, embed_clap, wav_ref, sr, device,
-                                             target_cache_path(cache_dir, clap_music_ml.name, stem))
-                        p_cm = embed_clap(clap_music_ml, pred, sr, device)
-                        clap_music_rows.append({"file": stem,
-                                                "cosine": float(cosine_sim(t_cm.mean(0), p_cm.mean(0)))})
-    
-                        t_ca = load_or_embed(clap_audio_ml, embed_clap, wav_ref, sr, device,
-                                             target_cache_path(cache_dir, clap_audio_ml.name, stem))
-                        p_ca = embed_clap(clap_audio_ml, pred, sr, device)
-                        clap_audio_rows.append({"file": stem,
-                                                "cosine": float(cosine_sim(t_ca.mean(0), p_ca.mean(0)))})
-                        clap_a_pred_embs.append(p_ca)
-    
-                        load_or_embed(mert_ml, embed_mert, wav_ref, sr, device,
-                                      target_cache_path(cache_dir, mert_ml.name, stem))
-                        mert_pred_embs.append(embed_mert(mert_ml, pred, sr, device))
+                        from compute_clap_score import embed_clap_gud
+                        from types import SimpleNamespace
+                        
+                        if not args.fad_only and not args.fad_gud_only:
+                            t_cm = load_or_embed(clap_music_ml, embed_clap, wav_ref, sr, device,
+                                                 target_cache_path(cache_dir, clap_music_ml.name, stem))
+                            p_cm = embed_clap(clap_music_ml, pred, sr, device)
+                            clap_music_rows.append({"file": stem,
+                                                    "cosine": float(cosine_sim(t_cm.mean(0), p_cm.mean(0)))})
+
+                            t_ca = load_or_embed(clap_audio_ml, embed_clap, wav_ref, sr, device,
+                                                 target_cache_path(cache_dir, clap_audio_ml.name, stem))
+                            p_ca = embed_clap(clap_audio_ml, pred, sr, device)
+                            clap_audio_rows.append({"file": stem,
+                                                    "cosine": float(cosine_sim(t_ca.mean(0), p_ca.mean(0)))})
+
+                        if not args.fad_gud_only:
+                            load_or_embed(mert_ml, embed_mert_framewise, wav_ref, sr, device,
+                                          target_cache_path(cache_dir, mert_ml.name, stem))
+                            p_mert = embed_mert_framewise(mert_ml, pred, sr, device)
+                            from utils import atomic_save_npy
+                            atomic_save_npy(pred_root / mert_ml.name / f"{stem}.npy", p_mert.astype(np.float16))
+                        
+                        if not args.fad_only:
+                            load_or_embed(None, lambda ml, w, s, d: embed_clap_gud(w, s, d), wav_ref, sr, device,
+                                          target_cache_path(cache_dir, "clap-laion-audio-gud", stem))
+                            p_gud = embed_clap_gud(pred, sr, device)
+                            from utils import atomic_save_npy
+                            atomic_save_npy(pred_root / "clap-laion-audio-gud" / f"{stem}.npy", p_gud.astype(np.float16))
+                        
                         fad_files.append(stem_to_file[stem])
-    
+
                     except Exception as e:
                         warn(f"Embedding error {stem}: {e}", prefix="EMBED")
 
@@ -310,18 +360,25 @@ def main() -> None:
         if clap_audio_rows:
             write_csv(metrics_dir / "clap_audio.csv", ["file", "cosine"], clap_audio_rows)
             ok(f"clap_audio.csv written", prefix="EVAL")
-        if cache_dir and mert_pred_embs:
-            compute_fad_from_embeddings(mert_ml, fad_files, mert_pred_embs, cache_dir,
-                                        metrics_dir / "fad_mert.csv", "MERT-v1-95M")
-            ok(f"fad_mert.csv written", prefix="EVAL")
-        if cache_dir and clap_a_pred_embs:
-            compute_fad_from_embeddings(clap_audio_ml, fad_files, clap_a_pred_embs, cache_dir,
-                                        metrics_dir / "fad_gudgud.csv", "clap-laion-audio")
-            ok(f"fad_gudgud.csv written", prefix="EVAL")
+        if cache_dir and fad_files:
+            if not args.fad_gud_only:
+                m_paths = [pred_root / mert_ml.name / f"{f.stem}.npy" for f in fad_files]
+                compute_fad_from_embeddings(mert_ml, fad_files, m_paths, cache_dir,
+                                            metrics_dir / "fad_mert.csv", "MERT-v1-95M-4")
+                ok(f"fad_mert.csv written", prefix="EVAL")
+            if not args.fad_only:
+                c_paths = [pred_root / "clap-laion-audio-gud" / f"{f.stem}.npy" for f in fad_files]
+                from types import SimpleNamespace
+                compute_fad_from_embeddings(SimpleNamespace(name="clap-laion-audio-gud"), fad_files, c_paths, cache_dir,
+                                            metrics_dir / "fad_gudgud.csv", "clap-laion-audio-gud")
+                ok(f"fad_gudgud.csv written", prefix="EVAL")
 
         # Mark this checkpoint as fully evaluated — used by --resume to skip.
-        (metrics_dir / "_done").touch()
-        ok(f"Sentinel _done written", prefix="EVAL")
+        # In --fad-only or --fad-gud-only we only refreshed specific FADs, so the full-run sentinel
+        # is left as-is (other metrics were not recomputed).
+        if not args.fad_only and not args.fad_gud_only:
+            (metrics_dir / "_done").touch()
+            ok(f"Sentinel _done written", prefix="EVAL")
 
         del autoencoder
         torch.cuda.empty_cache()

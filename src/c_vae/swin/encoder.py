@@ -87,6 +87,7 @@ class SwinEncoder(AbstractEncoder):
         use_smooth_convs: bool = False,
         use_perceiver_compression: bool = False,
         num_perceiver_queries: int = 128,
+        fold_freq_to_channels: bool = False,
     ) -> None:
 
         super().__init__(input_size=in_channels, is_complex=is_complex)
@@ -189,9 +190,22 @@ class SwinEncoder(AbstractEncoder):
             )
             self._final_resolution = (num_perceiver_queries, 1)
 
+        # ── Option C: learned freq-fold head (fold_freq_to_channels) ───────────────
+        # When True, the F_lat latent freq bands are folded into the feature dim
+        # BEFORE the head, and a single learned FC collapses (F_lat * final_dim) ->
+        # dimension. The latent becomes a native 1-D sequence (latent_channels, T_lat)
+        # with frequency mixed by a learned projection (vs the default structural
+        # per-token FC that keeps the F_lat × T_lat grid). Default False = legacy path.
+        self.fold_freq_to_channels = bool(fold_freq_to_channels)
+        if self.fold_freq_to_channels and use_perceiver_compression:
+            raise ValueError("fold_freq_to_channels is incompatible with perceiver compression")
+
         # Final norm + projection to latent dimension
         self.norm = make_norm(self._final_dim, is_complex)
-        self.head = NormLinear(self._final_dim, dimension, is_complex=is_complex)
+        # head input dim: F_lat*final_dim if folding freq into channels, else final_dim
+        _head_in_dim = (self._final_resolution[0] * self._final_dim
+                        if self.fold_freq_to_channels else self._final_dim)
+        self.head = NormLinear(_head_in_dim, dimension, is_complex=is_complex)
 
         # Optional conv stem (off by default).
         # Operates at full STFT resolution before patchify — provides cross-patch context.
@@ -244,11 +258,26 @@ class SwinEncoder(AbstractEncoder):
         if hasattr(self, 'compressor'):
             x = self.compressor(x)
 
-        x = self.norm(x)                        # (B, 128, 384)
+        x = self.norm(x)                        # (B, L=F*T, final_dim)
+
+        # ── Option C: fold freq bands into channels, then learned FC ───────────────
+        if self.fold_freq_to_channels:
+            B = x.shape[0]
+            F_lat = self._final_resolution[0]                     # latent freq bands — fixed by the 1024-bin crop
+            T_lat = x.shape[1] // F_lat                           # latent time frames — dynamic (variable-length safe)
+            C = self._final_dim                                   # e.g. 1024
+            # tokens are flattened freq-major (idx = f*T + t) by PatchEmbed
+            x = x.view(B, F_lat, T_lat, C)                        # (B, F, T, C)
+            x = x.permute(0, 2, 1, 3).reshape(B, T_lat, F_lat * C)# (B, T, F*C)
+            x = self.head(x)                                      # (B, T, dimension)
+            x = x.transpose(1, 2)                                 # (B, dimension, T)
+            return x, {"feature_shape": (1, T_lat)}               # freq folded away
+
+        # ── Legacy path (default): per-token FC, keep F_lat × T_lat grid ───────────
         x = self.head(x)                        # (B, 128, out_channels)
 
         x = x.transpose(1, 2)                   # (B, out_channels, 128=H*W latent)
-        
+
         H_lat = self._final_resolution[0]
         W_lat = x.shape[-1] // H_lat
 

@@ -92,6 +92,26 @@ def collect_fma_files(root: Path, audio_exts: set[str], fma_csv_path, max_files:
     return audio_files
 
 
+def collect_moisesdb_files(root: Path, split: str, max_files: int) -> list[Path]:
+    """Scan *root* (chunks_30s flat dir) for MoisesDB .wav files.
+
+    Args:
+        root:      Path to the chunks_30s directory.
+        split:     'mixtures' (only *_mixture.wav) or 'stems' (all other .wav).
+        max_files: Max files to return (0 = all).
+    """
+    if split == "mixtures":
+        audio_files = sorted(p for p in root.glob("*_mixture.wav"))
+    elif split == "stems":
+        audio_files = sorted(p for p in root.glob("*.wav") if not p.name.endswith("_mixture.wav"))
+    else:
+        raise ValueError(f"Unknown moisesdb split: {split}")
+
+    if max_files > 0:
+        audio_files = audio_files[:max_files]
+    return audio_files
+
+
 # ── Cross-correlation alignment ───────────────────────────────
 
 def batch_align(target: torch.Tensor, pred: torch.Tensor, sr: int, max_shift_seconds: float = 1.0):

@@ -26,8 +26,10 @@ set -euo pipefail
 mkdir -p logs
 cd $WORK/C-VAE
 
-# Isolated venv: do NOT module-load cineca-ai; unset PYTHONPATH (CINECA.md §5.4).
+# Isolated venv: do NOT module-load cineca-ai; purge modules and unset PYTHONPATH (CINECA.md §5.4).
+module purge || true
 unset PYTHONPATH
+unset LD_LIBRARY_PATH
 source $WORK/.envs/maeb_dl/bin/activate
 
 export HF_HOME="$FAST/hf_cache"
