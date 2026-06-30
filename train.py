@@ -34,7 +34,7 @@ from ar_spectra.models.autoencoder import AutoEncoder
 from ar_spectra.training.autoencoders import AutoencoderTrainingWrapper, AutoencoderValDemoCallback
 from ar_spectra.training.initialization import collate_stft
 from ar_spectra.utils.reproducibility import configure_reproducibility
-from ar_spectra.utils.run_config import _is_rank0, get_checkpoint_dir, resolve_run_name
+from ar_spectra.utils.run_config import _is_rank0, get_rank, get_world_size, get_checkpoint_dir, resolve_run_name
 from ar_spectra.utils.console import ok, warn, err
 
 import logging
@@ -44,7 +44,9 @@ import config
 OmegaConf.register_new_resolver("config", lambda key: getattr(config, key))
 OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
-from ar_spectra.training.callbacks import DatasetEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger, ValFADCallback
+from ar_spectra.training.callbacks import DatasetEpochSetter, MultiCorpusEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger, ValFADCallback
+from dataloader import MultiCorpusDataset
+from ar_spectra.utils.sampling import MultiCorpusRotatingSampler
 from ar_spectra.utils.model_info import extract_model_config
 from ar_spectra.utils.config_guards import check_cac_consistency
 
@@ -253,9 +255,25 @@ def main(cfg: DictConfig):
 
     # ─────────────────────────────────────────────────────────────────────────
     # Dataset instantiation via Hydra
+    #
+    # Two mutually exclusive train paths:
+    #   • single-corpus (default): one OnTheFlySTFTDataset, Lightning shuffles/shards.
+    #   • multi-corpus (cfg.data.multi_corpus.enabled): MultiCorpusDataset over the
+    #     `cfg.data.corpora` list + a MultiCorpusRotatingSampler we shard ourselves
+    #     (use_distributed_sampler is then disabled on the Trainer). Validation stays
+    #     single-corpus (cfg.data.eval_dataset = FMA) for metric comparability.
     # ─────────────────────────────────────────────────────────────────────────
-    train_ds = instantiate(cfg.data.train_dataset, seed=seed)
-    ok(f"Train dataset instantiated: {len(train_ds)} samples", prefix="DATA")
+    mc_cfg = cfg.data.get("multi_corpus")
+    multi_corpus = bool(mc_cfg and mc_cfg.get("enabled", False))
+
+    if multi_corpus:
+        corpora = [instantiate(c, seed=seed) for c in cfg.data.corpora]
+        train_ds = MultiCorpusDataset(corpora)
+        ok(f"Multi-corpus train dataset: {len(corpora)} corpora, "
+           f"sizes={train_ds.corpus_sizes}, total={len(train_ds)} samples", prefix="DATA")
+    else:
+        train_ds = instantiate(cfg.data.train_dataset, seed=seed)
+        ok(f"Train dataset instantiated: {len(train_ds)} samples", prefix="DATA")
 
     eval_ds = None
     if cfg.data.get("eval_dataset") is not None:
@@ -281,12 +299,33 @@ def main(cfg: DictConfig):
             warn(f"Global batch size {global_batch_size} non divisibile per {num_devices} device. Batch size per-device arrotondato a {per_device_batch_size}.", prefix="DATA")
         ok(f"Batch Size -> Globale: {global_batch_size} | Devices: {num_devices} | Per-Device: {per_device_batch_size}", prefix="DATA")
 
+    # Multi-corpus: our rotating sampler owns ordering + DDP sharding (read rank/world
+    # from SLURM/dist now, since the process group isn't up yet at build time). It is
+    # mutually exclusive with shuffle, and the Trainer must NOT re-wrap it (see below).
+    train_sampler = None
+    if multi_corpus:
+        sampler_cfg = OmegaConf.to_container(mc_cfg.get("sampler", {}), resolve=True) or {}
+        train_sampler = MultiCorpusRotatingSampler(
+            train_ds.corpus_sizes,
+            k=int(sampler_cfg.get("k", 4)),
+            rotate_corpus=sampler_cfg.get("rotate_corpus", None),
+            base_seed=int(sampler_cfg.get("base_seed", seed)),
+            num_replicas=get_world_size(),
+            rank=get_rank(),
+        )
+        if _is_rank0():
+            ok(f"MultiCorpusRotatingSampler: k={train_sampler.k}, "
+               f"rotate_corpus={train_sampler.rotate_corpus}, "
+               f"steps/epoch(per-rank items)={len(train_sampler)} "
+               f"(world={train_sampler.num_replicas})", prefix="DATA")
+
     train_dl = DataLoader(
         train_ds,
         batch_size=per_device_batch_size,
         num_workers=num_workers,
         pin_memory=bool(dl_cfg.get("pin_memory", False)),
-        shuffle=bool(dl_cfg.get("shuffle", True)),
+        sampler=train_sampler,
+        shuffle=(False if multi_corpus else bool(dl_cfg.get("shuffle", True))),
         drop_last=bool(dl_cfg.get("drop_last", True)),
         persistent_workers=(dl_cfg.get("persistent_workers", False) if num_workers > 0 else False),
         prefetch_factor=int(dl_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
@@ -299,12 +338,23 @@ def main(cfg: DictConfig):
         dl_eval_cfg = OmegaConf.to_container(cfg.data.eval_dataloader, resolve=True)
         eval_global_batch_size = int(dl_eval_cfg.get("batch_size", global_batch_size))
         eval_per_device_batch_size = max(1, eval_global_batch_size // num_devices)
+        # When we disable Lightning's distributed sampler (multi-corpus), it would also
+        # stop sharding val → every rank validates the full FMA set. Shard it ourselves
+        # with a plain DistributedSampler to keep val behaviour identical to single-corpus.
+        eval_sampler = None
+        if multi_corpus and get_world_size() > 1:
+            from torch.utils.data import DistributedSampler
+            eval_sampler = DistributedSampler(
+                eval_ds, num_replicas=get_world_size(), rank=get_rank(),
+                shuffle=False, drop_last=False,
+            )
         eval_dl = DataLoader(
             eval_ds,
             batch_size=eval_per_device_batch_size,
             num_workers=num_workers,
             pin_memory=bool(dl_eval_cfg.get("pin_memory", False)),
-            shuffle=bool(dl_eval_cfg.get("shuffle", False)),
+            sampler=eval_sampler,
+            shuffle=(False if eval_sampler is not None else bool(dl_eval_cfg.get("shuffle", False))),
             drop_last=bool(dl_eval_cfg.get("drop_last", False)),
             persistent_workers=(dl_eval_cfg.get("persistent_workers", False) if num_workers > 0 else False),
             prefetch_factor=int(dl_eval_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
@@ -451,7 +501,9 @@ def main(cfg: DictConfig):
         LearningRateMonitor(logging_interval="step"),
         TableOnlyModelSummary(max_depth=2),
         TQDMProgressBar(refresh_rate=1),
-        DatasetEpochSetter(),
+        # Multi-corpus advances both the rotating sampler and the dataset children;
+        # single-corpus advances only the dataset crops. Both keep val at epoch 0.
+        MultiCorpusEpochSetter() if multi_corpus else DatasetEpochSetter(),
         CompressionStatsLogger(train_dl=train_dl, console=console),
     ]
 
@@ -566,6 +618,10 @@ def main(cfg: DictConfig):
         limit_val_batches=pl_trainer_cfg.get("limit_val_batches", 1.0),
         deterministic=deterministic_flag,
         enable_model_summary=False,
+        # Multi-corpus already shards via MultiCorpusRotatingSampler; let Lightning wrap
+        # it in a DistributedSampler and the rotation/proportions break. Single-corpus
+        # keeps the default (True) so Lightning shards the plain shuffled loader.
+        use_distributed_sampler=(not multi_corpus),
     )
 
     ok(f"{req_accelerator}", prefix="DEVICE")

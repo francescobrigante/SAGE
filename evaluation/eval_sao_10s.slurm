@@ -22,9 +22,22 @@
 set -uo pipefail
 mkdir -p logs
 
-CKPT="${1:?Usage: sbatch eval_sao_10s.slurm <checkpoint_path> [extra args]}"
+CKPT="${1:?Usage: sbatch eval_sao_10s.slurm <checkpoint_path> [--data-dir DIR] [extra args]}"
 shift
-EXTRA=("$@")
+
+# Optional dataset override (default: moisesdb chunks_mix_original). Intercept
+# --data-dir / --dset-tag here so they are NOT forwarded to python.
+DATA_DIR="$FAST/datasets/moisesdb/chunks_mix_original/original"
+DSET_TAG=""
+EXTRA=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --data-dir) DATA_DIR="$2"; shift 2;;
+    --dset-tag) DSET_TAG="$2"; shift 2;;
+    *)          EXTRA+=("$1"); shift;;
+  esac
+done
+[ -z "$DSET_TAG" ] && DSET_TAG="$(basename "$(dirname "$DATA_DIR")")"
 
 module load profile/deeplrn cineca-ai/4.3.0
 source $WORK/.envs/c_vae/bin/activate
@@ -40,12 +53,11 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 cd $WORK/C-VAE
 
-DATA_DIR="$FAST/datasets/moisesdb/chunks_mix_original/original"
-EVAL_ROOT="$WORK/C-VAE/runs/eval_sao_10s"
+EVAL_ROOT="$WORK/C-VAE/runs/eval_sao_10s/$DSET_TAG"
 mkdir -p "$EVAL_ROOT"
 
 echo "============================================================"
-echo "EVAL SAO 10s — checkpoint=$CKPT"
+echo "EVAL SAO 10s — checkpoint=$CKPT  dataset=$DSET_TAG"
 echo "data:   $DATA_DIR"
 echo "output: $EVAL_ROOT"
 echo "extra:  ${EXTRA[*]-}"

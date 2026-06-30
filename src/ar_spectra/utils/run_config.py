@@ -21,6 +21,20 @@ def get_rank() -> int:
     return torch.distributed.get_rank()
 
 
+def get_world_size() -> int:
+    """Get the total number of distributed processes.
+
+    Mirrors ``get_rank``: prefers the SLURM env (set on CINECA before the process
+    group is initialized, so it is correct at dataloader-build time), then the
+    initialized torch.distributed group, else 1 (single process).
+    """
+    if "SLURM_NTASKS" in os.environ:
+        return int(os.environ["SLURM_NTASKS"])
+    if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+        return 1
+    return torch.distributed.get_world_size()
+
+
 def _is_rank0() -> bool:
     return get_rank() == 0
 

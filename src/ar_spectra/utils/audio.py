@@ -11,15 +11,19 @@ import torch.nn.functional as F
 from config import DEFAULT_SILENCE_THRESHOLD, DEFAULT_AUDIO_LOAD_TIMEOUT
 import torchaudio
 
-def _torchaudio_load_safe(path: str) -> tuple:
+def _torchaudio_load_safe(path: str, frame_offset: int = 0, num_frames: int = -1) -> tuple:
     """torchaudio.load() with SIGALRM timeout on Linux to prevent indefinite hangs on corrupt MP3s.
     Each DataLoader worker is a forked process with its own signal mask, so SIGALRM is safe here.
     Falls back to a direct call on platforms without SIGALRM (Windows, macOS with threads).
     Note: SIGALRM cannot interrupt NFS D-state hangs (kernel uninterruptible sleep);
     the DataLoader-level timeout (DEFAULT_DATALOADER_TIMEOUT) is the final safety net in those cases.
+
+    Args:
+        frame_offset: first frame (source-domain) to read; 0 = start of file.
+        num_frames: number of frames to read; -1 = to end (default, whole file).
     """
     if not hasattr(signal, "SIGALRM"):
-        return torchaudio.load(path, normalize=True)
+        return torchaudio.load(path, frame_offset=frame_offset, num_frames=num_frames, normalize=True)
 
     def _handler(signum, frame):
         raise RuntimeError(f"torchaudio.load timed out after {DEFAULT_AUDIO_LOAD_TIMEOUT}s on: {path}")
@@ -27,10 +31,22 @@ def _torchaudio_load_safe(path: str) -> tuple:
     old = signal.signal(signal.SIGALRM, _handler)
     signal.alarm(DEFAULT_AUDIO_LOAD_TIMEOUT)
     try:
-        return torchaudio.load(path, normalize=True)
+        return torchaudio.load(path, frame_offset=frame_offset, num_frames=num_frames, normalize=True)
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, old)
+
+
+def get_audio_info(path: str) -> tuple[int, int, int]:
+    """Read audio header metadata without decoding samples (cheap on multi-minute files).
+
+    Returns:
+        num_frames: total frames in the file (source sample rate).
+        sample_rate: source sample rate (Hz).
+        num_channels: number of channels.
+    """
+    info = torchaudio.info(str(path))
+    return int(info.num_frames), int(info.sample_rate), int(info.num_channels)
 
 def trim_to_shortest(a: torch.Tensor, b: torch.Tensor):
     """Trim the longer of two tensors to the length of the shorter one."""
@@ -59,7 +75,13 @@ def is_silence(audio: torch.Tensor, thresh: float = DEFAULT_SILENCE_THRESHOLD) -
     """Checks if entire clip is 'silence' below some dB threshold."""
     return get_dbmax(audio) < thresh
 
-def load_waveform(path: str, target_sample_rate: int, expected_channels: int) -> tuple[torch.Tensor, int, bool, bool]:
+def load_waveform(
+    path: str,
+    target_sample_rate: int,
+    expected_channels: int,
+    frame_offset: int = 0,
+    num_frames: int = -1,
+) -> tuple[torch.Tensor, int, bool, bool]:
     """
     Loads an audio waveform from disk and applies standard conversions (stereo/mono, resampling).
 
@@ -67,14 +89,17 @@ def load_waveform(path: str, target_sample_rate: int, expected_channels: int) ->
         path: Path to the audio file.
         target_sample_rate: Expected sample rate for resampling.
         expected_channels: 1 for mono, 2 for stereo.
-    
+        frame_offset: first source-domain frame to read; 0 = start (default).
+        num_frames: number of source-domain frames to read; -1 = whole file (default).
+            Set both for a windowed partial read of long files (decode only the needed slice).
+
     Returns:
         wav: The processed waveform tensor [channels, time].
         sr: The sample rate of the returned waveform.
         channel_mismatched: True if original channels differed from expected_channels.
         sr_mismatched: True if original sample rate differed from target_sample_rate.
     """
-    wav, sr = _torchaudio_load_safe(str(path))
+    wav, sr = _torchaudio_load_safe(str(path), frame_offset=frame_offset, num_frames=num_frames)
     wav = wav.to(torch.float32)
     
     file_channels = wav.size(0)

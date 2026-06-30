@@ -33,7 +33,7 @@ sys.path.insert(0, str(_PROJ_ROOT / "stable_audio_baseline"))
 
 from ar_spectra.models.inference import _extract_autoencoder_state
 from ar_spectra.utils.console import ok, warn, info, err
-from losses import compute_sdr_and_sisdr, stft_loss, cdpam_score
+from losses import compute_sdr_and_sisdr, stft_loss, spectral_losses, cdpam_score
 
 from utils import (write_csv, collect_fma_files, atomic_save_npy,
                    load_or_embed, target_cache_path, silence_output)
@@ -289,10 +289,10 @@ def main() -> None:
                 if not args.fad_only and not args.fad_gud_only:
                     sdr_val, sisdr_val = compute_sdr_and_sisdr(wav_ref, pred)
                     spectral_rows.append({
-                        "file":      stem,
-                        "si_sdr":    sisdr_val,
-                        "sdr":       sdr_val,
-                        "stft_loss": stft_loss(wav_ref, pred),
+                        "file":   stem,
+                        "si_sdr": sisdr_val,
+                        "sdr":    sdr_val,
+                        **spectral_losses(wav_ref, pred),
                     })
 
                     if not args.skip_cdpam and not args.sdr_only:
@@ -349,7 +349,7 @@ def main() -> None:
 
         if spectral_rows:
             write_csv(metrics_dir / "spectral.csv",
-                      ["file", "si_sdr", "sdr", "stft_loss"], spectral_rows)
+                      ["file", "si_sdr", "sdr", "stft_loss", "mel_loss"], spectral_rows)
             ok(f"spectral.csv written", prefix="EVAL")
         if cdpam_rows:
             write_csv(metrics_dir / "cdpam.csv", ["file", "cdpam"], cdpam_rows)

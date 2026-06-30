@@ -38,7 +38,7 @@ for _p in (str(_PROJ_ROOT), str(_PROJ_ROOT / "src"), str(_EVAL_DIR), str(_SOTA_D
         sys.path.insert(0, _p)
 
 from ar_spectra.utils.console import ok, warn, info, err
-from losses import compute_sdr_and_sisdr, stft_loss, cdpam_score
+from losses import compute_sdr_and_sisdr, stft_loss, spectral_losses, cdpam_score
 from utils import (write_csv, collect_fma_files, atomic_save_npy,
                    load_or_embed, target_cache_path, silence_output)
 from compute_clap_score import embed_clap, cosine_sim
@@ -59,7 +59,7 @@ _CLAP_GUD_NAME = "clap-laion-audio-gud"
 
 # Per-metric CSV schema (used for partial writes and the merge concat).
 _CSV_SCHEMA = {
-    "spectral":   ["file", "si_sdr", "sdr", "stft_loss"],
+    "spectral":   ["file", "si_sdr", "sdr", "stft_loss", "mel_loss"],
     "cdpam":      ["file", "cdpam"],
     "clap_music": ["file", "cosine"],
     "clap_audio": ["file", "cosine"],
@@ -321,7 +321,7 @@ def main() -> None:
                 sdr_val, sisdr_val = compute_sdr_and_sisdr(wav_ref, pred)
                 _append_csv(parts_dir / f"spectral.{rank}.csv", _CSV_SCHEMA["spectral"],
                             {"file": stem, "si_sdr": sisdr_val, "sdr": sdr_val,
-                             "stft_loss": float(stft_loss(wav_ref, pred))})
+                             **spectral_losses(wav_ref, pred)})
 
                 if not args.skip_cdpam and not args.sdr_only:
                     try:

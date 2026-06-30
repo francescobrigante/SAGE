@@ -6,7 +6,6 @@ __pycache__/
 logs/
 
 CLAUDE.md
-MSc-thesis/
 *.ipynb
 *.md
 *.csv

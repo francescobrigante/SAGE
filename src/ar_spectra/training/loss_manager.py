@@ -13,7 +13,7 @@ from .losses.base import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss, 
 from .losses.perceptual import MelSpectrogramLoss, HubertLoss
 from .losses.generative import LatentFlowMatchingLoss
 from .losses.semantic import (
-    MERTTeacher, CLAPTeacher, LatentVFLoss, LatentCosineDistillLoss,
+    CLAPTeacher, LatentVFLoss, LatentCosineDistillLoss,
     OctaveChromaTarget, ILDTarget, LatentChromaILDLoss,
     LatentContrastiveLoss,
 )
@@ -318,31 +318,6 @@ class LossManager(nn.Module):
                 self.hubert = HubertLoss(weight=1.0, **hubert_cfg)
                 gen_loss_modules.append(LossWithTarget(self.hubert, target_key="reals", input_key="decoded", name="hubert_loss", weight=hubert_weight, decay=self.loss_config["hubert"].get("decay", 1.0)))
 
-        if "semantic_vf" in self.loss_config:
-            vf_weight = self.loss_config["semantic_vf"]["weights"]["vf"]      # = w_hyper
-            if vf_weight > 0.0:
-                import config as _root_config                                # root config.py → MERT_MODEL_DIR
-
-                vf_cfg = dict(self.loss_config["semantic_vf"].get("config", {}) or {})
-                warmup = self.loss_config["semantic_vf"].get("detach_warmup_steps", 0)
-                adaptive = bool(vf_cfg.pop("adaptive", True))                 # VA-VAE grad-norm weighting
-                proj_dim = int(vf_cfg.pop("proj_dim", 768))
-                latent_dim = int(vf_cfg.pop("latent_dim"))                   # C*F_lat of featurized latent
-                if getattr(self, "mert_teacher", None) is None:              # shared frozen teacher (Fasi 1/2)
-                    self.mert_teacher = MERTTeacher(str(_root_config.MERT_MODEL_DIR), src_sr=self.sample_rate)
-                self.vf_proj = nn.Linear(latent_dim, proj_dim)               # → aux_parameters() → opt_aux
-                # adaptive on → module returns raw VF (weight=1), engine applies w_hyper*w_adaptive
-                module_weight = 1.0 if adaptive else vf_weight
-                gen_loss_modules.append(
-                    LatentVFLoss(self.vf_proj, self.mert_teacher, weight=module_weight,
-                                 detach_warmup_steps=warmup, **vf_cfg)        # vf_cfg = {m1, m2, w_cos, w_dist}
-                )
-                if adaptive:
-                    self.vf_adaptive = True                                  # consumed by engine.compute
-                    self.vf_hyper = float(vf_weight)                         # w_hyper
-                    self.vf_loss_name = "vf_loss"
-                    self.vf_recon_name = getattr(self, "_stft_mse_name", "pwc_mse_loss")
-
         if "semantic_distill" in self.loss_config:
             distill_weight = self.loss_config["semantic_distill"]["weights"]["distill"]
             if distill_weight > 0.0:
@@ -350,30 +325,18 @@ class LossManager(nn.Module):
                 distill_cfg = dict(self.loss_config["semantic_distill"].get("config", {}) or {})
                 warmup = self.loss_config["semantic_distill"].get("detach_warmup_steps", 25000)
                 latent_dim = int(distill_cfg.pop("latent_dim"))
-                proj_dim = int(distill_cfg.pop("proj_dim", 768))
-                # Separate branch — never active together with semantic_vf; own teacher instantiation.
-                teacher_type = self.loss_config["semantic_distill"].get("teacher_type", "mert")
+                proj_dim = int(distill_cfg.pop("proj_dim", 512))
                 self.distill_proj = nn.Linear(latent_dim, proj_dim)   # → aux_parameters() → opt_aux
-                
-                if teacher_type == "clap":
-                    self.clap_teacher = CLAPTeacher(
-                        str(_root_config.MODELS_DIR / "LAION_CLAP" / "music_audioset_epoch_15_esc_90.14.pt"),
-                        src_sr=self.sample_rate
+                self.clap_teacher = CLAPTeacher(
+                    str(_root_config.MODELS_DIR / "LAION_CLAP" / "music_audioset_epoch_15_esc_90.14.pt"),
+                    src_sr=self.sample_rate
+                )
+                gen_loss_modules.append(
+                    LatentCosineDistillLoss(
+                        self.distill_proj, self.clap_teacher, weight=distill_weight,
+                        detach_warmup_steps=warmup, **distill_cfg
                     )
-                    gen_loss_modules.append(
-                        LatentCosineDistillLoss(
-                            self.distill_proj, self.clap_teacher, weight=distill_weight,
-                            detach_warmup_steps=warmup, **distill_cfg
-                        )
-                    )
-                else:
-                    self.mert_teacher = MERTTeacher(str(_root_config.MERT_MODEL_DIR), src_sr=self.sample_rate)
-                    gen_loss_modules.append(
-                        LatentCosineDistillLoss(
-                            self.distill_proj, self.mert_teacher, weight=distill_weight,
-                            detach_warmup_steps=warmup, **distill_cfg
-                        )
-                    )
+                )
 
         if "semantic_regression" in self.loss_config:
             reg_weight = self.loss_config["semantic_regression"]["weights"].get("regression", 0.0)

@@ -2,8 +2,8 @@
 # semantic.py
 #
 #   Shared infrastructure for latent-alignment losses: the parameter-free latent
-#   featurizer (`standardize_bottleneck`), the frozen MERT teacher wrapper
-#   (`MERTTeacher`), and per-phase LossModule subclasses — VF margin loss
+#   featurizer (`standardize_bottleneck`), the frozen CLAP teacher wrapper
+#   (`CLAPTeacher`), and per-phase LossModule subclasses — VF margin loss
 #   (`LatentVFLoss`), clip-level cosine distillation (`LatentCosineDistillLoss`).
 # ===============================================================
 
@@ -41,59 +41,6 @@ def standardize_bottleneck(latents: torch.Tensor) -> torch.Tensor:
         B, C, Fl, T = latents.shape
         return latents.reshape(B, C * Fl, T)            # (B, C*F, T) parameter-free fold
     return latents                                      # already (B, D, T)
-
-
-class MERTTeacher(nn.Module):
-    """Frozen MERT teacher producing per-frame semantic features.
-
-    Loads ``m-a-p/MERT-v1-95M`` (768-d, 24 kHz, ~75 Hz frame rate) offline from a
-    local snapshot, averages a band of hidden layers, and returns ``(B, 768, T_mert)``
-    at MERT's *native* temporal resolution. Any reconciliation with the latent's
-    time axis (T_lat) is the caller's responsibility (LATENT_ALIGNMENT_PLAN.md §0.2),
-    so this wrapper stays target-agnostic.
-    """
-
-    def __init__(
-        self,
-        model_dir: str,
-        layers: tuple[int, ...] = (9, 10, 11, 12),  # which hidden states to average (music2latent)
-        src_sr: int = 44100,                        # waveform sample rate fed by the dataloader
-        mert_sr: int = 24000,                       # MERT's expected input sample rate
-    ):
-        super().__init__()
-        import torchaudio
-        from transformers import AutoModel
-
-        self.layers = layers                                  # hidden-state indices to average
-        # NOTE: transformers may warn that `encoder.pos_conv_embed.conv.parametrizations.
-        # weight.original0/1` are "newly initialized" (checkpoint stores the old weight_g/
-        # weight_v). This is a COSMETIC FALSE ALARM: torch>=2.1's weight_norm parametrization
-        # has a load_state_dict compat hook that remaps weight_g/v → original0/1, so the
-        # weights ARE loaded correctly (verified bit-exact in tests/test_mert_teacher.py).
-        self.mert = AutoModel.from_pretrained(                # the frozen backbone
-            model_dir, trust_remote_code=True,
-            local_files_only=True, output_hidden_states=True,
-        )
-        self.mert.requires_grad_(False).eval()
-        self.resample = torchaudio.transforms.Resample(src_sr, mert_sr)  # 44.1k → 24k
-        n = sum(p.numel() for p in self.mert.parameters())
-        ok(f"MERT teacher loaded from {model_dir} ({n/1e6:.1f}M params, frozen), "
-           f"averaging hidden layers {layers}.", prefix="MERT")
-
-    def train(self, mode: bool = True):  # keep frozen backbone in eval regardless of parent mode
-        super().train(mode)
-        self.mert.eval()
-        return self
-
-    @torch.no_grad()
-    def forward(self, wav: torch.Tensor) -> torch.Tensor:
-        """``wav`` ``(B, C, N)`` @ src_sr → ``(B, 768, T_mert)`` @ MERT frame rate."""
-        if wav.ndim == 3:                                 # (B, C, N)
-            wav = wav.mean(dim=1)                          # (B, N) mono downmix
-        wav = self.resample(wav)                           # (B, N') @ 24k
-        hidden = self.mert(wav).hidden_states              # tuple[13] of (B, T_mert, 768)
-        feat = torch.stack([hidden[i] for i in self.layers], dim=0).mean(0)  # (B, T_mert, 768)
-        return feat.transpose(1, 2)                        # (B, 768, T_mert)
 
 
 class CLAPTeacher(nn.Module):
@@ -169,7 +116,7 @@ class LatentVFLoss(LossModule):
                  name: str = "vf_loss", weight: float = 1.0, detach_warmup_steps: int = 0):
         super().__init__(name=name, weight=weight)
         self.vf_proj = vf_proj                 # Linear(D, proj_dim); shared with LossManager.vf_proj → opt_aux
-        self.teacher = teacher                 # frozen MERTTeacher (shared)
+        self.teacher = teacher                 # frozen teacher (shared)
         self.m1 = float(m1)                    # cosine margin
         self.m2 = float(m2)                    # distance-matrix margin
         self.w_cos = float(w_cos)              # weight of the per-frame cosine term
@@ -222,7 +169,7 @@ class LatentCosineDistillLoss(LossModule):
                  detach_warmup_steps: int = 25000):
         super().__init__(name=name, weight=weight)
         self.distill_proj = distill_proj      # Linear(latent_dim, proj_dim); shared with LossManager → opt_aux
-        self.teacher = teacher                # frozen MERTTeacher (no grad via @torch.no_grad() + requires_grad=False)
+        self.teacher = teacher                # frozen teacher (no grad via @torch.no_grad() + requires_grad=False)
         self.detach_warmup_steps = int(detach_warmup_steps)
 
     def forward(self, info: dict) -> torch.Tensor:

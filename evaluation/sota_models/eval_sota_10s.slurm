@@ -30,9 +30,23 @@
 set -uo pipefail
 mkdir -p logs
 
-MODEL="${1:?Usage: sbatch eval_sota_10s.slurm <codicodec|music2latent|sao-vae|same> [extra args]}"
+MODEL="${1:?Usage: sbatch eval_sota_10s.slurm <codicodec|music2latent|sao-vae|same> [--data-dir DIR] [extra args]}"
 shift
-EXTRA=("$@")
+
+# Optional dataset override (default: moisesdb chunks_mix_original). Intercept
+# --data-dir / --dset-tag here so they are NOT forwarded to python; everything
+# else flows through as EXTRA. Output lands under runs/eval_sota_10s/<tag>/.
+DATA_DIR="$FAST/datasets/moisesdb/chunks_mix_original/original"
+DSET_TAG=""
+EXTRA=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --data-dir) DATA_DIR="$2"; shift 2;;
+    --dset-tag) DSET_TAG="$2"; shift 2;;
+    *)          EXTRA+=("$1"); shift;;
+  esac
+done
+[ -z "$DSET_TAG" ] && DSET_TAG="$(basename "$(dirname "$DATA_DIR")")"
 
 module load profile/deeplrn cineca-ai/4.3.0
 unset PYTHONPATH
@@ -50,13 +64,12 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 cd $WORK/C-VAE
 
-DATA_DIR="$FAST/datasets/moisesdb/chunks_mix_original/original"
-EVAL_ROOT="$WORK/C-VAE/runs/eval_sota_10s"
+EVAL_ROOT="$WORK/C-VAE/runs/eval_sota_10s/$DSET_TAG"
 
 mkdir -p "$EVAL_ROOT"
 
 echo "============================================================"
-echo "EVAL SOTA 10s — model=$MODEL"
+echo "EVAL SOTA 10s — model=$MODEL  dataset=$DSET_TAG"
 echo "data:   $DATA_DIR"
 echo "output: $EVAL_ROOT/$MODEL/metrics/"
 echo "extra:  ${EXTRA[*]-}"

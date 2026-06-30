@@ -58,7 +58,14 @@ def si_sdr(target: torch.Tensor, pred: torch.Tensor) -> float:
 
 # ── Multi-resolution STFT loss ────────────────────────────────
 
-_hann_windows: dict[tuple[int, torch.device], torch.Tensor] = {}
+_hann_windows: dict[tuple, torch.Tensor] = {}
+_mel_filters:  dict[tuple, torch.Tensor] = {}
+
+# torchaudio renamed create_fb_matrix → melscale_fbanks (both share the same
+# signature); pick whichever the installed version exposes so the mel filterbank
+# works across torchaudio releases.
+_mel_fb_fn = getattr(torchaudio.functional, "melscale_fbanks", None) \
+    or torchaudio.functional.create_fb_matrix
 
 def stft_loss(target: torch.Tensor, pred: torch.Tensor) -> float:
     """Multi-resolution log-magnitude STFT L1 (3 scales) from [C, T] tensors."""
@@ -75,6 +82,53 @@ def stft_loss(target: torch.Tensor, pred: torch.Tensor) -> float:
         P_s = torch.stft(p_m, n_fft, n_fft // 4, n_fft, win, return_complex=True).abs()
         loss += (torch.log(T_s + eps) - torch.log(P_s + eps)).abs().mean().item()
     return loss / 3.0
+
+
+def spectral_losses(
+    target: torch.Tensor,
+    pred: torch.Tensor,
+    sample_rate: int = 44100,
+    n_mels: int = 128,
+) -> dict[str, float]:
+    """Multi-resolution STFT L1 and mel L1 (3 scales) in one pass from [C, T] tensors.
+
+    Computes the STFT once per resolution and derives both metrics, halving the
+    STFT overhead vs calling stft_loss() and a separate mel_loss() sequentially.
+    Returns {"stft_loss": float, "mel_loss": float}.
+    """
+    global _hann_windows, _mel_filters
+    t_m = target.float().mean(0)
+    p_m = pred.float().mean(0)
+    stft_acc = mel_acc = 0.0
+    eps = 1e-8
+    for n_fft in (512, 1024, 2048):
+        win_key = (n_fft, target.device)
+        if win_key not in _hann_windows:
+            _hann_windows[win_key] = torch.hann_window(n_fft, device=target.device)
+        win = _hann_windows[win_key]
+
+        T_s = torch.stft(t_m, n_fft, n_fft // 4, n_fft, win, return_complex=True).abs()  # [F, T]
+        P_s = torch.stft(p_m, n_fft, n_fft // 4, n_fft, win, return_complex=True).abs()  # [F, T]
+
+        stft_acc += (torch.log(T_s + eps) - torch.log(P_s + eps)).abs().mean().item()
+
+        mel_key = (n_fft, n_mels, sample_rate, target.device)
+        if mel_key not in _mel_filters:
+            fb = _mel_fb_fn(
+                n_freqs=n_fft // 2 + 1,
+                f_min=0.0,
+                f_max=float(sample_rate) / 2,
+                n_mels=n_mels,
+                sample_rate=sample_rate,
+            ).to(target.device)                                     # [n_freqs, n_mels]
+            _mel_filters[mel_key] = fb
+        fb = _mel_filters[mel_key]
+
+        T_mel = fb.T @ T_s                                          # [n_mels, T_frames]
+        P_mel = fb.T @ P_s                                          # [n_mels, T_frames]
+        mel_acc += (torch.log(T_mel + eps) - torch.log(P_mel + eps)).abs().mean().item()
+
+    return {"stft_loss": stft_acc / 3.0, "mel_loss": mel_acc / 3.0}
 
 
 # ── CDPAM ─────────────────────────────────────────────────────
