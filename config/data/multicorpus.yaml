@@ -1,0 +1,183 @@
+# =============================================================================
+# Multi-corpus data config (FMA-full + MTG-Jamendo + M4Singer).
+#
+# Activate by selecting this option of the `data` group (default is fma.yaml):
+#   python train.py data=multicorpus
+#
+# Train: MultiCorpusDataset over `corpora` + MultiCorpusRotatingSampler (k=4 M4
+# rotation, ≈68.9/26.8/4.3 FMA/Jam/M4). Validation: FMA-only (unchanged) for
+# metric comparability. All paths come from config.py (.env); STFT params are
+# defined once in train_dataset and interpolated into each corpus to avoid drift.
+# =============================================================================
+
+fma_subset: large            # FMA-full training split uses the 'large' (84,353) tier
+
+# Multi-corpus switch + rotating-sampler knobs (read in train.py).
+multi_corpus:
+  enabled: true
+  sampler:
+    k: 4                     # M4Singer rotates through 4 disjoint chunks (full set / 4 epochs)
+    rotate_corpus: 2         # index into `corpora` of the rotating corpus (M4Singer)
+    base_seed: ${config:DEFAULT_SEED}
+
+# Reference STFT block: the single source of truth for spectrogram params. Not used
+# as a dataset in the multi-corpus branch, but train.py reads its STFT/cac/sample_rate
+# fields for the model/demo config, and the corpora below interpolate from it.
+train_dataset:
+  _target_: dataloader.OnTheFlySTFTDataset
+  audio_dir: ${config:FMA_FULL_AUDIO}
+  target_frames: 128
+  sample_rate: ${config:DEFAULT_SAMPLE_RATE}
+  n_fft: 2048
+  hop_length: 512
+  win_length: 2048
+  center: true
+  normalized: false
+  extensions: [".mp3"]
+  stereo: true
+  cac: true
+  skip_failed_samples: true
+  skip_mismatched_sr: false
+  skip_mismatched_channels: false
+  partial_read: true
+  custom_metadata_module: src.ar_spectra.utils.metadata.fma
+  custom_metadata_kwargs:
+    split: training
+    subset: ${data.fma_subset}
+    metadata_csv: ${config:FMA_METADATA}
+
+# The three training corpora, in sampler order (M4Singer is rotate_corpus=2).
+# Each interpolates the shared STFT params from train_dataset; only the source
+# (audio_dir / provider / extensions) differs. partial_read=true everywhere:
+# a decisive win on the multi-minute FMA-full/Jamendo tracks, and a safe no-op
+# on M4Singer's short clips (the windowed read falls back to full-load when the
+# file is shorter than the window).
+corpora:
+  # ── 0: FMA-full (music anchor, ~84k) ───────────────────────────────────────
+  - _target_: dataloader.OnTheFlySTFTDataset
+    audio_dir: ${config:FMA_FULL_AUDIO}
+    target_frames: ${data.train_dataset.target_frames}
+    sample_rate: ${data.train_dataset.sample_rate}
+    n_fft: ${data.train_dataset.n_fft}
+    hop_length: ${data.train_dataset.hop_length}
+    win_length: ${data.train_dataset.win_length}
+    center: ${data.train_dataset.center}
+    normalized: ${data.train_dataset.normalized}
+    extensions: [".mp3"]
+    stereo: ${data.train_dataset.stereo}
+    cac: ${data.train_dataset.cac}
+    skip_failed_samples: true
+    skip_mismatched_sr: false
+    skip_mismatched_channels: false
+    partial_read: true
+    # Persisted filtered filelist → skips the ~11-min probe on resume. Subset in the name
+    # so switching tier uses a distinct cache. Delete the .txt to force a rebuild.
+    filelist_cache: "${config:FILELIST_CACHE_DIR}/fma_full_train_${data.fma_subset}.txt"
+    custom_metadata_module: src.ar_spectra.utils.metadata.fma
+    custom_metadata_kwargs:
+      split: training
+      subset: ${data.fma_subset}
+      metadata_csv: ${config:FMA_METADATA}
+
+  # ── 1: MTG-Jamendo split-0 train (music, leakage-free, ~33k) ───────────────
+  - _target_: dataloader.OnTheFlySTFTDataset
+    audio_dir: ${config:JAMENDO_AUDIO}
+    target_frames: ${data.train_dataset.target_frames}
+    sample_rate: ${data.train_dataset.sample_rate}
+    n_fft: ${data.train_dataset.n_fft}
+    hop_length: ${data.train_dataset.hop_length}
+    win_length: ${data.train_dataset.win_length}
+    center: ${data.train_dataset.center}
+    normalized: ${data.train_dataset.normalized}
+    extensions: [".mp3"]
+    stereo: ${data.train_dataset.stereo}
+    cac: ${data.train_dataset.cac}
+    skip_failed_samples: true
+    skip_mismatched_sr: false
+    skip_mismatched_channels: false
+    partial_read: true
+    filelist_cache: "${config:FILELIST_CACHE_DIR}/jamendo_split0_train.txt"
+    custom_metadata_module: src.ar_spectra.utils.metadata.jamendo
+    custom_metadata_kwargs:
+      split_tsv: ${config:JAMENDO_SPLIT_TSV}
+
+  # ── 2: M4Singer (Mandarin singing, ~21k) — the rotating corpus ─────────────
+  - _target_: dataloader.OnTheFlySTFTDataset
+    audio_dir: ${config:M4SINGER_AUDIO}
+    target_frames: ${data.train_dataset.target_frames}
+    sample_rate: ${data.train_dataset.sample_rate}
+    n_fft: ${data.train_dataset.n_fft}
+    hop_length: ${data.train_dataset.hop_length}
+    win_length: ${data.train_dataset.win_length}
+    center: ${data.train_dataset.center}
+    normalized: ${data.train_dataset.normalized}
+    extensions: [".wav"]
+    stereo: ${data.train_dataset.stereo}
+    cac: ${data.train_dataset.cac}
+    skip_failed_samples: true
+    skip_mismatched_sr: false
+    skip_mismatched_channels: false
+    partial_read: true
+    filelist_cache: "${config:FILELIST_CACHE_DIR}/m4singer.txt"
+    custom_metadata_module: src.ar_spectra.utils.metadata.m4singer
+    custom_metadata_kwargs: {}
+
+train_dataloader:
+  batch_size: ${config:DEFAULT_BATCH_SIZE}
+  num_workers: ${config:DEFAULT_NUM_WORKERS}
+  prefetch_factor: 4
+  pin_memory: true
+  persistent_workers: true
+  shuffle: true              # ignored in the multi-corpus branch (sampler owns ordering)
+  drop_last: true
+
+# Validation: FMA-only, identical to the single-corpus config (comparable metrics).
+eval_dataset:
+  _target_: dataloader.OnTheFlySTFTDataset
+  audio_dir: ${config:DATA_PATH}
+  target_frames: 128
+  sample_rate: ${config:DEFAULT_SAMPLE_RATE}
+  n_fft: 2048
+  hop_length: 512
+  win_length: 2048
+  center: true
+  normalized: false
+  extensions: [".mp3"]
+  stereo: true
+  cac: true
+  skip_mismatched_sr: false
+  skip_mismatched_channels: false
+  skip_failed_samples: true
+  custom_metadata_module: src.ar_spectra.utils.metadata.fma
+  custom_metadata_kwargs:
+    split: validation
+    subset: ${data.fma_subset}   # match LARGE eval (FMA-large val = 10,958); single source of truth
+    metadata_csv: ${config:FMA_METADATA}
+
+eval_dataloader:
+  batch_size: ${config:DEFAULT_BATCH_SIZE}
+  num_workers: ${config:DEFAULT_NUM_WORKERS}
+  prefetch_factor: 4
+  pin_memory: true
+  persistent_workers: true
+  shuffle: false
+  drop_last: false
+
+# Channel configuration — MUST match dataset settings (stereo=true, cac=true → 4).
+audio_channels: ${config:DEFAULT_AUDIO_CHANNELS}
+model_channels: 4
+
+demo:
+  every_n_epochs: 1
+  max_demos: 10
+  target_seconds: 2
+  istft_params:
+    sample_rate: ${config:DEFAULT_SAMPLE_RATE}
+    fft_size: 2048
+    hop_length: 512
+    win_length: 2048
+    target_frames: 128
+    center: true
+    normalized: false
+    cac: true
+  save_basename: recon_val

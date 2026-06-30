@@ -27,13 +27,27 @@ DEFAULT_AUDIO_CHANNELS = 2
 FMA_METADATA = os.getenv("FMA_METADATA")
 DATA_PATH = os.getenv("DATA_PATH")
 
+# Multi-corpus training corpora (future IscrC_MM run): FMA-full + MTG-Jamendo + M4Singer.
+# Resolved in Hydra via ${config:NAME}. Paths come from .env (cross-account scratch);
+# unset on machines without the corpora, so the single-corpus FMA path stays unaffected.
+FMA_FULL_AUDIO = os.getenv("FMA_FULL_AUDIO")              # FMA-full mp3 root (106k full-length tracks)
+JAMENDO_AUDIO = os.getenv("JAMENDO_AUDIO")                # MTG-Jamendo mp3 root (XX/ID.mp3 layout)
+JAMENDO_SPLIT_TSV = os.getenv("JAMENDO_SPLIT_TSV")        # split-0 autotagging-train.tsv (leakage-free train)
+M4SINGER_AUDIO = os.getenv("M4SINGER_AUDIO")             # M4Singer wav root (scanned recursively)
+
 # External model storage on Leonardo $FAST (persistent project scratch, 1 TB).
-# Foundation models (MERT teacher, etc.) are pre-downloaded here on the login node
-# and loaded offline (local_files_only) on the isolated compute nodes.
+# Foundation models (CLAP teacher, etc.) are pre-downloaded here on the login node
+# and loaded offline on the isolated compute nodes.
 FAST_DIR = Path(os.getenv("FAST", PROJECT_ROOT / "_fast"))
 MODELS_DIR = FAST_DIR / "models"
-MERT_MODEL_ID = "m-a-p/MERT-v1-95M"          # HF repo id of the MERT teacher
-MERT_MODEL_DIR = MODELS_DIR / "MERT-v1-95M"  # local snapshot dir on $FAST
+
+# Filelist cache for the multi-corpus build: the provider-scan + per-file probe-filter
+# over ~138k files costs ~11 min at every job start (and every --requeue resume). The
+# filtered, sorted list is deterministic and the files are immutable, so we persist it
+# here as a .txt and reload it on subsequent runs (build → ~1 s). Opt-in per corpus via
+# `filelist_cache:` in multicorpus.yaml; single-corpus FMA never sets it. Delete the .txt
+# to force a rebuild after changing a corpus.
+FILELIST_CACHE_DIR = FAST_DIR / "filelist_cache"
 
 DEFAULT_BATCH_SIZE = 16
 DEFAULT_MAX_FILES = 0 # 0 means all
@@ -48,5 +62,13 @@ DEFAULT_SEED = 94
 DEFAULT_MAX_RETRIES_PER_SAMPLE = 8
 DEFAULT_MAX_PAD_RATIO = 0.05
 DEFAULT_AUDIO_EXTENSIONS = (".wav", ".flac", ".mp3", ".ogg", ".m4a", ".opus")
+
+# Partial-read: decode only a ~segment-long window (via torchaudio frame_offset/num_frames)
+# instead of the whole file, then crop. Big win on multi-minute tracks (FMA-full, Jamendo).
+# Off by default for full backward compatibility; enable per-dataset in config for long-file corpora.
+DEFAULT_PARTIAL_READ = False
+# Source-domain samples of slack loaded around the window so that, after resampling
+# (sinc edge transients) and SR rounding, we always retain >= segment_samples to crop cleanly.
+DEFAULT_PARTIAL_READ_MARGIN = 4096
 DEFAULT_SILENCE_THRESHOLD = -62
 DEFAULT_WANDB_PROJECT = "C-VAE"

@@ -6,13 +6,14 @@
 import torch
 import torchaudio
 import os
+import math
 import signal
 from pathlib import Path
 from typing import Callable, Optional, Sequence
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, ConcatDataset
 
 from ar_spectra.utils.console import warn
-from ar_spectra.utils.audio import is_silence, load_waveform, random_crop_or_pad
+from ar_spectra.utils.audio import is_silence, load_waveform, random_crop_or_pad, get_audio_info
 from ar_spectra.utils.file_scanning import fast_scandir
 from ar_spectra.utils.metadata.providers import load_file_provider_fn
 from ar_spectra.utils.audio_probe import pick_probe_fn
@@ -23,6 +24,8 @@ from config import (
     DEFAULT_MAX_PAD_RATIO,
     DEFAULT_AUDIO_EXTENSIONS,
     DEFAULT_AUDIO_LOAD_TIMEOUT,
+    DEFAULT_PARTIAL_READ,
+    DEFAULT_PARTIAL_READ_MARGIN,
 )
 
 
@@ -90,6 +93,10 @@ class OnTheFlySTFTDataset(Dataset):
         custom_metadata_kwargs: Optional[dict] = None,
         max_retries_per_sample: int = DEFAULT_MAX_RETRIES_PER_SAMPLE,
         skip_failed_samples: bool = False,
+        partial_read: bool = DEFAULT_PARTIAL_READ,
+        partial_read_margin: int = DEFAULT_PARTIAL_READ_MARGIN,
+        max_files: Optional[int] = None,
+        filelist_cache: Optional[str | os.PathLike] = None,
     ):
         super().__init__()
         self.audio_dir = Path(audio_dir).expanduser().resolve()
@@ -112,6 +119,15 @@ class OnTheFlySTFTDataset(Dataset):
         self.return_paths = bool(return_paths)
         self.max_retries_per_sample = int(max_retries_per_sample)
         self.skip_failed_samples = bool(skip_failed_samples)
+        self.partial_read = bool(partial_read)               # decode only a windowed slice of long files
+        self.partial_read_margin = int(partial_read_margin)  # source-domain slack around the window
+        # Optional deterministic cap on the file list, applied BEFORE probe-filtering.
+        # Default None = no cap (production). Used by smoke/CI runs to bound build time.
+        self.max_files = int(max_files) if max_files is not None else None
+        # Optional .txt cache of the provider-filtered, sorted file list (multi-corpus only).
+        # Default None = always scan+probe (single-corpus path unaffected). When set, the
+        # first build writes the list here and later builds reload it, skipping the ~11-min probe.
+        self.filelist_cache = Path(filelist_cache).expanduser() if filelist_cache else None
         
         self._file_provider = load_file_provider_fn(custom_metadata_module)
         self._file_provider_kwargs = custom_metadata_kwargs or {}
@@ -160,25 +176,44 @@ class OnTheFlySTFTDataset(Dataset):
             )
 
         self._base_seed = int(seed)
-        self._epoch = 0
-        self._rng = torch.Generator()
-        self._reset_rng()
-        
+        # Shared epoch counter in shared memory: persistent DataLoader workers are forked
+        # once, so a plain attribute mutated in the main process would never reach them.
+        # A shared-memory tensor is inherited by the fork, so set_epoch() updates ARE visible
+        # inside workers. Crop randomness is derived per-item from (base_seed, epoch, index)
+        # → deterministic, decorrelated across files, and genuinely different every epoch.
+        self._epoch_t = torch.zeros(1, dtype=torch.long).share_memory_()
+
         self._warned_channel_mismatch = False
         self._warned_sr_mismatch = False
         self._warned_failed_samples = False
 
     def _scan_and_filter_files(self) -> list[Path]:
+        # Cache fast-path: a persisted .txt of the already-filtered, sorted list lets us
+        # skip the ~11-min provider-scan + per-file probe. Disabled when max_files is set
+        # (a capped smoke list must never be persisted as the full corpus). Falls back to a
+        # full scan if the cache is missing or unreadable/empty.
+        cache_active = self.filelist_cache is not None and self.max_files is None
+        if cache_active and self.filelist_cache.exists():
+            cached = self._load_filelist_cache()
+            if cached:
+                warn(f"Loaded {len(cached)} files from cache {self.filelist_cache} (probe skipped)", prefix="DATA")
+                return cached
+            warn(f"Filelist cache {self.filelist_cache} empty/unreadable — rebuilding", prefix="DATA WARNING")
+
         if self._file_provider is not None:
             file_paths = self._file_provider(
-                str(self.audio_dir), 
+                str(self.audio_dir),
                 **self._file_provider_kwargs
             )
             files = [Path(p) for p in sorted(file_paths)]
         else:
             _, file_paths = fast_scandir(str(self.audio_dir), self.extensions)
             files = [Path(p) for p in sorted(file_paths)]
-        
+
+        # Deterministic truncation (sorted order) before the expensive probe loop.
+        if self.max_files is not None:
+            files = files[: self.max_files]
+
         if self._probe_fn is None:
             return files
         
@@ -215,16 +250,64 @@ class OnTheFlySTFTDataset(Dataset):
             warn(f"Skipped {skipped_ch} file(s) due to channel mismatch (expected {self.audio_channels})", prefix="DATA WARNING")
         if skipped_len > 0:
             warn(f"Skipped {skipped_len} file(s) due to insufficient length", prefix="DATA WARNING")
-        
+
+        if cache_active:
+            self._write_filelist_cache(filtered)
+
         return filtered
 
-    def _reset_rng(self):
-        mixed = (self._base_seed & 0xFFFFFFFF) ^ ((self._epoch * 0x9E3779B1) & 0xFFFFFFFF)
-        self._rng.manual_seed(mixed)
+    def _load_filelist_cache(self) -> list[Path]:
+        """Read the cached filelist (one absolute path per line; '#' header lines ignored).
+        Returns [] on any read error so the caller can fall back to a full scan."""
+        try:
+            lines = self.filelist_cache.read_text().splitlines()
+        except OSError as e:
+            warn(f"Could not read filelist cache {self.filelist_cache}: {e}", prefix="DATA WARNING")
+            return []
+        return [Path(ln) for ln in lines if ln and not ln.startswith("#")]
+
+    def _write_filelist_cache(self, files: list[Path]) -> None:
+        """Persist the filtered, sorted filelist atomically (tmp + os.replace, so concurrent
+        DDP ranks never observe a half-written file). Best-effort: a write failure only loses
+        the speedup, never the run."""
+        try:
+            self.filelist_cache.parent.mkdir(parents=True, exist_ok=True)
+            header = (
+                f"# filelist cache — {len(files)} files\n"
+                f"# audio_dir={self.audio_dir}\n"
+                f"# sample_rate={self.sample_rate} min_acceptable_len={self.min_acceptable_len}\n"
+                f"# provider_kwargs={self._file_provider_kwargs}\n"
+                f"# DELETE this file to force a rebuild after changing the corpus.\n"
+            )
+            body = "\n".join(str(p) for p in files)
+            tmp = self.filelist_cache.with_suffix(self.filelist_cache.suffix + f".tmp.{os.getpid()}")
+            tmp.write_text(header + body + "\n")
+            os.replace(tmp, self.filelist_cache)
+            warn(f"Wrote filelist cache {self.filelist_cache} ({len(files)} files)", prefix="DATA")
+        except OSError as e:
+            warn(f"Could not write filelist cache {self.filelist_cache}: {e}", prefix="DATA WARNING")
+
+    @staticmethod
+    def _mix_seed(base: int, epoch: int, index: int) -> int:
+        """SplitMix64-style hash → a per-item crop seed that is a pure function of
+        (base_seed, epoch, index): deterministic, decorrelated across indices, and
+        different every epoch. Independent of worker id and batch order."""
+        mask = 0xFFFFFFFFFFFFFFFF
+        h = (int(base) + 0x9E3779B97F4A7C15) & mask
+        h = (h ^ ((int(epoch) + 1) * 0xBF58476D1CE4E5B9)) & mask
+        h = ((h ^ (h >> 30)) * 0xBF58476D1CE4E5B9) & mask
+        h = (h ^ (int(index) * 0x94D049BB133111EB)) & mask
+        h = ((h ^ (h >> 27)) * 0x94D049BB133111EB) & mask
+        h = (h ^ (h >> 31)) & mask
+        return h
+
+    @property
+    def epoch(self) -> int:
+        """Current epoch as seen by this process (read from the shared counter)."""
+        return int(self._epoch_t[0])
 
     def set_epoch(self, epoch: int):
-        self._epoch = int(epoch)
-        self._reset_rng()
+        self._epoch_t[0] = int(epoch)
         self._warned_failed_samples = False
 
     def enable_return_paths(self):
@@ -241,8 +324,63 @@ class OnTheFlySTFTDataset(Dataset):
             return torch.float64
         return torch.float32
 
+    def _note_mismatch(self, ch_mismatch: bool, sr_mismatch: bool, epoch: int):
+        """Record (once, at epoch 0) that some files needed channel/SR conversion."""
+        if ch_mismatch and not self._warned_channel_mismatch and epoch == 0:
+            self._warned_channel_mismatch = True
+        if sr_mismatch and not self._warned_sr_mismatch and epoch == 0:
+            self._warned_sr_mismatch = True
+
+    def _try_partial_segment(self, path: Path, crop_rng: torch.Generator) -> Optional[torch.Tensor]:
+        """Decode only a ~segment-long window of a (possibly multi-minute) file, then crop it.
+        Returns None to signal "fall back to full load" on short files or any seek/decode failure."""
+        try:
+            num_frames, src_sr, _ = get_audio_info(path)
+        except Exception:
+            return None
+        if num_frames <= 0 or src_sr <= 0:
+            return None
+        # Source-domain window that, after resampling to target SR, still covers one segment + margin.
+        win_src = math.ceil(self.segment_samples * src_sr / self.sample_rate) + self.partial_read_margin
+        if num_frames < win_src:
+            return None  # too short for a windowed read → let full load (with padding) handle it
+        max_off = num_frames - win_src
+        offset = int(torch.randint(0, max_off + 1, (1,), generator=crop_rng).item())
+        try:
+            with _file_load_timeout(DEFAULT_AUDIO_LOAD_TIMEOUT):
+                wav, _, ch_m, sr_m = load_waveform(
+                    path,
+                    target_sample_rate=self.sample_rate,
+                    expected_channels=self.audio_channels,
+                    frame_offset=offset,
+                    num_frames=win_src,
+                )
+        except Exception:
+            return None
+        if wav.shape[-1] < self.segment_samples:
+            return None  # resample edges shrank the window below target → fall back
+        self._note_mismatch(ch_m, sr_m, self.epoch)
+        return random_crop_or_pad(wav, self.segment_samples, self.min_acceptable_len, crop_rng)
+
+    def _load_segment(self, path: Path, crop_rng: torch.Generator, epoch: int) -> torch.Tensor:
+        """Return a (channels, segment_samples) crop. Windowed partial read when enabled,
+        else (or on fallback) a full-file decode followed by a random crop/pad."""
+        if self.partial_read:
+            seg = self._try_partial_segment(path, crop_rng)
+            if seg is not None:
+                return seg
+        with _file_load_timeout(DEFAULT_AUDIO_LOAD_TIMEOUT):
+            wav, _, ch_m, sr_m = load_waveform(
+                path,
+                target_sample_rate=self.sample_rate,
+                expected_channels=self.audio_channels,
+            )
+        self._note_mismatch(ch_m, sr_m, epoch)
+        return random_crop_or_pad(wav, self.segment_samples, self.min_acceptable_len, crop_rng)
+
     def __getitem__(self, index: int):
         n = len(self)
+        epoch = self.epoch
         last_error: Exception | None = None
         last_path: Path | None = None
 
@@ -251,29 +389,30 @@ class OnTheFlySTFTDataset(Dataset):
             path = self.files[idx]
             last_path = path
 
-            try:
-                with _file_load_timeout(DEFAULT_AUDIO_LOAD_TIMEOUT):
-                    wav, sr, ch_mismatch, sr_mismatch = load_waveform(
-                        path,
-                        target_sample_rate=self.sample_rate,
-                        expected_channels=self.audio_channels
-                    )
-                if ch_mismatch and not self._warned_channel_mismatch and self._epoch == 0:
-                    self._warned_channel_mismatch = True
-                if sr_mismatch and not self._warned_sr_mismatch and self._epoch == 0:
-                    self._warned_sr_mismatch = True
-            except Exception as e:
-                last_error = e
-                continue
+            # Per-item crop generator seeded by (base_seed, epoch, file index). Pure function
+            # of those three → reproducible, varies per epoch, independent of worker/batch order.
+            crop_rng = torch.Generator()
+            crop_rng.manual_seed(self._mix_seed(self._base_seed, epoch, idx))
 
             if self.full_waveform:
+                try:
+                    with _file_load_timeout(DEFAULT_AUDIO_LOAD_TIMEOUT):
+                        wav, _, ch_m, sr_m = load_waveform(
+                            path,
+                            target_sample_rate=self.sample_rate,
+                            expected_channels=self.audio_channels,
+                        )
+                except Exception as e:
+                    last_error = e
+                    continue
+                self._note_mismatch(ch_m, sr_m, epoch)
                 wav = wav.contiguous()
                 if self.return_paths:
                     return None, wav, str(path)
                 return None, wav
 
             try:
-                seg = random_crop_or_pad(wav, self.segment_samples, self.min_acceptable_len, self._rng)
+                seg = self._load_segment(path, crop_rng, epoch)
             except Exception as e:
                 last_error = e
                 continue
@@ -322,3 +461,33 @@ class OnTheFlySTFTDataset(Dataset):
             f"Failed to fetch item after {self.max_retries_per_sample} attempts. "
             f"Last error: {last_error} (path: {last_path})"
         )
+
+
+class MultiCorpusDataset(ConcatDataset):
+    """Concatenation of several ``OnTheFlySTFTDataset`` corpora (FMA-full + Jamendo +
+    M4Singer) behind a single flat global index space.
+
+    Reuses ``ConcatDataset`` for ``__len__``/``__getitem__`` routing (a global index
+    is dispatched to the owning child via the cumulative sizes) and adds two things
+    the multi-corpus path needs:
+
+    * ``set_epoch`` is forwarded to every child so the per-item crop seeding keeps
+      varying the 1.5 s window each epoch inside each corpus (validation, which never
+      calls ``set_epoch``, stays at epoch 0 → fixed crops, unchanged for FMA-only val).
+    * ``corpus_sizes`` exposes the post-filter length of each child, which the
+      ``MultiCorpusRotatingSampler`` consumes to build its rotation (never hardcoded).
+    """
+
+    def __init__(self, datasets: Sequence[Dataset]):
+        super().__init__(datasets)  # builds self.datasets + self.cumulative_sizes
+
+    @property
+    def corpus_sizes(self) -> list[int]:
+        """Per-corpus item counts, in the order the corpora were passed."""
+        return [len(d) for d in self.datasets]
+
+    def set_epoch(self, epoch: int) -> None:
+        """Propagate the epoch to every child that supports per-epoch crop variation."""
+        for d in self.datasets:
+            if hasattr(d, "set_epoch"):
+                d.set_epoch(epoch)

@@ -24,6 +24,29 @@ class DatasetEpochSetter(Callback):
             if hasattr(dl, "dataset") and hasattr(dl.dataset, "set_epoch"):
                 dl.dataset.set_epoch(trainer.current_epoch)
 
+class MultiCorpusEpochSetter(Callback):
+    """Multi-corpus epoch wiring (train only).
+
+    Advances BOTH the rotating sampler — so it selects the next M4Singer chunk and
+    reshuffles the corpora for this epoch — and the ``MultiCorpusDataset`` children —
+    so the 1.5 s crop window varies per epoch (the sampler lives in the main process;
+    the dataset epoch reaches workers via its shared-memory counter). Each DDP rank
+    runs this on its own sampler instance. Validation (FMA-only) never calls set_epoch,
+    so it stays at epoch 0 → fixed crops, exactly like the single-corpus path.
+    """
+    def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        dl = trainer.train_dataloader
+        if dl is None:
+            return
+        epoch = trainer.current_epoch
+        sampler = getattr(dl, "sampler", None)
+        if sampler is not None and hasattr(sampler, "set_epoch"):
+            sampler.set_epoch(epoch)
+        dataset = getattr(dl, "dataset", None)
+        if dataset is not None and hasattr(dataset, "set_epoch"):
+            dataset.set_epoch(epoch)
+
+
 class ModelInfoLogger(pl.Callback):
     """Log model info and structure at the beginning of training.
     - prints summary to console

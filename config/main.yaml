@@ -4,7 +4,7 @@
 # Legacy fallback: set trainer.use_json=true trainer.json_path=ar_spectra/config/experiments/SEANet_STFT.json
 
 defaults:
-  - data@data
+  - data: fma               # single-corpus FMA (default). Multi-corpus: data=multicorpus
   # - models: hf_autoencoder_kl
   - models: SEANet_real_model
   # - models: simple_transformer_AE

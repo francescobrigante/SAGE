@@ -34,7 +34,7 @@ sys.path.insert(0, str(_PROJ_ROOT / "src"))
 from ar_spectra.models.inference import EuleroEncodeDecode
 from ar_spectra.utils.console import ok, warn, info, err
 from config import DATA_PATH, DEFAULT_AUDIO_EXTENSIONS, DEFAULT_MAX_FILES, FMA_METADATA
-from losses import compute_sdr_and_sisdr, stft_loss, cdpam_score
+from losses import compute_sdr_and_sisdr, stft_loss, spectral_losses, cdpam_score
 
 from utils import (write_csv, collect_fma_files, atomic_save_npy,
                    load_or_embed, target_cache_path, silence_output)
@@ -374,10 +374,10 @@ def main() -> None:
                 if not args.cdpam_only and not args.fad_only and not args.fad_gud_only:
                     sdr_val, sisdr_val = compute_sdr_and_sisdr(wav_ref, pred)
                     spectral_rows.append({
-                        "file":      stem,
-                        "si_sdr":    sisdr_val,
-                        "sdr":       sdr_val,
-                        "stft_loss": float(stft_loss(wav_ref, pred)),
+                        "file":   stem,
+                        "si_sdr": sisdr_val,
+                        "sdr":    sdr_val,
+                        **spectral_losses(wav_ref, pred),
                     })
 
                 # CDPAM (perceptual) — ported from evaluate_swin.py. Runs in full
@@ -442,7 +442,7 @@ def main() -> None:
         suf = f"_rk{local_rank}" if single_ckpt_sharding else ""
         if spectral_rows:
             write_csv(metrics_dir / f"spectral{suf}.csv",
-                      ["file", "si_sdr", "sdr", "stft_loss"], spectral_rows)
+                      ["file", "si_sdr", "sdr", "stft_loss", "mel_loss"], spectral_rows)
             ok(f"spectral{suf}.csv written ({len(spectral_rows)} rows)", prefix="EVAL")
         if cdpam_rows:
             write_csv(metrics_dir / f"cdpam{suf}.csv", ["file", "cdpam"], cdpam_rows)
@@ -466,7 +466,7 @@ def main() -> None:
 
             if local_rank == 0:
                 _merge_shards(metrics_dir, "spectral",
-                              ["file", "si_sdr", "sdr", "stft_loss"], world_size)
+                              ["file", "si_sdr", "sdr", "stft_loss", "mel_loss"], world_size)
                 _merge_shards(metrics_dir, "cdpam",      ["file", "cdpam"],  world_size)
                 _merge_shards(metrics_dir, "clap_music", ["file", "cosine"], world_size)
                 _merge_shards(metrics_dir, "clap_audio", ["file", "cosine"], world_size)
