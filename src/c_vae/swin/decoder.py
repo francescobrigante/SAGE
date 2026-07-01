@@ -67,6 +67,14 @@ class SwinDecoder(AbstractDecoder):
         patch_size: Union[int, Tuple[int, int]] = 4,
         time_frames: int = 128,     # STFT time frames (must match encoder and dataset target_frames)
         mlp_ratio: float = 4.0,
+        mlp_type: str = "mlp",
+        swiglu_hidden_ratio: Optional[float] = None,
+        swiglu_multiple_of: Optional[int] = None,
+        complex_swiglu_gate: str = "magnitude_silu",
+        attention_variant: str = "baseline",
+        xsa_eps: float = 1.0e-6,
+        xsa_strength: float = 1.0,
+        norm_placement: str = "res_post",
         drop_rate: float = 0.0,
         attn_drop_rate: float = 0.0,
         drop_path_rate: float = 0.1,
@@ -86,6 +94,9 @@ class SwinDecoder(AbstractDecoder):
         self.depths = list(depths)          # blocks per stage, e.g. [2,4,2,2]
         self.num_heads = list(num_heads)    # attention heads per stage
         self.window_size = window_size
+        self.mlp_type = mlp_type
+        self.attention_variant = attention_variant
+        self.norm_placement = norm_placement
         ps_h, ps_w = to_2tuple(patch_size)
         self.patch_size: Tuple[int, int] = (ps_h, ps_w)
         self.num_stages = len(depths)       # 4
@@ -159,6 +170,14 @@ class SwinDecoder(AbstractDecoder):
                 fused_window_process=True,  # always request fused kernel; actual gate is FUSED_WINDOW_AVAILABLE
                 is_complex=is_complex,
                 complex_activation=complex_activation,
+                mlp_type=mlp_type,
+                swiglu_hidden_ratio=swiglu_hidden_ratio,
+                swiglu_multiple_of=swiglu_multiple_of,
+                complex_swiglu_gate=complex_swiglu_gate,
+                attention_variant=attention_variant,
+                xsa_eps=xsa_eps,
+                xsa_strength=xsa_strength,
+                norm_placement=norm_placement,
             )
             self.stages.append(stage)
             block_idx += depths[i]
@@ -204,7 +223,8 @@ class SwinDecoder(AbstractDecoder):
         # Weight init
         self.apply(init_swin_weights)
         for stage in self.stages:
-            stage._init_respostnorm()
+            if norm_placement == "res_post":
+                stage._init_respostnorm()
 
         # Optional zero-init residual post-net on the output spectrogram.
         # Created AFTER init_swin_weights so its zero-init (identity at init)

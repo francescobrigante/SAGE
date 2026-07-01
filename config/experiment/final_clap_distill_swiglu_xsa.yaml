@@ -1,0 +1,40 @@
+# @package _global_
+# ============================================================
+# final_clap_distill_swiglu_xsa
+#
+# Final CLAP distillation baseline with SwiGLU FFNs and XSA attention.
+# The paired Swin config fixes swiglu_hidden_ratio=3.0 as the standard.
+# ============================================================
+defaults:
+  - override /models: swin_real_swiglu_xsa
+
+trainer:
+  wandb:
+    name: final_clap_distill_swiglu_xsa
+  trainer:
+    ckpt_dir: checkpoints/final_clap_distill_swiglu_xsa
+  aux_optimizer:
+    _target_: torch.optim.AdamW
+    lr: 1e-5
+    betas: [0.9, 0.98]
+    weight_decay: 1e-4
+  aux_scheduler:
+    _target_: torch.optim.lr_scheduler.ConstantLR
+    factor: 1.0
+    total_iters: 1
+    interval: step
+  loss_config:
+    spectral:
+      weights:
+        stft_mse: 1.0
+        mrstft: 0.0
+    bottleneck:
+      weights:
+        kl: 1.0e-5
+    semantic_distill:
+      weights:
+        distill: 1.0
+      config:
+        proj_dim: 768
+        latent_dim: 64
+      detach_warmup_steps: 25000

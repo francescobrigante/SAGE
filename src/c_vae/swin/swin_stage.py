@@ -5,7 +5,7 @@
 # SW-MSA) and applies an optional spatial downsampler at the end.
 # ===============================================================
 
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -67,6 +67,14 @@ class SwinStage(nn.Module):
         fused_window_process: bool = False,
         is_complex: bool = False,
         complex_activation: str = "ComplexGELU1d",
+        mlp_type: str = "mlp",
+        swiglu_hidden_ratio: Optional[float] = None,
+        swiglu_multiple_of: Optional[int] = None,
+        complex_swiglu_gate: str = "magnitude_silu",
+        attention_variant: str = "baseline",
+        xsa_eps: float = 1.0e-6,
+        xsa_strength: float = 1.0,
+        norm_placement: str = "res_post",
     ) -> None:
 
         super().__init__()
@@ -74,6 +82,7 @@ class SwinStage(nn.Module):
         self.input_resolution = input_resolution
         self.depth = depth
         self.use_checkpoint = use_checkpoint   # gradient checkpointing flag
+        self.norm_placement = norm_placement
 
         # Even index = W-MSA (no shift), odd index = SW-MSA (cyclic shift per dim)
         wh, ww = to_2tuple(window_size)
@@ -93,6 +102,14 @@ class SwinStage(nn.Module):
                 fused_window_process=fused_window_process,
                 is_complex=is_complex,
                 complex_activation=complex_activation,
+                mlp_type=mlp_type,
+                swiglu_hidden_ratio=swiglu_hidden_ratio,
+                swiglu_multiple_of=swiglu_multiple_of,
+                complex_swiglu_gate=complex_swiglu_gate,
+                attention_variant=attention_variant,
+                xsa_eps=xsa_eps,
+                xsa_strength=xsa_strength,
+                norm_placement=norm_placement,
             )
             for i in range(depth)
         ])
@@ -124,7 +141,10 @@ class SwinStage(nn.Module):
         return x
 
     def extra_repr(self) -> str:
-        return f"dim={self.dim}, input_resolution={self.input_resolution}, depth={self.depth}"
+        return (
+            f"dim={self.dim}, input_resolution={self.input_resolution}, "
+            f"depth={self.depth}, norm_placement={self.norm_placement}"
+        )
 
     def _init_respostnorm(self) -> None:
         """Zero-init post-norm residual scaling (Swin V2 training stabilisation).
@@ -134,6 +154,8 @@ class SwinStage(nn.Module):
         Works for both nn.LayerNorm (weight shape: dim) and ComplexLayerNorm
         (weight shape: 2×2×dim — the full affine matrix is zeroed).
         """
+        if self.norm_placement != "res_post":
+            return
         for blk in self.blocks:
             if not hasattr(blk.norm1, 'weight') or blk.norm1.weight is None:
                 continue
