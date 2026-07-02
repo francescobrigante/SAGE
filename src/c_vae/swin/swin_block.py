@@ -1,14 +1,15 @@
 # ===============================================================
 # Swin Transformer V2: atomic computation block.
 # Contains Mlp (2-layer FFN) and SwinTransformerBlock
-# (W-MSA / SW-MSA + FFN with pre-norm residuals).
+# (W-MSA / SW-MSA + FFN with configurable residual norm placement).
 # Optional fused CUDA window kernels are loaded at import time.
 # ===============================================================
 
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from timm.layers import to_2tuple
 
 from ar_spectra.utils.console import ok, warn
@@ -92,12 +93,112 @@ class Mlp(nn.Module):
         return x
 
 
+class SwiGLU(nn.Module):
+    """SwiGLU FFN for Swin blocks.
+
+    The real path follows the standard SwiGLU form:
+    Linear(in -> 2 * hidden), split into value/gate, SiLU gate, then
+    Linear(hidden -> out). The complex path uses a real magnitude gate and is
+    kept intentionally small for real-Swin-first experiments.
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        hidden_features: int,
+        out_features: Optional[int] = None,
+        drop: float = 0.0,
+        is_complex: bool = False,
+        complex_swiglu_gate: str = "magnitude_silu",
+    ) -> None:
+        super().__init__()
+        out_features = out_features or in_features
+        self.is_complex = is_complex
+        self.complex_swiglu_gate = complex_swiglu_gate
+
+        if hidden_features <= 0:
+            raise ValueError(f"hidden_features must be positive, got {hidden_features}")
+        if is_complex and complex_swiglu_gate != "magnitude_silu":
+            raise ValueError(
+                "complex SwiGLU currently supports only complex_swiglu_gate='magnitude_silu'"
+            )
+
+        linear_cls = NormLinear if is_complex else nn.Linear
+        linear_kwargs = {"is_complex": True} if is_complex else {}
+        self.fc1 = linear_cls(in_features, 2 * hidden_features, **linear_kwargs)
+        self.fc2 = linear_cls(hidden_features, out_features, **linear_kwargs)
+        self.drop = nn.Dropout(drop) if drop > 0.0 else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        u, gate = self.fc1(x).chunk(2, dim=-1)
+        if self.is_complex:
+            gate = F.silu(gate.abs())
+        else:
+            gate = F.silu(gate)
+        x = u * gate
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
+
+
+def _round_up_to_multiple(value: int, multiple_of: Optional[int]) -> int:
+    if multiple_of is None:
+        return value
+    if multiple_of <= 0:
+        raise ValueError(f"swiglu_multiple_of must be positive or None, got {multiple_of}")
+    return ((value + multiple_of - 1) // multiple_of) * multiple_of
+
+
+def make_mlp(
+    *,
+    in_features: int,
+    mlp_ratio: float,
+    act_layer=nn.GELU,
+    drop: float = 0.0,
+    is_complex: bool = False,
+    complex_activation: str = "ComplexGELU1d",
+    mlp_type: str = "mlp",
+    swiglu_hidden_ratio: Optional[float] = None,
+    swiglu_multiple_of: Optional[int] = None,
+    complex_swiglu_gate: str = "magnitude_silu",
+) -> nn.Module:
+    """Build the block FFN.
+
+    ``mlp_type='mlp'`` intentionally returns the original Mlp with the original
+    hidden-width formula, preserving baseline module structure and behavior.
+    """
+    if mlp_type == "mlp":
+        return Mlp(
+            in_features=in_features,
+            hidden_features=int(in_features * mlp_ratio),
+            act_layer=act_layer,
+            drop=drop,
+            is_complex=is_complex,
+            complex_activation=complex_activation,
+        )
+    if mlp_type == "swiglu":
+        if swiglu_hidden_ratio is None:
+            hidden_features = int(in_features * mlp_ratio * 2 / 3)
+        else:
+            hidden_features = int(in_features * swiglu_hidden_ratio)
+        hidden_features = _round_up_to_multiple(hidden_features, swiglu_multiple_of)
+        return SwiGLU(
+            in_features=in_features,
+            hidden_features=hidden_features,
+            drop=drop,
+            is_complex=is_complex,
+            complex_swiglu_gate=complex_swiglu_gate,
+        )
+    raise ValueError(f"Unsupported mlp_type={mlp_type!r}; expected 'mlp' or 'swiglu'")
+
+
 # --------------------------------------------------------------------------
 # SwinTransformerBlock
 # --------------------------------------------------------------------------
 
 class SwinTransformerBlock(nn.Module):
-    """Swin Transformer V2 block: pre-norm W-MSA or SW-MSA + FFN with residuals.
+    """Swin Transformer V2 block with configurable residual norm placement.
 
     Even-indexed blocks within a stage use W-MSA (shift_size = 0);
     odd-indexed blocks use SW-MSA (shift_size = window_size//2).
@@ -116,7 +217,9 @@ class SwinTransformerBlock(nn.Module):
         attn_drop: Dropout rate on attention weights.
         drop_path: Stochastic depth rate for this block.
         act_layer: FFN activation. Default: nn.GELU.
-        norm_layer: Normalisation class. Default: nn.LayerNorm.
+        norm_placement: ``"res_post"`` preserves the current Swin V2
+            branch-output norm. ``"pre"`` runs the ablation with pre-norm
+            residual branches.
         pretrained_window_size: Window size used in pre-training (Log-CPB normalisation).
         fused_window_process: Use fused CUDA kernel for roll+partition (CUDA only).
         complex_activation: Name of the phase-equivariant complex activation used in Mlp
@@ -140,14 +243,29 @@ class SwinTransformerBlock(nn.Module):
         fused_window_process: bool = False,
         is_complex: bool = False,
         complex_activation: str = "ComplexGELU1d",
+        mlp_type: str = "mlp",
+        swiglu_hidden_ratio: Optional[float] = None,
+        swiglu_multiple_of: Optional[int] = None,
+        complex_swiglu_gate: str = "magnitude_silu",
+        attention_variant: str = "baseline",
+        xsa_eps: float = 1.0e-6,
+        xsa_strength: float = 1.0,
+        norm_placement: str = "res_post",
     ) -> None:
 
         super().__init__()
+        if norm_placement not in {"res_post", "pre"}:
+            raise ValueError(
+                f"Unsupported norm_placement={norm_placement!r}; expected 'res_post' or 'pre'"
+            )
         self.dim = dim
         self.input_resolution = input_resolution
         self.num_heads = num_heads
         self.mlp_ratio = mlp_ratio
         self.is_complex = is_complex
+        self.mlp_type = mlp_type
+        self.attention_variant = attention_variant
+        self.norm_placement = norm_placement
 
         # Fused CUDA kernels (roll + window_partition in one pass) work for both real
         # and complex inputs. For complex64, forward() reinterprets the tensor as
@@ -179,25 +297,32 @@ class SwinTransformerBlock(nn.Module):
             proj_drop=drop,
             pretrained_window_size=to_2tuple(pretrained_window_size),
             is_complex=is_complex,
+            attention_variant=attention_variant,
+            xsa_eps=xsa_eps,
+            xsa_strength=xsa_strength,
         )
         # ComplexSafeDropPath when is_complex=True, timm DropPath otherwise.
         # Both are nn.Identity when drop_path == 0.
         self.drop_path = make_drop_path(drop_path, is_complex)
         self.norm2 = make_norm(dim, is_complex)
-        self.mlp = Mlp(
+        self.mlp = make_mlp(
             in_features=dim,
-            hidden_features=int(dim * mlp_ratio),
+            mlp_ratio=mlp_ratio,
             act_layer=act_layer,
             drop=drop,
             is_complex=is_complex,
             complex_activation=complex_activation,
+            mlp_type=mlp_type,
+            swiglu_hidden_ratio=swiglu_hidden_ratio,
+            swiglu_multiple_of=swiglu_multiple_of,
+            complex_swiglu_gate=complex_swiglu_gate,
         )
 
         # We will compute the SW-MSA mask dynamically and cache it in forward()
         self._attn_mask_cache = {}
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply W-MSA or SW-MSA + FFN with pre-norm residual connections.
+    def _attention_branch(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply W-MSA or SW-MSA to a normalized or raw residual branch.
 
         Args:
             x: (B, H*W, C)
@@ -251,7 +376,6 @@ class SwinTransformerBlock(nn.Module):
         else:
             attn_mask = None
 
-        shortcut = x
         x = x.view(B, H, W, C)                                        # (B, H, W,  C)
         if pad_r > 0 or pad_b > 0:
             import torch.nn.functional as F
@@ -312,15 +436,31 @@ class SwinTransformerBlock(nn.Module):
             x = x[:, :H, :W, :].contiguous()
             
         x = x.view(B, H * W, C)                                       # (B, H*W, C)
+        return x
 
-        # Res-Post-LN (Swin V2): norm applied to branch output, residual added after
-        x = shortcut + self.drop_path(self.norm1(x))                  # (B, H*W, C)
-        x = x + self.drop_path(self.norm2(self.mlp(x)))               # (B, H*W, C)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply W-MSA or SW-MSA + FFN.
+
+        Args:
+            x: (B, H*W, C)
+
+        Returns:
+            (B, H*W, C)
+        """
+
+        if self.norm_placement == "pre":
+            x = x + self.drop_path(self._attention_branch(self.norm1(x)))
+            x = x + self.drop_path(self.mlp(self.norm2(x)))           # (B, H*W, C)
+        else:
+            # Res-Post-LN (Swin V2): norm applied to branch output, residual added after
+            x = x + self.drop_path(self.norm1(self._attention_branch(x)))  # (B, H*W, C)
+            x = x + self.drop_path(self.norm2(self.mlp(x)))           # (B, H*W, C)
         return x
 
     def extra_repr(self) -> str:
         return (
             f"dim={self.dim}, input_resolution={self.input_resolution}, "
             f"num_heads={self.num_heads}, window_size={self.window_size}, "
-            f"shift_size={self.shift_size}, mlp_ratio={self.mlp_ratio}"
+            f"shift_size={self.shift_size}, mlp_ratio={self.mlp_ratio}, "
+            f"norm_placement={self.norm_placement}"
         )

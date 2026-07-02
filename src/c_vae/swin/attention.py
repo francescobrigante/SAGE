@@ -45,17 +45,27 @@ class WindowAttention(nn.Module):
         proj_drop: float = 0.0,
         pretrained_window_size=None,
         is_complex: bool = False,
+        attention_variant: str = "baseline",
+        xsa_eps: float = 1.0e-6,
+        xsa_strength: float = 1.0,
     ) -> None:
 
         super().__init__()
         if pretrained_window_size is None:
             pretrained_window_size = [0, 0]          # no pre-training transfer by default
+        if attention_variant not in {"baseline", "xsa"}:
+            raise ValueError(
+                f"Unsupported attention_variant={attention_variant!r}; expected 'baseline' or 'xsa'"
+            )
 
         self.dim = dim
         self.window_size = window_size                                  # (Wh, Ww)
         self.pretrained_window_size = pretrained_window_size
         self.num_heads = num_heads
         self.is_complex = is_complex
+        self.attention_variant = attention_variant
+        self.xsa_eps = float(xsa_eps)
+        self.xsa_strength = float(xsa_strength)
 
         # Per-head learnable temperature — always real (scalar, device-agnostic)
         self.logit_scale = nn.Parameter(
@@ -127,6 +137,19 @@ class WindowAttention(nn.Module):
         self.proj = NormLinear(dim, dim, bias=True, is_complex=is_complex)
         self.proj_drop = nn.Dropout(proj_drop) if proj_drop > 0.0 else nn.Identity()
         self.softmax = nn.Softmax(dim=-1)
+
+    def _apply_xsa(self, y: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        """Remove each token output's projection onto its own value vector."""
+        if self.xsa_strength == 0.0:
+            return y
+        if y.is_complex():
+            den = v.abs().square().sum(dim=-1, keepdim=True).clamp_min(self.xsa_eps)
+            coeff = (y * v.conj()).sum(dim=-1, keepdim=True) / den
+            return y - self.xsa_strength * coeff * v
+
+        v_unit = F.normalize(v, dim=-1, eps=self.xsa_eps)
+        coeff = (y * v_unit).sum(dim=-1, keepdim=True)
+        return y - self.xsa_strength * coeff * v_unit
 
     def forward(self, x: torch.Tensor, mask=None) -> torch.Tensor:
         """Compute windowed cosine self-attention with Log-CPB relative position bias.
@@ -203,6 +226,8 @@ class WindowAttention(nn.Module):
             x = torch.complex(out_re, out_im)                         # (nW*B, h, N, D) complex
         else:
             x = attn @ v                                               # (nW*B, h, N, D) float
+        if self.attention_variant == "xsa":
+            x = self._apply_xsa(x, v)
 
         x = x.transpose(1, 2).reshape(B_, N, C)                       # (num_windows * B, N,  C)
         x = self.proj(x)                                               # (num_windows * B, N,  C)

@@ -1,0 +1,53 @@
+# @package _global_
+#
+# final_clap_distill_muon_swiglu_xsa -- Swin real VAE with SwiGLU+XSA
+# architecture, swiglu_hidden_ratio=3.0, and conservative MuonAdamW generator
+# optimizer.
+
+defaults:
+  - override /models: swin_real_swiglu_xsa
+
+trainer:
+  wandb:
+    name: final_clap_distill_muon_swiglu_xsa
+  trainer:
+    ckpt_dir: checkpoints/final_clap_distill_muon_swiglu_xsa
+  optimizer:
+    _target_: ar_spectra.training.optimizers.MuonAdamW
+    lr: 1e-3
+    muon_lr: 1e-2
+    adamw_lr: 1e-3
+    weight_decay: 1e-4
+    weight_decay_exclude_1d: true
+    betas: [0.9, 0.98]
+    eps: 1e-8
+    muon_momentum: 0.95
+    muon_nesterov: true
+    ns_steps: 5
+    matrix_lr_scale: true
+    log_param_coverage: true
+  aux_optimizer:
+    _target_: torch.optim.AdamW
+    lr: 1e-5
+    betas: [0.9, 0.98]
+    weight_decay: 1e-4
+  aux_scheduler:
+    _target_: torch.optim.lr_scheduler.ConstantLR
+    factor: 1.0
+    total_iters: 1
+    interval: step
+  loss_config:
+    spectral:
+      weights:
+        stft_mse: 1.0
+        mrstft: 0.0
+    bottleneck:
+      weights:
+        kl: 1.0e-5
+    semantic_distill:
+      weights:
+        distill: 1.0
+      config:
+        proj_dim: 768
+        latent_dim: 64
+      detach_warmup_steps: 25000

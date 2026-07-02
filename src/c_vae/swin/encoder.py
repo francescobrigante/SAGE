@@ -4,7 +4,7 @@
 # and outputs (B, out_channels, H_lat*W_lat).
 # ===============================================================
 
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -75,6 +75,14 @@ class SwinEncoder(AbstractEncoder):
         time_frames: int = 128,     # STFT time frames fed to the model (= dataset target_frames)
         dimension: int = 128,       # parameters_to_predict * latent_channels
         mlp_ratio: float = 4.0,
+        mlp_type: str = "mlp",
+        swiglu_hidden_ratio: Optional[float] = None,
+        swiglu_multiple_of: Optional[int] = None,
+        complex_swiglu_gate: str = "magnitude_silu",
+        attention_variant: str = "baseline",
+        xsa_eps: float = 1.0e-6,
+        xsa_strength: float = 1.0,
+        norm_placement: str = "res_post",
         drop_rate: float = 0.0,
         attn_drop_rate: float = 0.0,
         drop_path_rate: float = 0.1,
@@ -100,6 +108,9 @@ class SwinEncoder(AbstractEncoder):
         self.num_stages = len(depths)                       # number of hierarchical stages (4)
         self.fused_window_process = fused_window_process    # use fused CUDA kernel (CUDA only)
         self.mim_mask_ratio = float(mim_mask_ratio)         # MIM-style augmentation: zero-out patches at training time only (0 = off)
+        self.mlp_type = mlp_type
+        self.attention_variant = attention_variant
+        self.norm_placement = norm_placement
 
         # Normalise patch_size to a 2-tuple so all downstream code is uniform
         ps_h, ps_w = to_2tuple(patch_size)
@@ -173,6 +184,14 @@ class SwinEncoder(AbstractEncoder):
                 fused_window_process=fused_window_process,
                 is_complex=is_complex,
                 complex_activation=complex_activation,
+                mlp_type=mlp_type,
+                swiglu_hidden_ratio=swiglu_hidden_ratio,
+                swiglu_multiple_of=swiglu_multiple_of,
+                complex_swiglu_gate=complex_swiglu_gate,
+                attention_variant=attention_variant,
+                xsa_eps=xsa_eps,
+                xsa_strength=xsa_strength,
+                norm_placement=norm_placement,
             )
             self.stages.append(stage)
             block_idx += depths[i]
@@ -220,7 +239,8 @@ class SwinEncoder(AbstractEncoder):
         # Weight init
         self.apply(init_swin_weights)
         for stage in self.stages:
-            stage._init_respostnorm()
+            if norm_placement == "res_post":
+                stage._init_respostnorm()
 
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
