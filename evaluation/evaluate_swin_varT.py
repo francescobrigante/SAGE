@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -44,6 +45,30 @@ from fadtk.model_loader import CLAPLaionModel, MERTModel
 
 if not hasattr(np, "float"):
     np.float = np.float64  # type: ignore[attr-defined]
+
+
+def _purge_pred_embeddings(pred_root: Path, embedder_name: str) -> None:
+    """Delete the per-file FAD *prediction* embeddings of one embedder after its
+    FAD score has been written.
+
+    ``parts/pred/<embedder>/*.npy`` are model-specific, single-use caches: FAD needs
+    the whole set on disk to compute mean/covariance, but they are dead weight
+    (~36 GB/model) once the CSV exists. The reusable *target*-side cache lives in
+    ``cache_dir`` and is NEVER touched here. Now-empty ``pred``/``parts`` parents are
+    pruned so no stale skeleton is left behind.
+    """
+    d = pred_root / embedder_name
+    if not d.is_dir():
+        return
+    shutil.rmtree(d, ignore_errors=True)
+    for parent in (pred_root, pred_root.parent):          # pred/, then parts/
+        try:
+            if parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+        except OSError:
+            pass
+    info(f"purged pred embeddings ({embedder_name}) — kept CSV, target cache untouched",
+         prefix="EVAL")
 
 
 # ── Dataset ───────────────────────────────────────────────────
@@ -343,6 +368,7 @@ def main() -> None:
         cdpam_rows:       list[dict]       = []
         clap_music_rows:  list[dict]       = []
         clap_audio_rows:  list[dict]       = []
+        timing_rows:      list[dict]       = []
         fad_files:        list[Path]       = []
         skipped = 0
         t0 = time.time()
@@ -361,9 +387,15 @@ def main() -> None:
                 try:
                     wav_padded, orig_len = pad_audio_for_swin(wav, hop_length, num_downsamples)
                     wav_gpu = wav_padded.unsqueeze(0).to(device)             # [1, C, T_pad]
+                    if device.type == "cuda":
+                        torch.cuda.synchronize()
+                    _t0 = time.perf_counter()
                     latents = codec.encode(wav_gpu, deterministic=args.deterministic)  # [1, D, T_lat]
                     decoded = codec.decode(latents,
                                            target_length=wav_padded.shape[-1])  # [1, C, T_pad]
+                    if device.type == "cuda":
+                        torch.cuda.synchronize()
+                    infer_sec = time.perf_counter() - _t0    # pure encode→decode, no metric cost
                     n       = min(orig_len, decoded.shape[-1])
                     wav_ref = wav[..., :n]                                   # [C, n]  cpu
                     pred    = decoded[0, ..., :n].cpu().float()              # [C, n]
@@ -372,6 +404,11 @@ def main() -> None:
                     skipped += 1; continue
 
                 if not args.cdpam_only and not args.fad_only and not args.fad_gud_only:
+                    timing_rows.append({
+                        "file":      stem,
+                        "infer_sec": infer_sec,
+                        "audio_sec": orig_len / sr,
+                    })
                     sdr_val, sisdr_val = compute_sdr_and_sisdr(wav_ref, pred)
                     spectral_rows.append({
                         "file":   stem,
@@ -453,6 +490,10 @@ def main() -> None:
         if clap_audio_rows:
             write_csv(metrics_dir / f"clap_audio{suf}.csv", ["file", "cosine"], clap_audio_rows)
             ok(f"clap_audio{suf}.csv written", prefix="EVAL")
+        if timing_rows:
+            write_csv(metrics_dir / f"timing{suf}.csv",
+                      ["file", "infer_sec", "audio_sec"], timing_rows)
+            ok(f"timing{suf}.csv written ({len(timing_rows)} rows)", prefix="EVAL")
 
         if single_ckpt_sharding:
             if fad_files:
@@ -470,6 +511,7 @@ def main() -> None:
                 _merge_shards(metrics_dir, "cdpam",      ["file", "cdpam"],  world_size)
                 _merge_shards(metrics_dir, "clap_music", ["file", "cosine"], world_size)
                 _merge_shards(metrics_dir, "clap_audio", ["file", "cosine"], world_size)
+                _merge_shards(metrics_dir, "timing", ["file", "infer_sec", "audio_sec"], world_size)
                 ok("CSV shards merged.", prefix="EVAL")
 
                 # FAD: compute on all saved embeddings
@@ -490,6 +532,7 @@ def main() -> None:
                                 mert_ml, all_fad_files, m_paths,
                                 cache_dir, metrics_dir / "fad_mert.csv", "MERT-v1-95M-4")
                             ok("fad_mert.csv written (merged)", prefix="EVAL")
+                            _purge_pred_embeddings(pred_root, mert_ml.name)
                         if not args.fad_only:
                             c_paths = [pred_root / "clap-laion-audio-gud" / f"{f.stem}.npy" for f in all_fad_files]
                             from types import SimpleNamespace
@@ -497,6 +540,7 @@ def main() -> None:
                                 SimpleNamespace(name="clap-laion-audio-gud"), all_fad_files, c_paths,
                                 cache_dir, metrics_dir / "fad_gudgud.csv", "clap-laion-audio-gud")
                             ok("fad_gudgud.csv written (merged)", prefix="EVAL")
+                            _purge_pred_embeddings(pred_root, "clap-laion-audio-gud")
 
                 if not args.cdpam_only and not args.fad_only and not args.fad_gud_only:
                     (metrics_dir / "_done").touch()
@@ -508,12 +552,14 @@ def main() -> None:
                     compute_fad_from_embeddings(mert_ml, fad_files, m_paths, cache_dir,
                                                 metrics_dir / "fad_mert.csv", "MERT-v1-95M-4")
                     ok("fad_mert.csv written", prefix="EVAL")
+                    _purge_pred_embeddings(pred_root, mert_ml.name)
                 if not args.fad_only:
                     c_paths = [pred_root / "clap-laion-audio-gud" / f"{f.stem}.npy" for f in fad_files]
                     from types import SimpleNamespace
                     compute_fad_from_embeddings(SimpleNamespace(name="clap-laion-audio-gud"), fad_files, c_paths, cache_dir,
                                                 metrics_dir / "fad_gudgud.csv", "clap-laion-audio-gud")
                     ok("fad_gudgud.csv written", prefix="EVAL")
+                    _purge_pred_embeddings(pred_root, "clap-laion-audio-gud")
             if not args.cdpam_only and not args.fad_only and not args.fad_gud_only:
                 (metrics_dir / "_done").touch()
 

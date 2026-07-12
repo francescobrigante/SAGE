@@ -15,6 +15,7 @@
 #   sbatch evaluation/eval_ft_internal.slurm 19 39 59
 #   sbatch evaluation/eval_ft_internal.slurm base 19       # +LARGE2 start baseline
 #   MAXFILES=2000 sbatch evaluation/eval_ft_internal.slurm 19
+#   SRC_RUN=cooldown sbatch evaluation/eval_ft_internal.slurm 49   # cooldown run
 #
 # For each EPOCH it: globs epoch_<EPOCH>.ckpt across all run dirs (robust to
 # requeue), symlinks it to checkpoints/FT_LARGE2_mr05_e<EPOCH>.ckpt, and feeds
@@ -61,7 +62,20 @@ CACHE_DIR="$SCRATCH/eval_cache"
 mkdir -p "$CACHE_DIR"
 
 MAXFILES="${MAXFILES:-2500}"
-RUN_BASE="$WORK/C-VAE/runs/FT_LARGE2_mr05_decFT_postnet"
+
+# SRC_RUN selects which run's checkpoints to evaluate (default = finetune).
+#   SRC_RUN=cooldown  → evaluate the WSD cooldown run instead (stem COOLDOWN_LARGE2_mr05_e<E>).
+SRC_RUN="${SRC_RUN:-finetune}"
+case "$SRC_RUN" in
+    cooldown)
+        RUN_BASE="$WORK/C-VAE/runs/COOLDOWN_LARGE2_mr05"
+        STEM_PREFIX="COOLDOWN_LARGE2_mr05_e" ;;
+    finetune|*)
+        RUN_BASE="$WORK/C-VAE/runs/FT_LARGE2_mr05_decFT_postnet"
+        STEM_PREFIX="FT_LARGE2_mr05_e" ;;
+esac
+echo "[SRC] SRC_RUN=$SRC_RUN → RUN_BASE=$RUN_BASE (stem prefix: ${STEM_PREFIX})"
+
 EPOCHS=("$@")
 [ ${#EPOCHS[@]} -eq 0 ] && EPOCHS=(19)
 
@@ -85,7 +99,7 @@ for E in "${EPOCHS[@]}"; do
         echo "[WARN] epoch_${EP}.ckpt not found under $RUN_BASE/*/checkpoints/ — skipping" >&2
         continue
     fi
-    LINK="$WORK/C-VAE/checkpoints/FT_LARGE2_mr05_e${E}.ckpt"
+    LINK="$WORK/C-VAE/checkpoints/${STEM_PREFIX}${E}.ckpt"
     ln -sf "$SRC" "$LINK"
     echo "[LINK] $LINK -> $SRC"
     CKPTS+=("$LINK")

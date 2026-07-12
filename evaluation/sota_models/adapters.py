@@ -165,15 +165,18 @@ class Music2LatentAdapter(CodecAdapter):
 
 # ===========================================================================
 # SAME (Stable Audio 3 autoencoder, Stability AI) — Soft-Norm bottleneck, stereo
-# 44.1 kHz, ~x4096 temporal, 256-d latent. Reconstruction-only here (256-d latent
-# is excluded from the 64-d MAEB probing). AE needs no flash_attn / transformers 5.
+# 44.1 kHz, ~x4096 temporal, 256-d latent. MAEB probing is available but the
+# latent is NATIVE 256-d (~4x the width of the x64-class models and only ~x32
+# total compression), so its MAEB scores are NOT width-matched — treat them as
+# an upper-biased reference (MTEB-convention: models compared at native width),
+# especially on classification. AE needs no flash_attn / transformers 5.
 # API verified from stable_audio_3/model.py:
 #   encode([C,T], sr) -> [B, 256, T_lat]   (auto resample/channel/pad)
 #   decode(lat)       -> [B, C, samples]
 # ===========================================================================
 class SAMEAdapter(CodecAdapter):
     def __init__(self, device: str = "cuda", model_name: str = "same-l",
-                 chunked: bool = False, **_: Any):
+                 chunked: bool = True, **_: Any):
         from stable_audio_3 import AutoencoderModel
 
         self.device = torch.device(device)          # model + I/O device
@@ -190,6 +193,13 @@ class SAMEAdapter(CodecAdapter):
         rec = _to_channel_time(rec, self.audio_channels)                    # [C, T']
         n = min(T, rec.shape[-1])
         return rec[..., :n]                                                 # [C, T'<=T]
+
+    @torch.no_grad()
+    def encode_latent(self, wav: torch.Tensor) -> torch.Tensor:
+        # NATIVE 256-d latent (NOT folded to 64). See class note: scores are
+        # width-biased vs the x64-class models — report with an explicit caveat.
+        lat = self.model.encode(wav, self.sample_rate, chunked=self.chunked)  # [1, 256, T_lat]
+        return lat[0].cpu().float()                                         # [256, T_lat]
 
 
 # ===========================================================================

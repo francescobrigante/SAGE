@@ -1,13 +1,16 @@
 #!/bin/bash
 # ============================================================
 # evaluation/maeb_sota.slurm
-# Run MAEB(audio-only) with a SOTA baseline codec (codicodec | music2latent)
-# on 1 A100, using the ISOLATED maeb_dl venv (torch 2.4.1+cu121 — cuDNN OK on
-# Leonardo's CUDA-12.2 driver). The two codecs are installed into maeb_dl
-# (--no-deps); datasets are read from the warm $FAST cache (offline node).
+# Run MAEB(audio-only) with a SOTA baseline codec (codicodec | music2latent |
+# sao-vae | same) on 1 A100, using the ISOLATED maeb_dl venv (torch 2.4.1+cu121
+# — cuDNN OK on Leonardo's CUDA-12.2 driver). Codecs are installed into maeb_dl
+# (--no-deps); datasets/weights are read from the warm $FAST cache (offline node).
+# NOTE: 'same' is native 256-d (NOT width-matched vs the x64-class codecs) —
+# tabulate its scores with an explicit caveat. Weights: stabilityai/SAME-L (cached).
 #
 #   sbatch evaluation/maeb_sota.slurm codicodec    [extra args]
 #   sbatch evaluation/maeb_sota.slurm music2latent --max-files 2000 --overwrite
+#   sbatch evaluation/maeb_sota.slurm same --with-moisesdb          # full, both datasets
 # ============================================================
 #SBATCH --job-name=maeb_sota
 #SBATCH --account=IscrC_AHNetBio

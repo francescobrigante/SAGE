@@ -78,5 +78,6 @@ srun $WORK/.envs/c_vae/bin/python3 evaluation/evaluate_swin_varT.py \
     --cache-dir  "$CACHE_DIR" \
     --num-workers 16 \
     --max-files 2500 \
+    --shard-files \
     "${EXTRA_ARGS[@]}" \
     --resume

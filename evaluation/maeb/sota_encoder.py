@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # =============================================================================
 # evaluation/maeb/sota_encoder.py
-# MTEB encoder wrapper for SOTA baseline codecs (codicodec, music2latent) via the
-# shared CodecAdapter.encode_latent. Embedding = deterministic latent, single
-# per-clip forward, mean-pooled over latent time frames → 64-d (matches SAO's
-# 64-d protocol). Reuses maeb/audio_prep for robust decode + channel/sr handling.
+# MTEB encoder wrapper for SOTA baseline codecs (codicodec, music2latent, sao-vae,
+# same) via the shared CodecAdapter.encode_latent. Embedding = deterministic latent,
+# single per-clip forward, mean-pooled over latent time frames → the model's native
+# latent width (64-d for the x64-class codecs, matching SAO; 256-d for SAME, which
+# is NOT width-matched). Reuses maeb/audio_prep for robust decode + channel/sr.
 # =============================================================================
 from __future__ import annotations
 

@@ -8,12 +8,16 @@
 """
 MAEB evaluation for SOTA baseline codecs (codicodec, music2latent), FMA suite.
 
-Embedding: deterministic latent, single per-clip forward, time-pooled → 64-d
-(matches the SAO 64-d protocol). SAME is excluded (256-d latent).
+Embedding: deterministic latent, single per-clip forward, time-pooled → the
+model's native latent width (64-d for the x64-class codecs; 256-d for SAME).
+SAME is NOT width-matched (native 256-d, ~x32 total compression) — its scores
+are upper-biased and must be reported with an explicit caveat (MTEB convention:
+models are compared at native embedding width).
 
 Usage:
   python evaluation/maeb_sota.py --model codicodec
   python evaluation/maeb_sota.py --model music2latent --max-files 2000 --overwrite
+  python evaluation/maeb_sota.py --model same --with-moisesdb   # native 256-d, caveat
 """
 from __future__ import annotations
 
@@ -36,7 +40,9 @@ from maeb.runner import run_maeb
 
 log = logging.getLogger(__name__)
 
-_ALLOWED_MODELS = ("codicodec", "music2latent", "sao-vae")
+# SAME is 256-d native (not width-matched vs the x64-class codecs); allowed but
+# its MAEB scores must be flagged as upper-biased when tabulated.
+_ALLOWED_MODELS = ("codicodec", "music2latent", "sao-vae", "same")
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,7 +52,7 @@ def parse_args() -> argparse.Namespace:
         epilog=__doc__,
     )
     p.add_argument("--model", required=True, choices=_ALLOWED_MODELS,
-                   help="Adapter key (SAME excluded: 256-d latent).")
+                   help="Adapter key. 'same' is native 256-d (not width-matched).")
     p.add_argument("--tasks", nargs="*", default=None,
                    help=f"Explicit task subset. Allowed: {maeb_tasks.ALLOWED_TASKS}.")
     grp = p.add_mutually_exclusive_group()

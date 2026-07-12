@@ -41,6 +41,14 @@ M4SINGER_AUDIO = os.getenv("M4SINGER_AUDIO")             # M4Singer wav root (sc
 FAST_DIR = Path(os.getenv("FAST", PROJECT_ROOT / "_fast"))
 MODELS_DIR = FAST_DIR / "models"
 
+# MoisesDB — zero-shot reconstruction-validation set. ``MOISESDB_MIX_ORIGINAL``
+# is the exact 10 s mixtures directory used for the paper's recon validation
+# (chunks_mix_original/original, 1998 × 10 s WAVs @ 44.1 kHz stereo). The set was
+# imported as-is; its filename UUIDs do not map to moisesdb_v0.1, so no genre.
+MOISESDB_MIX_ORIGINAL = Path(os.getenv(
+    "MOISESDB_MIX_ORIGINAL",
+    str(FAST_DIR / "datasets" / "moisesdb" / "chunks_mix_original" / "original")))
+
 # Filelist cache for the multi-corpus build: the provider-scan + per-file probe-filter
 # over ~138k files costs ~11 min at every job start (and every --requeue resume). The
 # filtered, sorted list is deterministic and the files are immutable, so we persist it

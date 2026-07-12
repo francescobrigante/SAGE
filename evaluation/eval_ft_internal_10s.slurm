@@ -22,6 +22,7 @@
 #   sbatch evaluation/eval_ft_internal_10s.slurm [EPOCH ...]   # default: 199
 #   sbatch evaluation/eval_ft_internal_10s.slurm 179 199
 #   sbatch evaluation/eval_ft_internal_10s.slurm base 199      # +LARGE2 baseline
+#   SRC_RUN=cooldown sbatch evaluation/eval_ft_internal_10s.slurm 29 39 49  # cooldown run
 #
 # Robust to requeue: globs epoch_<EP>.ckpt across ALL timestamped run dirs and
 # symlinks it to checkpoints/FT_LARGE2_mr05_e<EP>.ckpt (same stems as the FMA
@@ -66,7 +67,21 @@ DATA_DIR="$FAST/datasets/moisesdb/chunks_mix_original/original"
 EVAL_ROOT="$WORK/C-VAE/runs/eval_swin_10s"     # shared with baseline + SOTA-comparable
 mkdir -p "$EVAL_ROOT"
 
-RUN_BASE="$WORK/C-VAE/runs/FT_LARGE2_mr05_decFT_postnet"
+# SRC_RUN selects which run's checkpoints to evaluate (default = finetune).
+#   SRC_RUN=cooldown  → evaluate the WSD cooldown run instead.
+# Both write to the SAME top-level EVAL_ROOT (runs/eval_swin_10s/<stem>/) so the
+# results land next to the SOTA + FT entries with NO manual move needed.
+SRC_RUN="${SRC_RUN:-finetune}"
+case "$SRC_RUN" in
+    cooldown)
+        RUN_BASE="$WORK/C-VAE/runs/COOLDOWN_LARGE2_mr05"
+        STEM_PREFIX="COOLDOWN_LARGE2_mr05_e" ;;
+    finetune|*)
+        RUN_BASE="$WORK/C-VAE/runs/FT_LARGE2_mr05_decFT_postnet"
+        STEM_PREFIX="FT_LARGE2_mr05_e" ;;
+esac
+echo "[SRC] SRC_RUN=$SRC_RUN → RUN_BASE=$RUN_BASE (stem prefix: ${STEM_PREFIX})"
+
 EPOCHS=("$@")
 [ ${#EPOCHS[@]} -eq 0 ] && EPOCHS=(199)
 
@@ -89,7 +104,7 @@ for E in "${EPOCHS[@]}"; do
         echo "[WARN] epoch_${EP}.ckpt not found under $RUN_BASE/*/checkpoints/ — skipping" >&2
         continue
     fi
-    LINK="$WORK/C-VAE/checkpoints/FT_LARGE2_mr05_e${E}.ckpt"
+    LINK="$WORK/C-VAE/checkpoints/${STEM_PREFIX}${E}.ckpt"
     ln -sf "$SRC" "$LINK"
     echo "[LINK] $LINK -> $SRC"
     CKPTS+=("$LINK")

@@ -63,6 +63,8 @@ _CSV_SCHEMA = {
     "cdpam":      ["file", "cdpam"],
     "clap_music": ["file", "cosine"],
     "clap_audio": ["file", "cosine"],
+    # Pure inference time (audio→latent→reconstruction), no metric/loading cost.
+    "timing":     ["file", "infer_sec", "audio_sec"],
 }
 
 
@@ -233,6 +235,8 @@ def main() -> None:
     local = int(os.environ.get("SLURM_LOCALID", 0))
     device = (torch.device("cpu") if args.device == "cpu" or not torch.cuda.is_available()
               else torch.device(f"cuda:{local}"))
+    if torch.cuda.is_available() and device.type == "cuda":
+        torch.cuda.set_device(local)
 
     target_dir = Path(args.target_dir).expanduser().resolve()
 
@@ -308,7 +312,13 @@ def main() -> None:
             orig_len = wav.shape[-1]
 
             try:
-                pred = adapter.reconstruct(wav)            # [C, T'] cpu float
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                _t0 = time.perf_counter()
+                pred = adapter.reconstruct(wav)            # [C, T'] cpu float — pure inference
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                infer_sec = time.perf_counter() - _t0
             except Exception as e:
                 err(f"Inference error {stem}: {e}", prefix="EVAL")
                 skipped += 1; continue
@@ -318,6 +328,8 @@ def main() -> None:
             pred    = pred[..., :n]                         # [C, n]
 
             if not args.fad_only and not args.fad_gud_only:
+                _append_csv(parts_dir / f"timing.{rank}.csv", _CSV_SCHEMA["timing"],
+                            {"file": stem, "infer_sec": infer_sec, "audio_sec": orig_len / sr})
                 sdr_val, sisdr_val = compute_sdr_and_sisdr(wav_ref, pred)
                 _append_csv(parts_dir / f"spectral.{rank}.csv", _CSV_SCHEMA["spectral"],
                             {"file": stem, "si_sdr": sisdr_val, "sdr": sdr_val,

@@ -55,6 +55,8 @@ _CSV_SCHEMA = {
     "cdpam":      ["file", "cdpam"],
     "clap_music": ["file", "cosine"],
     "clap_audio": ["file", "cosine"],
+    # Pure inference time (encode→decode), no metric/loading cost.
+    "timing":     ["file", "infer_sec", "audio_sec"],
 }
 
 
@@ -235,8 +237,14 @@ def main() -> None:
             try:
                 wav_padded, orig_len = _pad_for_swin(wav, hop_length, num_downsamples)
                 wav_gpu  = wav_padded.unsqueeze(0).to(device)
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                _t0 = time.perf_counter()
                 latents  = codec.encode(wav_gpu, deterministic=False)
                 decoded  = codec.decode(latents, target_length=wav_padded.shape[-1])
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                infer_sec = time.perf_counter() - _t0
                 n        = min(orig_len, decoded.shape[-1])
                 wav_ref  = wav[..., :n]
                 pred     = decoded[0, ..., :n].cpu().float()
@@ -245,6 +253,8 @@ def main() -> None:
                 skipped += 1; continue
 
             if not args.fad_gud_only:
+                _append_csv(parts_dir / "timing.0.csv", _CSV_SCHEMA["timing"],
+                            {"file": stem, "infer_sec": infer_sec, "audio_sec": orig_len / sr})
                 sdr_val, sisdr_val = compute_sdr_and_sisdr(wav_ref, pred)
                 _append_csv(parts_dir / "spectral.0.csv", _CSV_SCHEMA["spectral"],
                             {"file": stem, "si_sdr": sisdr_val, "sdr": sdr_val,

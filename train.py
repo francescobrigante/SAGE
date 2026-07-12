@@ -286,10 +286,15 @@ def main(cfg: DictConfig):
     dl_cfg = OmegaConf.to_container(cfg.data.train_dataloader, resolve=True)
     num_workers = int(dl_cfg.get("num_workers", 8))
     
-    # Calculate per-GPU batch size from the global batch size
-    # Handle CPU case where num_gpus might be set to 0 in config
-    num_devices = int(cfg.trainer.trainer.get("num_gpus", 1))
-    num_devices = num_devices if num_devices > 0 else 1
+    # Calculate per-GPU batch size from the global batch size.
+    # num_devices = DDP world size = (GPUs per node) × (nodes), so the global batch
+    # is split across ALL GPUs (multi-node aware). num_gpus is per-node (= Trainer
+    # `devices`); num_nodes defaults to 1 → single-node runs are unchanged.
+    num_gpus_per_node = int(cfg.trainer.trainer.get("num_gpus", 1))
+    num_gpus_per_node = num_gpus_per_node if num_gpus_per_node > 0 else 1
+    num_nodes = int(cfg.trainer.trainer.get("num_nodes", 1))
+    num_nodes = num_nodes if num_nodes > 0 else 1
+    num_devices = max(1, num_gpus_per_node * num_nodes)
     
     global_batch_size = int(dl_cfg.get("batch_size", 16))
     per_device_batch_size = max(1, global_batch_size // num_devices)
@@ -601,6 +606,7 @@ def main(cfg: DictConfig):
         default_root_dir=str(run_dir),
         accelerator=req_accelerator,
         devices=int(pl_trainer_cfg.get("num_gpus", 1)),
+        num_nodes=int(pl_trainer_cfg.get("num_nodes", 1)),
         strategy=pl_trainer_cfg.get("strategy", "auto"),
         max_epochs=int(pl_trainer_cfg.get("epochs", 50)),
         max_steps=int(pl_trainer_cfg.get("max_steps", -1)),
