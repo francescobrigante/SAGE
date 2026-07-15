@@ -12,7 +12,7 @@
 #          evaluation/final_eval/maeb_swin.slurm --max-files 20
 # ============================================================
 #SBATCH --job-name=fe_maeb_swin
-#SBATCH --account=IscrC_AHNetBio
+#SBATCH --account=IscrC_MM
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
@@ -25,6 +25,13 @@
 #SBATCH --error=logs/%x_%j.err
 
 set -euo pipefail
+
+# Compute on IscrC_MM (IscrC_AHNetBio budget exhausted), but WORK/FAST must point
+# to IscrC_AHNetBio where repo, venv, checkpoints and HF cache live (user-owned,
+# world-readable → readable from an IscrC_MM job).
+export WORK=/leonardo_work/IscrC_AHNetBio
+export FAST=/leonardo_scratch/fast/IscrC_AHNetBio
+
 mkdir -p logs
 cd $WORK/C-VAE
 
@@ -46,9 +53,19 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 : "${OUT:=$WORK/C-VAE/runs/final_eval/maeb/maeb_sage}"
 echo "[$(date)] FINAL MAEB (all 15 tasks) — SAGE_e299 — out=$OUT"
 
+# Pass 1: FMA (6) + MoisesDB (7).
 python evaluation/maeb_swin.py \
     --ckpt checkpoints/SAGE_e299.ckpt \
-    --with-extra --with-moisesdb --standardize-bottleneck \
+    --with-moisesdb --standardize-bottleneck \
+    --output-dir "$OUT" \
+    --device cuda \
+    "$@"
+
+# Pass 2: upstream MAEB music tasks (6) on original datasets — merges into the
+# same summary.json ($OUT), non-destructive (runner.py merge).
+python evaluation/maeb_swin.py \
+    --ckpt checkpoints/SAGE_e299.ckpt \
+    --maeb-original-music-only --standardize-bottleneck \
     --output-dir "$OUT" \
     --device cuda \
     "$@"

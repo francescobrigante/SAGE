@@ -2,8 +2,8 @@
 # =============================================================================
 # evaluation/maeb/tasks.py
 # Task resolution for the MAEB suite: the 6 FMA music tasks (default), opt-in
-# upstream MTEB music tasks (EXTRA_TASKS), and opt-in MoisesDB tasks.
-# Audio-only filtering + name resolution.
+# upstream MAEB music tasks on their ORIGINAL datasets (MAEB_ORIGINAL_MUSIC),
+# and opt-in MoisesDB tasks. Audio-only filtering + name resolution.
 # =============================================================================
 from __future__ import annotations
 
@@ -21,26 +21,30 @@ FMA_SUITE = [
     "FMAGenreAudioReranking",
     "FMAArtistPairClassification",
 ]
-# Task MTEB musicali upstream (hub, già in cache su $FAST). NON nel default: si
-# attivano via flag — `--with-extra` le aggiunge a FMA, `--extra-only` solo queste.
-# (NMSQA rimosso: pair task di speech, saturo ~0.49, fuori dominio musicale.)
-EXTRA_TASKS = [
-    "GTZANGenre",
-    "MusicGenreClustering",
+# Suite MAEB musicale upstream sui dataset ORIGINARI (hub, già in cache su
+# $FAST). Solo task musicali audio-only (no speech, no cross-modal audio-text).
+# NON nel default: si attiva via `--maeb-original-music-only` (pass separato che
+# si fonde nel summary.json esistente, merge non-distruttivo).
+MAEB_ORIGINAL_MUSIC = [
+    "GTZANGenre",               # genre classification (canonica)
+    "GTZANGenreClustering",     # genre clustering
+    "MusicGenreClustering",     # genre clustering
+    "GTZANAudioReranking",      # genre reranking
+    "NSynth",                   # instrument/timbre (note singole)
+    "JamAltArtistA2ARetrieval", # artist A2A retrieval (unica audio-only del core-30)
 ]
 
 # MoisesDB-local tasks (chunks_30s). Opt-in via --with-moisesdb / --moisesdb-only.
 from .moisesdb_tasks import MOISESDB_SUITE  # noqa: E402
 
 # The complete set of task names these CLIs may run.
-ALLOWED_TASKS = FMA_SUITE + EXTRA_TASKS + MOISESDB_SUITE
+ALLOWED_TASKS = FMA_SUITE + MAEB_ORIGINAL_MUSIC + MOISESDB_SUITE
 
 
 def select_task_names(
     subset: list[str] | None,
     *,
-    with_extra: bool = False,
-    extra_only: bool = False,
+    maeb_original_music_only: bool = False,
     with_moisesdb: bool = False,
     moisesdb_only: bool = False,
 ) -> list[str]:
@@ -48,19 +52,17 @@ def select_task_names(
 
     Precedence:
     1. An explicit ``subset`` (``--tasks``) always wins.
-    2. ``moisesdb_only`` → only MoisesDB tasks.
-    3. ``extra_only`` → only EXTRA_TASKS.
-    4. Otherwise: FMA suite (default), optionally + extra, optionally + moisesdb.
+    2. ``maeb_original_music_only`` → only the upstream MAEB music tasks.
+    3. ``moisesdb_only`` → only MoisesDB tasks.
+    4. Otherwise: FMA suite (default), optionally + moisesdb.
     """
     if subset:
         return list(subset)
+    if maeb_original_music_only:
+        return list(MAEB_ORIGINAL_MUSIC)
     if moisesdb_only:
         return list(MOISESDB_SUITE)
-    if extra_only:
-        return list(EXTRA_TASKS)
     result = list(FMA_SUITE)
-    if with_extra:
-        result += EXTRA_TASKS
     if with_moisesdb:
         result += MOISESDB_SUITE
     return result

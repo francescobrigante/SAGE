@@ -7,9 +7,9 @@
 """
 MAEB evaluation for Swin C-VAE (complex and real) checkpoints, on the FMA suite.
 
-Runs the 6 FMA music tasks (default) on the FMA large test set; i task musicali
-MTEB upstream (GTZAN/NSynth/…) sono opt-in via --with-extra / --extra-only.
-Run from the ISOLATED maeb_dl venv (see CINECA.md §5.4).
+Runs the 6 FMA music tasks (default) on the FMA large test set; le task musicali
+MAEB upstream sui dataset originari (GTZAN/NSynth/JamAlt/…) sono opt-in via
+--maeb-original-music-only. Run from the ISOLATED maeb_dl venv (see CINECA.md §5.4).
 complextorch/complexpytorch are pure-Python on PyTorch 2.4.1 complex tensors —
 no cineca-custom torch needed.
 
@@ -17,11 +17,9 @@ Usage examples:
   # Default: solo le 6 FMA:
   python evaluation/maeb_swin.py --ckpt checkpoints/swin_cplx_4s_x64/best.ckpt
 
-  # FMA + task musicali extra:
-  python evaluation/maeb_swin.py --ckpt model.ckpt --with-extra
-
-  # SOLO i task extra (per estendere run già valutate sulle FMA):
-  python evaluation/maeb_swin.py --ckpt model.ckpt --extra-only
+  # SOLO le task MAEB musicali sui dataset originari (estende un summary FMA
+  # già valutato — merge non-distruttivo):
+  python evaluation/maeb_swin.py --ckpt model.ckpt --maeb-original-music-only
 
   # A subset of the suite, with a small per-task cap for a quick run:
   python evaluation/maeb_swin.py --ckpt model.ckpt \
@@ -61,14 +59,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ckpt", default="checkpoints/O1_real_same_mrstft.ckpt",
                    help="Path to the Swin C-VAE .ckpt. Default: checkpoints/O1_real_same_mrstft.ckpt")
     p.add_argument("--tasks", nargs="*", default=None,
-                   help=f"Explicit task subset (overrides --with-extra/--extra-only). "
+                   help=f"Explicit task subset (overrides the -only flags). "
                         f"Allowed: {maeb_tasks.ALLOWED_TASKS}.")
     grp = p.add_mutually_exclusive_group()
-    grp.add_argument("--with-extra", action="store_true",
-                     help=f"Aggiunge i task musicali EXTRA alla suite FMA di default: "
-                          f"{maeb_tasks.EXTRA_TASKS}.")
-    grp.add_argument("--extra-only", action="store_true",
-                     help="Esegue SOLO i task EXTRA (per estendere run già valutate sulle FMA).")
+    grp.add_argument("--maeb-original-music-only", action="store_true",
+                     help=f"Esegue SOLO le task MAEB musicali upstream sui dataset "
+                          f"originari: {maeb_tasks.MAEB_ORIGINAL_MUSIC}.")
     grp.add_argument("--moisesdb-only", action="store_true",
                      help="Esegue SOLO i task MoisesDB (chunks_30s).")
     p.add_argument("--with-moisesdb", action="store_true",
@@ -98,8 +94,7 @@ def _resolve_tasks(args: argparse.Namespace) -> list:
     """Resolve the selected task names into objects."""
     names = maeb_tasks.select_task_names(
         args.tasks,
-        with_extra=args.with_extra,
-        extra_only=args.extra_only,
+        maeb_original_music_only=args.maeb_original_music_only,
         with_moisesdb=args.with_moisesdb,
         moisesdb_only=args.moisesdb_only,
     )

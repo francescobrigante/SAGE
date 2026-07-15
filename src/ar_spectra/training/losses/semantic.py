@@ -2,8 +2,8 @@
 # semantic.py
 #
 #   Shared infrastructure for latent-alignment losses: the parameter-free latent
-#   featurizer (`standardize_bottleneck`), the frozen CLAP teacher wrapper
-#   (`CLAPTeacher`), and per-phase LossModule subclasses — VF margin loss
+#   featurizer (`standardize_bottleneck`), the frozen teacher wrappers
+#   (`CLAPTeacher`, `MERTTeacher`), and per-phase LossModule subclasses — VF margin loss
 #   (`LatentVFLoss`), clip-level cosine distillation (`LatentCosineDistillLoss`).
 # ===============================================================
 
@@ -84,10 +84,65 @@ class CLAPTeacher(nn.Module):
             wav = wav.mean(dim=1)                          # (B, N) mono downmix
         wav = self.resample(wav)                           # (B, N') @ 48k
         
-        # laion_clap expects float32 tensors. 
+        # laion_clap expects float32 tensors.
         # get_audio_embedding_from_data expects `use_tensor=True` to avoid numpy conversions
         feat = self.clap.get_audio_embedding_from_data(x=wav, use_tensor=True)  # (B, 512)
         return feat
+
+
+class MERTTeacher(nn.Module):
+    """Frozen MERT-v1-95M teacher producing per-frame semantic audio features.
+
+    Loads MERT-v1-95M offline (transformers ``AutoModel`` + ``trust_remote_code``)
+    and returns a single hidden state as a time sequence of 768-d frame embeddings:
+    ``(B, 768, T_mert)`` at MERT's native ~75 Hz frame rate.
+
+    Unlike CLAP (one global ``(B, 512)`` embedding per clip), MERT is a temporal
+    encoder — the downstream ``LatentCosineDistillLoss`` time-averages the frames
+    (``mean(dim=-1)``) to obtain a clip-level target, mirroring the CLAP protocol.
+
+    ``layer`` defaults to **4**, the same hidden state used by the ``FAD_MERT``
+    evaluation extractor (``fadtk.MERTModel(layer=4)``), so the distillation target
+    is consistent with the FAD-MERT metric.
+    """
+
+    def __init__(
+        self,
+        model_dir: str,
+        layer: int = 4,                             # hidden-state index (4 → matches FAD_MERT)
+        src_sr: int = 44100,                        # waveform sample rate fed by the dataloader
+        mert_sr: int = 24000,                       # MERT native sample rate
+    ):
+        super().__init__()
+        import torchaudio
+        from transformers import AutoModel
+
+        # Offline load: compute nodes have no internet (HF_HUB_OFFLINE=1 in the slurm).
+        self.mert = AutoModel.from_pretrained(
+            model_dir, trust_remote_code=True, local_files_only=True, output_hidden_states=True,
+        )
+        self.mert.requires_grad_(False).eval()
+        self.resample = torchaudio.transforms.Resample(src_sr, mert_sr)
+        self.layer = int(layer)                     # which of the 13 hidden states to extract
+        n = sum(p.numel() for p in self.mert.parameters())
+        ok(f"MERT-v1-95M teacher loaded from {model_dir} "
+           f"(layer {self.layer}, {n/1e6:.1f}M params, frozen).", prefix="MERT")
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        self.mert.eval()
+        return self
+
+    @torch.no_grad()
+    def forward(self, wav: torch.Tensor) -> torch.Tensor:
+        """``wav`` ``(B, C, N)`` @ src_sr → ``(B, 768, T_mert)`` framewise embedding."""
+        if wav.ndim == 3:                                                  # (B, C, N)
+            wav = wav.mean(dim=1)                                          # (B, N) mono downmix
+        wav = self.resample(wav)                                          # (B, N') @ 24k
+        # Replicate Wav2Vec2FeatureExtractor(do_normalize=True): per-clip zero-mean/unit-var.
+        wav = (wav - wav.mean(dim=-1, keepdim=True)) / (wav.std(dim=-1, keepdim=True) + 1e-7)
+        hs = self.mert(wav).hidden_states                                # tuple 13 × (B, T_mert, 768)
+        return hs[self.layer].transpose(1, 2)                            # (B, 768, T_mert)
 
 
 class LatentVFLoss(LossModule):

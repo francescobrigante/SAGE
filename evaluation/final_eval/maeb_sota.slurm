@@ -13,7 +13,7 @@
 #          evaluation/final_eval/maeb_sota.slurm codicodec --max-files 20
 # ============================================================
 #SBATCH --job-name=fe_maeb_sota
-#SBATCH --account=IscrC_AHNetBio
+#SBATCH --account=IscrC_MM
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
@@ -26,6 +26,13 @@
 #SBATCH --error=logs/%x_%j.err
 
 set -euo pipefail
+
+# Compute on IscrC_MM (IscrC_AHNetBio budget exhausted), but WORK/FAST must point
+# to IscrC_AHNetBio where repo, venv, checkpoints and HF cache live (user-owned,
+# world-readable → readable from an IscrC_MM job).
+export WORK=/leonardo_work/IscrC_AHNetBio
+export FAST=/leonardo_scratch/fast/IscrC_AHNetBio
+
 mkdir -p logs
 cd $WORK/C-VAE
 
@@ -51,9 +58,18 @@ EXTRA=("$@")
 : "${OUT:=$WORK/C-VAE/runs/final_eval/maeb/maeb_$MODEL}"
 echo "[$(date)] FINAL MAEB (all 15 tasks) — model=$MODEL — out=$OUT"
 
+# Pass 1: FMA (6) + MoisesDB (7).
 python evaluation/maeb_sota.py \
     --model "$MODEL" \
-    --with-extra --with-moisesdb \
+    --with-moisesdb \
+    --output-dir "$OUT" \
+    --device cuda \
+    ${EXTRA[@]+"${EXTRA[@]}"}
+
+# Pass 2: upstream MAEB music tasks (6) on original datasets — merges into $OUT.
+python evaluation/maeb_sota.py \
+    --model "$MODEL" \
+    --maeb-original-music-only \
     --output-dir "$OUT" \
     --device cuda \
     ${EXTRA[@]+"${EXTRA[@]}"}

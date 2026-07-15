@@ -44,7 +44,14 @@ source $WORK/.envs/maeb_dl/bin/activate
 
 python evaluation/maeb_swin.py \
     --ckpt "$CKPT_LINK" \
-    --with-extra --with-moisesdb --standardize-bottleneck \
+    --with-moisesdb --standardize-bottleneck \
+    --output-dir "$EVAL_ROOT/maeb/maeb_$TAG" \
+    --device cuda
+
+# Upstream MAEB music tasks (6) on original datasets — merges into same summary.
+python evaluation/maeb_swin.py \
+    --ckpt "$CKPT_LINK" \
+    --maeb-original-music-only --standardize-bottleneck \
     --output-dir "$EVAL_ROOT/maeb/maeb_$TAG" \
     --device cuda
 

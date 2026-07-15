@@ -18,6 +18,7 @@ Usage:
   python evaluation/maeb_sota.py --model codicodec
   python evaluation/maeb_sota.py --model music2latent --max-files 2000 --overwrite
   python evaluation/maeb_sota.py --model same --with-moisesdb   # native 256-d, caveat
+  python evaluation/maeb_sota.py --model same --maeb-original-music-only  # upstream MAEB music
 """
 from __future__ import annotations
 
@@ -56,9 +57,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tasks", nargs="*", default=None,
                    help=f"Explicit task subset. Allowed: {maeb_tasks.ALLOWED_TASKS}.")
     grp = p.add_mutually_exclusive_group()
-    grp.add_argument("--with-extra", action="store_true",
-                     help=f"Add EXTRA music tasks to the FMA suite: {maeb_tasks.EXTRA_TASKS}.")
-    grp.add_argument("--extra-only", action="store_true", help="Run ONLY the EXTRA tasks.")
+    grp.add_argument("--maeb-original-music-only", action="store_true",
+                     help=f"Run ONLY the upstream MAEB music tasks on their original "
+                          f"datasets: {maeb_tasks.MAEB_ORIGINAL_MUSIC}.")
     grp.add_argument("--moisesdb-only", action="store_true",
                      help="Run ONLY the MoisesDB tasks (chunks_30s).")
     p.add_argument("--with-moisesdb", action="store_true",
@@ -78,8 +79,7 @@ def parse_args() -> argparse.Namespace:
 def _resolve_tasks(args: argparse.Namespace, encoder_label: str) -> list:
     names = maeb_tasks.select_task_names(
         args.tasks,
-        with_extra=args.with_extra,
-        extra_only=args.extra_only,
+        maeb_original_music_only=args.maeb_original_music_only,
         with_moisesdb=args.with_moisesdb,
         moisesdb_only=args.moisesdb_only,
     )

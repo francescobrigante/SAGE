@@ -38,7 +38,7 @@ from ar_spectra.utils.console import ok, warn, info, err
 from losses import compute_sdr_and_sisdr, stft_loss, spectral_losses, cdpam_score
 from utils import atomic_save_npy, silence_output
 from compute_clap_score import embed_clap, cosine_sim
-from compute_fad import embed_mert_framewise
+from compute_fad import (embed_mert_framewise, embed_pann, get_pann_model, PANN_NAME)
 from fadtk.model_loader import CLAPLaionModel, MERTModel
 from fadtk.fad import calc_frechet_distance
 
@@ -48,7 +48,8 @@ if not hasattr(np, "float"):
 _MERT_NAME       = "MERT-v1-95M-4"
 _CLAP_AUDIO_NAME = "clap-laion-audio"
 _CLAP_MUSIC_NAME = "clap-laion-music"
-_SKIP_DIRS       = frozenset({"embeddings", "stats", "convert", "metrics", "parts"})
+_PANN_NAME       = PANN_NAME               # pann-cnn14-16k (from compute_fad)
+_SKIP_DIRS       = frozenset({"embeddings", "stats", "stats_ours", "convert", "metrics", "parts"})
 
 _CSV_SCHEMA = {
     "spectral":   ["file", "si_sdr", "sdr", "stft_loss", "mel_loss"],
@@ -163,6 +164,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--fad-gud-only",  action="store_true",
                    help="Compute ONLY fad_gudgud (whole-file CLAP, 48kHz, float): skip "
                         "all other metrics. Overwrites fad_gudgud.csv.")
+    p.add_argument("--new-metrics-only", action="store_true",
+                   help="Compute ONLY fad_pann (PANN Cnn14 whole-file FAD): skip everything "
+                        "else. Overwrites fad_pann.csv, leaves every other CSV and _done untouched.")
     return p.parse_args()
 
 
@@ -176,7 +180,11 @@ def main() -> None:
 
     if args.fad_gud_only and args.resume and (metrics_dir / "fad_gudgud.csv").exists():
         info("[RESUME] fad_gudgud.csv exists — skipping.", prefix="EVAL"); return
-    elif not args.fad_gud_only and args.resume and (metrics_dir / "_done").exists():
+    elif (args.new_metrics_only and args.resume
+          and (metrics_dir / "fad_pann.csv").exists()):
+        info("[RESUME] fad_pann.csv exists — skipping.", prefix="EVAL"); return
+    elif (not args.fad_gud_only and not args.new_metrics_only
+          and args.resume and (metrics_dir / "_done").exists()):
         info("[RESUME] already done — skipping.", prefix="EVAL"); return
 
     audio_files = _collect_files(data_dir, args.max_files)
@@ -208,15 +216,23 @@ def main() -> None:
     if not args.sdr_only:
         info("Loading embedding models...", prefix="EVAL")
         embed_models = []
-        if not args.fad_gud_only:
-            clap_audio_ml = CLAPLaionModel("audio")
-            clap_music_ml = CLAPLaionModel("music")
+        if not args.fad_gud_only and not args.new_metrics_only:
+            # MERT (layer 4) drives fad_mert → full run only (not --new-metrics-only,
+            # which computes only fad_pann, nor --fad-gud-only).
             mert_ml       = MERTModel(layer=4)
-            embed_models.extend([clap_audio_ml, clap_music_ml, mert_ml])
-        
+            embed_models.append(mert_ml)
+            # CLAP only feeds the CLAP cosine metric → full run only.
+            if not args.new_metrics_only:
+                clap_audio_ml = CLAPLaionModel("audio")
+                clap_music_ml = CLAPLaionModel("music")
+                embed_models.extend([clap_audio_ml, clap_music_ml])
+
         for _ml in embed_models:
             with silence_output(): _ml.load_model()
             _ml.model.to(device)
+        # PANN drives fad_pann → full run + --new-metrics-only. Fail-fast on missing ckpt.
+        if not args.fad_gud_only:
+            get_pann_model(device)
         ok("Embedding models ready.", prefix="EVAL")
 
     dataset = _AudioDataset(audio_files, sr, target_channels=ch)
@@ -252,7 +268,7 @@ def main() -> None:
                 err(f"Inference error {stem}: {e}", prefix="EVAL")
                 skipped += 1; continue
 
-            if not args.fad_gud_only:
+            if not args.fad_gud_only and not args.new_metrics_only:
                 _append_csv(parts_dir / "timing.0.csv", _CSV_SCHEMA["timing"],
                             {"file": stem, "infer_sec": infer_sec, "audio_sec": orig_len / sr})
                 sdr_val, sisdr_val = compute_sdr_and_sisdr(wav_ref, pred)
@@ -260,7 +276,8 @@ def main() -> None:
                             {"file": stem, "si_sdr": sisdr_val, "sdr": sdr_val,
                              **spectral_losses(wav_ref, pred)})
 
-            if not args.skip_cdpam and not args.sdr_only and not args.fad_gud_only:
+            if (not args.skip_cdpam and not args.sdr_only and not args.fad_gud_only
+                    and not args.new_metrics_only):
                 try:
                     _append_csv(parts_dir / "cdpam.0.csv", _CSV_SCHEMA["cdpam"],
                                 {"file": stem,
@@ -271,28 +288,39 @@ def main() -> None:
             if not args.sdr_only:
                 try:
                     if not args.fad_gud_only:
-                        ref_ca = _load_ref_emb(data_dir, _CLAP_AUDIO_NAME, stem)
-                        p_ca   = embed_clap(clap_audio_ml, pred, sr, device)
-                        if ref_ca is not None:
-                            _append_csv(parts_dir / "clap_audio.0.csv", _CSV_SCHEMA["clap_audio"],
-                                        {"file": stem,
-                                         "cosine": float(cosine_sim(ref_ca.mean(0), p_ca.mean(0)))})
-                        atomic_save_npy(pred_root / _CLAP_AUDIO_NAME / f"{stem}.npy", p_ca.astype(np.float16))
+                        # CLAP cosine + CLAP pred embeddings → full run only.
+                        if not args.new_metrics_only:
+                            ref_ca = _load_ref_emb(data_dir, _CLAP_AUDIO_NAME, stem)
+                            p_ca   = embed_clap(clap_audio_ml, pred, sr, device)
+                            if ref_ca is not None:
+                                _append_csv(parts_dir / "clap_audio.0.csv", _CSV_SCHEMA["clap_audio"],
+                                            {"file": stem,
+                                             "cosine": float(cosine_sim(ref_ca.mean(0), p_ca.mean(0)))})
+                            atomic_save_npy(pred_root / _CLAP_AUDIO_NAME / f"{stem}.npy", p_ca.astype(np.float16))
 
-                        ref_cm = _load_ref_emb(data_dir, _CLAP_MUSIC_NAME, stem)
-                        p_cm   = embed_clap(clap_music_ml, pred, sr, device)
-                        if ref_cm is not None:
-                            _append_csv(parts_dir / "clap_music.0.csv", _CSV_SCHEMA["clap_music"],
-                                        {"file": stem,
-                                         "cosine": float(cosine_sim(ref_cm.mean(0), p_cm.mean(0)))})
-                        atomic_save_npy(pred_root / _CLAP_MUSIC_NAME / f"{stem}.npy", p_cm.astype(np.float16))
+                            ref_cm = _load_ref_emb(data_dir, _CLAP_MUSIC_NAME, stem)
+                            p_cm   = embed_clap(clap_music_ml, pred, sr, device)
+                            if ref_cm is not None:
+                                _append_csv(parts_dir / "clap_music.0.csv", _CSV_SCHEMA["clap_music"],
+                                            {"file": stem,
+                                             "cosine": float(cosine_sim(ref_cm.mean(0), p_cm.mean(0)))})
+                            atomic_save_npy(pred_root / _CLAP_MUSIC_NAME / f"{stem}.npy", p_cm.astype(np.float16))
 
-                        p_mert = embed_mert_framewise(mert_ml, pred, sr, device)
-                        atomic_save_npy(pred_root / _MERT_NAME / f"{stem}.npy", p_mert.astype(np.float16))
-                    
-                    from compute_clap_score import embed_clap_gud
-                    p_clap_gud = embed_clap_gud(pred, sr, device)
-                    atomic_save_npy(pred_root / "clap-laion-audio-gud" / f"{stem}.npy", p_clap_gud.astype(np.float16))
+                        # MERT layer-4 framewise → fad_mert source (full run only).
+                        if not args.new_metrics_only:
+                            p_mert = embed_mert_framewise(mert_ml, pred, sr, device)
+                            atomic_save_npy(pred_root / _MERT_NAME / f"{stem}.npy", p_mert.astype(np.float16))
+
+                    # CLAP-gud whole-file → fad_gudgud source (full + --fad-gud-only).
+                    if not args.new_metrics_only:
+                        from compute_clap_score import embed_clap_gud
+                        p_clap_gud = embed_clap_gud(pred, sr, device)
+                        atomic_save_npy(pred_root / "clap-laion-audio-gud" / f"{stem}.npy", p_clap_gud.astype(np.float16))
+
+                    # PANN Cnn14 whole-file → fad_pann source (full + --new-metrics-only).
+                    if not args.fad_gud_only:
+                        p_pann = embed_pann(pred, sr, device)
+                        atomic_save_npy(pred_root / _PANN_NAME / f"{stem}.npy", p_pann.astype(np.float16))
 
                 except Exception as e:
                     warn(f"Embedding error {stem}: {e}", prefix="EMBED")
@@ -303,7 +331,10 @@ def main() -> None:
 
     ok(f"Done — processed: {processed}  skipped: {skipped}", prefix="EVAL")
 
-    for name, cols in _CSV_SCHEMA.items():
+    # --new-metrics-only writes no per-file CSV (only the scalar fad_pann below).
+    merge_names = [] if args.new_metrics_only else list(_CSV_SCHEMA)
+    for name in merge_names:
+        cols = _CSV_SCHEMA[name]
         seen: dict[str, dict] = {}
         for f in sorted(parts_dir.glob(f"{name}.*.csv")):
             with open(f, newline="") as fh:
@@ -318,14 +349,19 @@ def main() -> None:
             ok(f"{name}.csv ({len(seen)} files)", prefix="MERGE")
 
     if not args.sdr_only:
-        if not args.fad_gud_only:
+        if not args.fad_gud_only and not args.new_metrics_only:
             _fad_from_stats(data_dir, _MERT_NAME,       pred_root / _MERT_NAME,
                             metrics_dir / "fad_mert.csv",       _MERT_NAME)
-        
-        _fad_from_stats(data_dir, "clap-laion-audio-gud", pred_root / "clap-laion-audio-gud",
-                        metrics_dir / "fad_gudgud.csv",     "clap-laion-audio-gud")
 
-    if not args.fad_gud_only:
+        if not args.new_metrics_only:
+            _fad_from_stats(data_dir, "clap-laion-audio-gud", pred_root / "clap-laion-audio-gud",
+                            metrics_dir / "fad_gudgud.csv",     "clap-laion-audio-gud")
+
+        if not args.fad_gud_only:
+            _fad_from_stats(data_dir, _PANN_NAME, pred_root / _PANN_NAME,
+                            metrics_dir / "fad_pann.csv", _PANN_NAME)
+
+    if not args.fad_gud_only and not args.new_metrics_only:
         (metrics_dir / "_done").touch()
         ok(f"_done → {metrics_dir}", prefix="EVAL")
 

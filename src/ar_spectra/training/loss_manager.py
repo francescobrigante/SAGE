@@ -13,7 +13,7 @@ from .losses.base import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss, 
 from .losses.perceptual import MelSpectrogramLoss, HubertLoss
 from .losses.generative import LatentFlowMatchingLoss
 from .losses.semantic import (
-    CLAPTeacher, LatentVFLoss, LatentCosineDistillLoss,
+    CLAPTeacher, MERTTeacher, LatentVFLoss, LatentCosineDistillLoss,
     OctaveChromaTarget, ILDTarget, LatentChromaILDLoss,
     LatentContrastiveLoss,
 )
@@ -326,14 +326,27 @@ class LossManager(nn.Module):
                 warmup = self.loss_config["semantic_distill"].get("detach_warmup_steps", 25000)
                 latent_dim = int(distill_cfg.pop("latent_dim"))
                 proj_dim = int(distill_cfg.pop("proj_dim", 512))
+                # teacher_type selects the frozen semantic teacher (default "clap" →
+                # unchanged legacy behavior; "mert" → framewise MERT-v1-95M layer 4).
+                teacher_type = str(
+                    self.loss_config["semantic_distill"].get("teacher_type", "clap")
+                ).lower()
                 self.distill_proj = nn.Linear(latent_dim, proj_dim)   # → aux_parameters() → opt_aux
-                self.clap_teacher = CLAPTeacher(
-                    str(_root_config.MODELS_DIR / "LAION_CLAP" / "music_audioset_epoch_15_esc_90.14.pt"),
-                    src_sr=self.sample_rate
-                )
+                if teacher_type == "mert":
+                    self.mert_teacher = MERTTeacher(
+                        str(_root_config.MODELS_DIR / "MERT-v1-95M"),
+                        src_sr=self.sample_rate
+                    )
+                    distill_teacher = self.mert_teacher               # (B,768,T) → loss time-pools
+                else:
+                    self.clap_teacher = CLAPTeacher(                  # attr name unchanged → resume-safe
+                        str(_root_config.MODELS_DIR / "LAION_CLAP" / "music_audioset_epoch_15_esc_90.14.pt"),
+                        src_sr=self.sample_rate
+                    )
+                    distill_teacher = self.clap_teacher              # (B,512) global embedding
                 gen_loss_modules.append(
                     LatentCosineDistillLoss(
-                        self.distill_proj, self.clap_teacher, weight=distill_weight,
+                        self.distill_proj, distill_teacher, weight=distill_weight,
                         detach_warmup_steps=warmup, **distill_cfg
                     )
                 )

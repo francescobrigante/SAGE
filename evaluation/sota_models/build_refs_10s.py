@@ -11,12 +11,14 @@
 #   embeddings/clap-laion-music/{stem}.npy      (N_chunks, 512)  per-file ref → CLAP-music cosine
 #   embeddings/MERT-v1-95M-4/{stem}.npy         (N_frames, 768)  per-file      → fad_mert source
 #   embeddings/clap-laion-audio-gud/{stem}.npy  (1, 512)         per-file      → fad_gudgud source
+#   embeddings/pann-cnn14-16k/{stem}.npy        (1, 2048)        per-file      → fad_pann source
 #   stats_ours/MERT-v1-95M-4/{mu,cov}.npy       Fréchet ref stats → fad_mert
 #   stats_ours/clap-laion-audio-gud/{mu,cov}.npy  Fréchet ref stats → fad_gudgud
+#   stats_ours/pann-cnn14-16k/{mu,cov}.npy      Fréchet ref stats → fad_pann
 #
 # Embeddings are computed with the SAME functions the evaluators apply to the
-# reconstruction (embed_clap / embed_mert_framewise / embed_clap_gud), so the
-# reference and the prediction always live in the same space.
+# reconstruction (embed_clap / embed_mert_framewise / embed_clap_gud / embed_pann), so
+# the reference and the prediction always live in the same space.
 # =============================================================================
 from __future__ import annotations
 
@@ -41,7 +43,8 @@ for _p in (str(_PROJ_ROOT), str(_PROJ_ROOT / "src"), str(_EVAL_DIR), str(_SOTA_D
 from ar_spectra.utils.console import ok, warn, info, err
 from utils import atomic_save_npy, silence_output
 from compute_clap_score import embed_clap, embed_clap_gud
-from compute_fad import embed_mert_framewise, compute_incremental_stats
+from compute_fad import (embed_mert_framewise, embed_pann, get_pann_model,
+                         compute_incremental_stats, PANN_NAME)
 from fadtk.model_loader import CLAPLaionModel, MERTModel
 
 if not hasattr(np, "float"):
@@ -51,9 +54,10 @@ _MERT_NAME       = "MERT-v1-95M-4"
 _CLAP_AUDIO_NAME = "clap-laion-audio"
 _CLAP_MUSIC_NAME = "clap-laion-music"
 _CLAP_GUD_NAME   = "clap-laion-audio-gud"
+_PANN_NAME       = PANN_NAME               # pann-cnn14-16k (from compute_fad)
 
-# Models that need Fréchet reference stats (mu/cov) → fad_mert + fad_gudgud.
-_STATS_MODELS = (_MERT_NAME, _CLAP_GUD_NAME)
+# Models that need Fréchet reference stats (mu/cov) → fad_mert + fad_gudgud + fad_pann.
+_STATS_MODELS = (_MERT_NAME, _CLAP_GUD_NAME, _PANN_NAME)
 
 _SKIP_DIRS = frozenset({"embeddings", "stats", "stats_ours", "convert", "metrics", "parts"})
 
@@ -94,11 +98,11 @@ def _collect_files(data_dir: Path, max_files: int) -> list[Path]:
     return files[:max_files] if max_files > 0 else files
 
 
-def _all_refs_exist(emb_root: Path, stem: str) -> bool:
-    return all(
-        (emb_root / name / f"{stem}.npy").exists()
-        for name in (_CLAP_AUDIO_NAME, _CLAP_MUSIC_NAME, _MERT_NAME, _CLAP_GUD_NAME)
-    )
+_ALL_NAMES = (_CLAP_AUDIO_NAME, _CLAP_MUSIC_NAME, _MERT_NAME, _CLAP_GUD_NAME, _PANN_NAME)
+
+
+def _all_refs_exist(emb_root: Path, stem: str, want: tuple[str, ...]) -> bool:
+    return all((emb_root / name / f"{stem}.npy").exists() for name in want)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -112,14 +116,20 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--num-workers", type=int, default=8)
     p.add_argument("--max-files", type=int, default=0)
     p.add_argument("--resume", action="store_true",
-                   help="Skip files whose 4 reference embeddings already exist.")
+                   help="Skip files whose selected reference embeddings already exist.")
     p.add_argument("--stats-only", action="store_true",
                    help="Skip embedding; (re)compute stats_ours/ from existing embeddings/.")
+    p.add_argument("--models", nargs="+", default=None, choices=list(_ALL_NAMES),
+                   help="Restrict to a SUBSET of embedders (default: all). Use to add ONE new "
+                        "embedder (e.g. --models pann-cnn14-16k) without recomputing/overwriting "
+                        "the others' embeddings or stats.")
     return p.parse_args()
 
 
-def _recompute_stats(emb_root: Path, stats_root: Path) -> None:
+def _recompute_stats(emb_root: Path, stats_root: Path, want: tuple[str, ...]) -> None:
     for model_name in _STATS_MODELS:
+        if model_name not in want:
+            continue
         npys = sorted((emb_root / model_name).glob("*.npy"))
         if not npys:
             warn(f"No embeddings for {model_name} — stats skipped.", prefix="STATS")
@@ -143,9 +153,11 @@ def main() -> None:
     device = (torch.device("cpu") if args.device == "cpu" or not torch.cuda.is_available()
               else torch.device("cuda:0"))
 
+    want = tuple(args.models) if args.models else _ALL_NAMES
+
     if args.stats_only:
-        info("[STATS-ONLY] recomputing stats_ours/ from existing embeddings/.", prefix="REFS")
-        _recompute_stats(emb_root, stats_root)
+        info(f"[STATS-ONLY] recomputing stats_ours/ from existing embeddings/ for {want}.", prefix="REFS")
+        _recompute_stats(emb_root, stats_root, want)
         return
 
     files = _collect_files(data_dir, args.max_files)
@@ -153,22 +165,38 @@ def main() -> None:
         err(f"No WAV files found in {data_dir}"); return
 
     if args.resume:
-        todo = [f for f in files if not _all_refs_exist(emb_root, f.stem)]
+        todo = [f for f in files if not _all_refs_exist(emb_root, f.stem, want)]
         info(f"{len(files)} files — {len(todo)} to embed (skip {len(files) - len(todo)} done).",
              prefix="REFS")
     else:
         todo = files
         info(f"{len(files)} files to embed.", prefix="REFS")
 
-    info("Loading embedding models (CLAP-audio, CLAP-music, MERT l4)...", prefix="REFS")
-    clap_audio = CLAPLaionModel("audio")
-    clap_music = CLAPLaionModel("music")
-    mert       = MERTModel(layer=4)
-    for _ml in (clap_audio, clap_music, mert):
-        with silence_output():
-            _ml.load_model()
-        _ml.model.to(device)
-    ok("Embedding models ready (CLAP-gud loaded lazily on first file).", prefix="REFS")
+    # Load ONLY the models needed by the selected subset (CLAP-gud + PANN singletons load lazily).
+    sr = 44100
+    embedders: dict = {}          # name → callable(wav) → (N, D) np.ndarray
+    info(f"Loading embedding models for: {want}", prefix="REFS")
+    if _CLAP_AUDIO_NAME in want:
+        clap_audio = CLAPLaionModel("audio")
+        with silence_output(): clap_audio.load_model()
+        clap_audio.model.to(device)
+        embedders[_CLAP_AUDIO_NAME] = lambda wav: embed_clap(clap_audio, wav, sr, device)
+    if _CLAP_MUSIC_NAME in want:
+        clap_music = CLAPLaionModel("music")
+        with silence_output(): clap_music.load_model()
+        clap_music.model.to(device)
+        embedders[_CLAP_MUSIC_NAME] = lambda wav: embed_clap(clap_music, wav, sr, device)
+    if _MERT_NAME in want:
+        mert = MERTModel(layer=4)
+        with silence_output(): mert.load_model()
+        mert.model.to(device)
+        embedders[_MERT_NAME] = lambda wav: embed_mert_framewise(mert, wav, sr, device)
+    if _CLAP_GUD_NAME in want:
+        embedders[_CLAP_GUD_NAME] = lambda wav: embed_clap_gud(wav, sr, device)
+    if _PANN_NAME in want:
+        get_pann_model(device)    # fail-fast on missing checkpoint
+        embedders[_PANN_NAME] = lambda wav: embed_pann(wav, sr, device)
+    ok(f"Embedding models ready ({len(embedders)} embedders).", prefix="REFS")
 
     dataset = _AudioDataset(todo, target_sr=44100, target_channels=2)
     loader  = DataLoader(
@@ -178,7 +206,6 @@ def main() -> None:
         prefetch_factor=4 if args.num_workers > 0 else None,
     )
 
-    sr = 44100
     processed = skipped = 0
     t0 = time.time()
     with torch.no_grad():
@@ -187,18 +214,14 @@ def main() -> None:
             if wav is None:
                 skipped += 1; continue
             try:
-                p_ca   = embed_clap(clap_audio, wav, sr, device)
-                p_cm   = embed_clap(clap_music, wav, sr, device)
-                p_mert = embed_mert_framewise(mert, wav, sr, device)
-                p_gud  = embed_clap_gud(wav, sr, device)
+                for name, fn in embedders.items():
+                    out = emb_root / name / f"{stem}.npy"
+                    if args.resume and out.exists():
+                        continue                       # per-model resume: don't recompute existing
+                    atomic_save_npy(out, fn(wav).astype(np.float16))
             except Exception as e:  # noqa: BLE001
                 err(f"Embedding error {stem}: {e}", prefix="REFS")
                 skipped += 1; continue
-
-            atomic_save_npy(emb_root / _CLAP_AUDIO_NAME / f"{stem}.npy", p_ca.astype(np.float16))
-            atomic_save_npy(emb_root / _CLAP_MUSIC_NAME / f"{stem}.npy", p_cm.astype(np.float16))
-            atomic_save_npy(emb_root / _MERT_NAME       / f"{stem}.npy", p_mert.astype(np.float16))
-            atomic_save_npy(emb_root / _CLAP_GUD_NAME   / f"{stem}.npy", p_gud.astype(np.float16))
 
             processed += 1
             if processed % 200 == 0:
@@ -207,7 +230,7 @@ def main() -> None:
     ok(f"Embeddings done — processed: {processed}  skipped: {skipped}", prefix="REFS")
 
     info("Computing Fréchet reference stats (mu/cov)...", prefix="REFS")
-    _recompute_stats(emb_root, stats_root)
+    _recompute_stats(emb_root, stats_root, want)
     ok(f"References ready under {data_dir}", prefix="REFS")
 
 

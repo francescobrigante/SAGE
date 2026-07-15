@@ -151,7 +151,7 @@ def run_maeb(
     else:
         summary_path = output_dir / "summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
-    # Merge into any existing summary so a partial run (e.g. --extra-only) EXTENDS
+    # Merge into any existing summary so a partial run (e.g. --maeb-original-music-only) EXTENDS
     # earlier results for the same model instead of clobbering them.
     merged_extra: dict[str, Any] = {}
     merged_results: dict[str, float | None] = {}
