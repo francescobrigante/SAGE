@@ -47,6 +47,45 @@ from fadtk.model_loader import CLAPLaionModel, MERTModel
 if not hasattr(np, "float"):
     np.float = np.float64  # type: ignore[attr-defined]
 
+# Opt-in stereo-imaging metrics (--compute-ms-metrics). Columns + lazily-loaded
+# (align, stereo_imaging_distance) from evaluation/stereo_diagnosis/ — imported
+# ONLY when the flag is set, so old runs stay byte-for-byte unchanged.
+_MS_COLS = ["file", "width_bias", "d_width", "sisdr_s", "sisdr_m"]
+_STEREO_FNS = None
+
+
+def _si_sdr(est: torch.Tensor, ref: torch.Tensor, eps: float = 1e-10) -> float:
+    """Scale-invariant SDR (dB), matching stereo_diagnosis/measure_imaging.si_sdr."""
+    est, ref = est - est.mean(), ref - ref.mean()
+    a = (est * ref).sum() / (ref.square().sum() + eps)
+    proj = a * ref
+    return float((10 * torch.log10(proj.square().sum() / ((est - proj).square().sum() + eps))).item())
+
+
+def _compute_ms_metrics(ref: torch.Tensor, pred: torch.Tensor, sr: int) -> dict:
+    """Four stereo-imaging metrics on an aligned (2, T) ref/pred pair.
+
+    width_bias (→0; <0 squash, >0 over-widening) and d_width (→0, unsigned image
+    error) from stereo_imaging_distance; sisdr_s = SI-SDR on the side S=(L−R)/√2 —
+    the channel SAGE collapses; sisdr_m = SI-SDR on the mid M=(L+R)/√2 (guardrail:
+    fixing Side must not degrade Mid). Matches evaluation/stereo_diagnosis definitions.
+    """
+    global _STEREO_FNS
+    if _STEREO_FNS is None:
+        sys.path.insert(0, str(_EVAL_DIR / "stereo_diagnosis"))
+        from stereo_imaging import align, stereo_imaging_distance   # torch-only, no heavy deps
+        _STEREO_FNS = (align, stereo_imaging_distance)
+    align, stereo_imaging_distance = _STEREO_FNS
+
+    ref_a, pred_a = align(ref.float(), pred.float())                 # delay-compensate (≈no-op for our recon)
+    d = stereo_imaging_distance(ref_a, pred_a, sample_rate=sr)       # width_bias, d_width, …
+    Sr = (ref_a[0] - ref_a[1]) / 2 ** 0.5                            # (T,) reference side
+    Sx = (pred_a[0] - pred_a[1]) / 2 ** 0.5                          # (T,) predicted side
+    Mr = (ref_a[0] + ref_a[1]) / 2 ** 0.5                            # (T,) reference mid
+    Mx = (pred_a[0] + pred_a[1]) / 2 ** 0.5                          # (T,) predicted mid
+    return {"width_bias": d["width_bias"], "d_width": d["d_width"],
+            "sisdr_s": _si_sdr(Sx, Sr), "sisdr_m": _si_sdr(Mx, Mr)}
+
 
 def _purge_pred_embeddings(pred_root: Path, embedder_name: str) -> None:
     """Delete the per-file FAD *prediction* embeddings of one embedder after its
@@ -208,6 +247,10 @@ def _parse_args() -> argparse.Namespace:
                    help="Compute ONLY fad_pann (PANN Cnn14 whole-file FAD): skip SI-SDR/STFT, "
                         "CDPAM, CLAP cosine, fad_mert and fad_gudgud. Decodes each file once; "
                         "overwrites fad_pann.csv, leaves every other CSV and _done untouched.")
+    p.add_argument("--compute-ms-metrics", action="store_true",
+                   help="ADD stereo-imaging metrics (width_bias, d_width, sisdr_s, sisdr_m) to the "
+                        "default per-file metrics, computed in-memory on the (ref, recon) pair. "
+                        "Opt-in: off by default → old runs unchanged. Writes ms_metrics.csv.")
     p.add_argument("--resume",          action="store_true",
                    help="Skip checkpoint if metrics/_done already exists.")
     p.add_argument("--deterministic",   action="store_true",
@@ -384,6 +427,7 @@ def main() -> None:
         clap_music_rows:  list[dict]       = []
         clap_audio_rows:  list[dict]       = []
         timing_rows:      list[dict]       = []
+        ms_rows:          list[dict]       = []
         fad_files:        list[Path]       = []
         skipped = 0
         t0 = time.time()
@@ -432,6 +476,14 @@ def main() -> None:
                         "sdr":    sdr_val,
                         **spectral_losses(wav_ref, pred),
                     })
+                    # Opt-in stereo-imaging metrics (needs true stereo ref+pred).
+                    if (args.compute_ms_metrics
+                            and wav_ref.shape[0] == 2 and pred.shape[0] == 2):
+                        try:
+                            ms_rows.append({"file": stem,
+                                            **_compute_ms_metrics(wav_ref, pred, sr)})
+                        except Exception as e:
+                            warn(f"MS metrics {stem}: {e}", prefix="MS")
 
                 # CDPAM (perceptual) — ported from evaluate_swin.py. Runs in full
                 # runs and in --cdpam-only; skipped by --skip-cdpam / --sdr-only /
@@ -521,6 +573,9 @@ def main() -> None:
             write_csv(metrics_dir / f"timing{suf}.csv",
                       ["file", "infer_sec", "audio_sec"], timing_rows)
             ok(f"timing{suf}.csv written ({len(timing_rows)} rows)", prefix="EVAL")
+        if ms_rows:
+            write_csv(metrics_dir / f"ms_metrics{suf}.csv", _MS_COLS, ms_rows)
+            ok(f"ms_metrics{suf}.csv written ({len(ms_rows)} rows)", prefix="EVAL")
 
         if single_ckpt_sharding:
             if fad_files:
@@ -539,6 +594,7 @@ def main() -> None:
                 _merge_shards(metrics_dir, "clap_music", ["file", "cosine"], world_size)
                 _merge_shards(metrics_dir, "clap_audio", ["file", "cosine"], world_size)
                 _merge_shards(metrics_dir, "timing", ["file", "infer_sec", "audio_sec"], world_size)
+                _merge_shards(metrics_dir, "ms_metrics", _MS_COLS, world_size)
                 ok("CSV shards merged.", prefix="EVAL")
 
                 # FAD: compute on all saved embeddings

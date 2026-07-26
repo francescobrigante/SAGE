@@ -150,6 +150,24 @@ loss_config:
       w_lm: 1.0            # adaptive log-mag term
       w_ifgd: 1.0          # instantaneous-freq / group-delay term
       ms_lr: true          # process mid/side in addition to L/R
+  # SAO-exact stereo reconstruction loss (STEREO_COLLAPSE fix): sum/difference
+  # + left/right MR-STFT (SC + log-mag L1, A-weighted), replicating SAO's
+  # reversed-order AuralossLoss chain → SC normalizes by the RECONSTRUCTION:
+  # quasi-mono targets are bounded (no clamp needed), a collapsed Side is
+  # penalized hard (anti-shrinkage). Default weight 0.0 → inert; enable via
+  # CLI (see next_slurms/LARGE2_ms_{replace,add}.slurm). Stereo-aware disc:
+  # ++trainer.loss_config.discriminator.config.fold_lrms=true (default false,
+  # defined in WavTokenizerDiscriminator — no discriminator block here).
+  mrstft_sd:
+    weights:
+      mrstft_sd: 0.0
+    config:
+      fft_sizes:   [2048, 1024, 512, 256, 128, 64]   # 6 SAO resolutions (32 omitted: unstable)
+      hop_sizes:   [512,  256,  128, 64,  32,  16]    # fft/4 — SAO convention
+      win_lengths: [2048, 1024, 512, 256, 128, 64]
+      perceptual_weighting: true    # A-weighting FIR pre-filter (SAO default)
+      w_ms: 1.0                     # mid/side branch weight (SAO: 1.0)
+      w_lr: 1.0                     # left/right branch weight (SAO: 1.0 → 0.5 per channel)
   bottleneck:
     weights:
       kl: 1.0e-3          # annealed from 0 to kl_beta_target over kl_annealing_epochs

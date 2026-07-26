@@ -38,11 +38,13 @@ class WavTokenizerDiscriminator(nn.Module):
         fft_sizes: list = [2048, 1024, 512],
         preprocess: bool = False,
         use_dac: bool = True,
+        fold_lrms: bool = False,
     ):
         super().__init__()
         self.channels = channels
         self.sample_rate = sample_rate
         self.use_dac = use_dac
+        self.fold_lrms = fold_lrms  # fold [M,S]=(L+R, L−R) into the batch → critics see L,R,M,S
 
         # 1. Vocos MPD (from vocos_legacy)
         self.vocos_mpd = MultiPeriodDiscriminator(periods=periods)
@@ -61,6 +63,9 @@ class WavTokenizerDiscriminator(nn.Module):
             )
 
     def forward(self, x: torch.Tensor) -> tp.List[tp.List[torch.Tensor]]:
+        if self.fold_lrms and x.ndim == 3 and x.shape[1] == 2:
+            ms = torch.stack([x[:, 0] + x[:, 1], x[:, 0] - x[:, 1]], dim=1)  # (B, 2, T) = [M, S]
+            x = torch.cat([x, ms], dim=0)                                     # (2B, 2, T) = [L,R | M,S]
         if x.ndim == 2:
             x_mono = x
             x_dac = x.unsqueeze(1)

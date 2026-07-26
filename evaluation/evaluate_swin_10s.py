@@ -58,7 +58,49 @@ _CSV_SCHEMA = {
     "clap_audio": ["file", "cosine"],
     # Pure inference time (encode→decode), no metric/loading cost.
     "timing":     ["file", "infer_sec", "audio_sec"],
+    # Opt-in stereo-imaging metrics (--compute-ms-metrics): only written when the
+    # flag is set; absent CSV → notebook reports NaN, so old runs stay compatible.
+    "ms_metrics": ["file", "width_bias", "d_width", "sisdr_s", "sisdr_m"],
 }
+
+# Lazily-loaded (align, stereo_imaging_distance) from evaluation/stereo_diagnosis/.
+# Imported ONLY when --compute-ms-metrics is set → zero import cost / risk otherwise.
+_STEREO_FNS = None
+
+
+def _compute_ms_metrics(ref: torch.Tensor, pred: torch.Tensor, sr: int) -> dict:
+    """Four stereo-imaging metrics on an aligned (2, T) ref/pred pair.
+
+    width_bias (→0; <0 squash, >0 over-widening) and d_width (→0, unsigned image
+    error) come from stereo_imaging_distance; sisdr_s is SI-SDR on the side channel
+    S=(L−R)/√2 — the channel SAGE collapses; sisdr_m is SI-SDR on the mid
+    M=(L+R)/√2 (guardrail: fixing Side must not degrade Mid). Matches
+    evaluation/stereo_diagnosis definitions so numbers are comparable to the
+    diagnosis table.
+    """
+    global _STEREO_FNS
+    if _STEREO_FNS is None:
+        sys.path.insert(0, str(_EVAL_DIR / "stereo_diagnosis"))
+        from stereo_imaging import align, stereo_imaging_distance   # torch-only, no heavy deps
+        _STEREO_FNS = (align, stereo_imaging_distance)
+    align, stereo_imaging_distance = _STEREO_FNS
+
+    ref_a, pred_a = align(ref.float(), pred.float())                 # delay-compensate (≈no-op for our recon)
+    d = stereo_imaging_distance(ref_a, pred_a, sample_rate=sr)       # width_bias, d_width, …
+    Sr = (ref_a[0] - ref_a[1]) / 2 ** 0.5                            # (T,) reference side
+    Sx = (pred_a[0] - pred_a[1]) / 2 ** 0.5                          # (T,) predicted side
+    Mr = (ref_a[0] + ref_a[1]) / 2 ** 0.5                            # (T,) reference mid
+    Mx = (pred_a[0] + pred_a[1]) / 2 ** 0.5                          # (T,) predicted mid
+    return {"width_bias": d["width_bias"], "d_width": d["d_width"],
+            "sisdr_s": _si_sdr(Sx, Sr), "sisdr_m": _si_sdr(Mx, Mr)}
+
+
+def _si_sdr(est: torch.Tensor, ref: torch.Tensor, eps: float = 1e-10) -> float:
+    """Scale-invariant SDR (dB), matching stereo_diagnosis/measure_imaging.si_sdr."""
+    est, ref = est - est.mean(), ref - ref.mean()
+    a = (est * ref).sum() / (ref.square().sum() + eps)
+    proj = a * ref
+    return float((10 * torch.log10(proj.square().sum() / ((est - proj).square().sum() + eps))).item())
 
 
 def _pad_for_swin(wav: torch.Tensor, hop_length: int,
@@ -167,6 +209,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--new-metrics-only", action="store_true",
                    help="Compute ONLY fad_pann (PANN Cnn14 whole-file FAD): skip everything "
                         "else. Overwrites fad_pann.csv, leaves every other CSV and _done untouched.")
+    p.add_argument("--compute-ms-metrics", action="store_true",
+                   help="ADD stereo-imaging metrics (width_bias, d_width, sisdr_s, sisdr_m) to the "
+                        "default per-file metrics, computed in-memory on the (ref, recon) pair. "
+                        "Opt-in: off by default → old runs unchanged. Writes ms_metrics.csv.")
     return p.parse_args()
 
 
@@ -275,6 +321,15 @@ def main() -> None:
                 _append_csv(parts_dir / "spectral.0.csv", _CSV_SCHEMA["spectral"],
                             {"file": stem, "si_sdr": sisdr_val, "sdr": sdr_val,
                              **spectral_losses(wav_ref, pred)})
+
+                # Opt-in stereo-imaging metrics (needs true stereo ref+pred).
+                if (args.compute_ms_metrics
+                        and wav_ref.shape[0] == 2 and pred.shape[0] == 2):
+                    try:
+                        _append_csv(parts_dir / "ms_metrics.0.csv", _CSV_SCHEMA["ms_metrics"],
+                                    {"file": stem, **_compute_ms_metrics(wav_ref, pred, sr)})
+                    except Exception as e:
+                        warn(f"MS metrics {stem}: {e}", prefix="MS")
 
             if (not args.skip_cdpam and not args.sdr_only and not args.fad_gud_only
                     and not args.new_metrics_only):

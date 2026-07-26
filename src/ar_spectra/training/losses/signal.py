@@ -338,6 +338,77 @@ class MultiResolutionSTFTLoss(torch.nn.Module):
         return mrstft_loss, sc_mag_loss, log_mag_loss, lin_mag_loss, phs_loss
 
 
+class SumAndDifferenceSTFTLoss(torch.nn.Module):
+    """SAO-faithful stereo reconstruction loss over sum/difference + left/right.
+
+    Reproduces Stable Audio Open's stereo recon term (auraloss
+    ``SumAndDifferenceSTFTLoss`` + the two per-channel L/R terms) as a single
+    module, so it registers under one ``mrstft_sd`` weight:
+
+        loss = w_ms · ½·[ mrstft(M̂, M) + mrstft(Ŝ, S) ]        # mid/side branch
+             + w_lr · ½·[ mrstft(L̂, L) + mrstft(R̂, R) ]        # left/right branch
+
+    with ``M = L + R``, ``S = L − R`` and ``mrstft`` an A-weighted
+    ``MultiResolutionSTFTLoss`` (spectral-convergence + log-magnitude L1 per
+    resolution). With ``w_ms = w_lr = 1.0`` this equals SAO's
+    ``1.0·sdstft + 0.5·lrstft_L + 0.5·lrstft_R`` schema character-for-character.
+
+    The mid/side branch is what a plain complex-STFT MSE cannot see: by the
+    parallelogram identity, an L2 on complex STFTs is a fixed multiple of the
+    L/R L2, so M/S is a no-op there and the decoder is free to collapse the
+    (low-energy) side channel. Replicating SAO's intentionally reversed
+    AuralossLoss chain (``stable_audio_baseline .../losses/losses.py:111``),
+    the internal STFT losses receive ``input=target, target=pred`` → spectral
+    convergence normalizes by the RECONSTRUCTION, ``SC = ‖|X̂|−|X|‖/‖|X̂|‖``:
+    a quasi-mono target (S≈0) yields a bounded ≈1 term (no spike, no clamp
+    needed), while a collapsed predicted side is penalized hard → removes the
+    shrinkage incentive that makes SAGE sound near-mono.
+
+    Operates in the waveform domain, ``forward(decoded, reals)`` with stereo
+    ``(B, 2, T)`` tensors, mirroring the ``mrmel``/``mrstft_same`` blocks.
+    """
+
+    def __init__(
+        self,
+        fft_sizes: List[int],
+        hop_sizes: List[int],
+        win_lengths: List[int],
+        sample_rate: int = 44100,
+        window: str = "hann_window",
+        perceptual_weighting: bool = True,  # A-weighting FIR pre-filter (SAO default)
+        w_ms: float = 1.0,                  # weight of the mid/side branch (SAO: 1.0)
+        w_lr: float = 1.0,                  # weight of the left/right branch (SAO: 1.0 → 0.5 each)
+        **kwargs,
+    ):
+        super().__init__()
+        self.sd = SumAndDifference()            # (B,2,T) → sum (B,1,T), diff (B,1,T)
+        # ONE shared A-weighted MR-STFT reused for M, S, L, R — identical config to SAO;
+        # numerically equivalent to SAO's separate sdstft/lrstft instances (same params).
+        self.mrstft = MultiResolutionSTFTLoss(
+            fft_sizes=fft_sizes,
+            hop_sizes=hop_sizes,
+            win_lengths=win_lengths,
+            window=window,
+            sample_rate=sample_rate,
+            perceptual_weighting=perceptual_weighting,
+            **kwargs,
+        )
+        self.w_ms = w_ms                        # mid/side branch weight
+        self.w_lr = w_lr                        # left/right branch weight
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        if pred.shape != target.shape:
+            raise ValueError(f"Shape mismatch: {pred.shape} vs {target.shape}")
+        m_p, s_p = self.sd(pred)                                       # (B, 1, T) each
+        m_t, s_t = self.sd(target)                                     # (B, 1, T) each
+        # SAO reversed-order chain (AuralossLoss "wrong order"): STFTLoss gets
+        # input=target, target=pred → SC normalizes by the RECONSTRUCTION.
+        ms = 0.5 * (self.mrstft(m_t, m_p) + self.mrstft(s_t, s_p))     # mid/side branch → scalar
+        lr = 0.5 * (self.mrstft(target[:, 0:1], pred[:, 0:1]) +       # left  channel
+                    self.mrstft(target[:, 1:2], pred[:, 1:2]))         # right channel → scalar
+        return self.w_ms * ms + self.w_lr * lr                         # scalar
+
+
 class SISDRLoss(torch.nn.Module):
     def __init__(self, zero_mean=True, eps=1e-8, reduction="mean"):
         super(SISDRLoss, self).__init__()
