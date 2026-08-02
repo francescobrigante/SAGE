@@ -1,45 +1,34 @@
 #!/bin/bash
 # ============================================================
-# FT_MULTICORPUS_swiglu_ep359: FINAL decoder-finetune of the multicorpus model.
-#   MULTICORPUS_swiglu_500ep @ep359 (best pretrain checkpoint) → decoder-finetune
-#   with the WavTokenizer discriminator + zero-init ResidualPostNet.
+# FT_MULTICORPUS_swiglu_ep359_ms_add: STEREO-COLLAPSE ablation ARM "ADD".
+#   IDENTICAL to FT_MULTICORPUS_swiglu_ep359 in every respect EXCEPT the recon loss:
+#     - stft_mse  = 1.0   (ComplexMSE on STFT — KEPT INTACT; best-in-class Mid)
+#     - mrstft_sd = 1.0   (SAO-faithful sum/difference + L/R MR-STFT — ADDED)
 #
-#   RECIPE = FT_LARGE2 (= FT7 + postnet), re-pointed to the multicorpus swiglu
-#   model and run on the multi-corpus dataset at 16 GPU. The FT recipe is IDENTICAL
-#   to FT_LARGE2; only the scale, dataset, init source and two knobs differ:
-#     - init autoencoder weights (EMA) from MULTICORPUS_swiglu_500ep/epoch_359
-#       (strict=False: postnet keys absent → stay zero-init = identity at step 0).
-#     - encoder FROZEN; discriminator FROM SCRATCH (init_from_disc=false);
-#       gen_lr=1e-4 (AdamW, pretrain 1e-3 /10); disc_lr=2e-4; kl=0; FP32.
-#     - mrmel=0.5 and ema_decay=0.9998 carried over from the pretrain recipe.
+#   HYPOTHESIS (doc raccomandazione 1+3): SAGE sounds near-mono because a complex-STFT
+#   MSE is a quadratic form → by the parallelogram identity M/S is a no-op, so the
+#   low-energy Side channel gets ~0 loss budget and collapses (w_rec ≈ 0.15·w_ref,
+#   broadband). SAGE already has the BEST Mid of the 5 models (MRSTFT_M 1.25), so we
+#   ADD the missing stereo-aware term next to the untouched ComplexMSE instead of
+#   replacing it — repairing Side without risking the Mid. mrstft_sd's per-resolution
+#   spectral convergence normalizes by target energy PER CHANNEL → gives Side its own
+#   budget. This is the SAFE arm; FT_..._ms_replace is the exploratory (MSE-off) arm.
 #
-#   inv_gamma=200000 (SAME as the swiglu 500ep pretrain — NOT rescaled): mirrors the
-#   FT_LARGE2 precedent, which kept LARGE2's inv_gamma unchanged and simply ran
-#   longer. The scheduler restarts fresh (init_from = weights only) and decays over
-#   1500 ep to ~0.47×peak; best checkpoint picked mid-run via offline eval.
+#   Everything else (init from swiglu ep359 EMA, frozen encoder, WavTokenizer disc
+#   from scratch, gen_lr=1e-4, kl=0, postnet, inv_gamma=200000, ema=0.9998, FP32,
+#   epochs=1500 + val/2 + save/25, mrmel=0.5) is COPIED VERBATIM from the mse FT so the
+#   ONLY variable vs baseline is the recon loss → clean single-knob ablation at
+#   identical LR schedule (compare ms_add@e399 vs baseline@e399). See the header of
+#   next_slurms/FT_MULTICORPUS_swiglu_ep359.slurm for the full recipe rationale.
 #
-#   LONG run: epochs=3000 (first 1500 completed 2026-07-18; EXTENDED to 3000 by
-#   resuming from last.ckpt to keep improving the decoder FT). save every 25 ep
-#   (offline recon/MAEB eval cadence); val every 2 ep (FMA-only, fast → dense W&B
-#   curve). Pick the best checkpoint later, then run an FT8-style cooldown from it.
+#   BOUNDED 2-DAY EXPERIMENT: --time=2-00:00:00. Graceful SIGUSR1@120 → PL saves a full
+#   checkpoint (last.ckpt / hpc_ckpt_*) ~120 s before TIMEOUT so no progress is lost at
+#   the 2-day mark; --requeue lets it auto-chain if you want to extend. Stop with
+#   `scancel` after the e199/e399 verdict.
 #
-#   NOTE (drop_path on the frozen encoder): freeze_encoder sets requires_grad=False
-#   but NOT .eval(), so the encoder's timm DropPath (drop_path_rate=0.1) stays active
-#   in train mode → the decoder trains on latents perturbed by stochastic depth,
-#   deterministic at inference. This is IDENTICAL to FT_LARGE2 (which produced SAGE),
-#   kept here for faithful reproduction. LayerNorm (not BatchNorm) → no running-stat
-#   drift; the mismatch is "train noisy / infer clean" (the benign direction).
-#
-#   GRACEFUL TIMEOUT (method b): #SBATCH --signal=SIGUSR1@120 + PL's default
-#   SLURMEnvironment(auto_requeue=True) → on SIGUSR1 PL saves a full hpc_ckpt_*.ckpt
-#   (EMA injected via EMACallback.on_save_checkpoint) and `scontrol requeue`s the job.
-#   The resume block restores from the FRESHEST of {hpc_ckpt_*, checkpoints/last.ckpt}
-#   across all timestamped run dirs. 1500 ep ≈ 7-8 days at 16 GPU → auto-chains beyond
-#   the 4-day lprod cap with near-zero progress loss.
-#
-#   sbatch next_slurms/FT_MULTICORPUS_swiglu_ep359.slurm
+#   sbatch next_slurms/FT_MULTICORPUS_swiglu_ep359_ms_add.slurm
 # ============================================================
-#SBATCH --job-name=FT_MULTICORPUS_swiglu_ep359
+#SBATCH --job-name=FT_MULTICORPUS_swiglu_ep359_ms_add
 #SBATCH --account=IscrC_MM
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
@@ -48,7 +37,7 @@
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=8              # 32 cores/node ÷ 4 tasks
 #SBATCH --mem-per-cpu=15G              # 4×8×15 = 480G/node (< 512G)
-#SBATCH --time=4-00:00:00             # full lprod cap → fewest requeues for a ~7-8 day run
+#SBATCH --time=2-00:00:00             # bounded 2-day ablation block
 #SBATCH --requeue                     # required for PL auto-requeue (+ node-failure insurance)
 #SBATCH --signal=SIGUSR1@120          # SIGUSR1 to the srun step 120s before TIMEOUT → PL saves + requeues
 #SBATCH --output=logs/%x_%j.out
@@ -65,11 +54,12 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export HYDRA_FULL_ERROR=1
 export HF_HUB_OFFLINE=1                 # no teacher/CLAP in decoder-FT → stay fully offline
 
-# Multi-node rendezvous: pin a MASTER_PORT distinct from the other multicorpus jobs.
-export MASTER_PORT=29558
+# Multi-node rendezvous: pin a MASTER_PORT distinct from the mse FT (29558), the
+# mrstft FT (29560), and the replace arm (29564) → all can co-schedule in parallel.
+export MASTER_PORT=29562
 
-export http_proxy='http://login07:3150'
-export https_proxy='http://login07:3150'
+export http_proxy='http://login05:3150'
+export https_proxy='http://login05:3150'
 export WANDB_MODE=online
 export TF_CPP_MIN_LOG_LEVEL=3
 export WANDB_TAGS="$SLURM_JOB_NAME"
@@ -91,7 +81,7 @@ fi
 echo "[INIT] decoder-finetune init from swiglu ep359 (EMA): $SRC_CKPT"
 
 # ─── W&B resume (fresh run; id persisted by train.py to .run_ids/<name>) ──────
-RUN_ID_FILE="$WORK/C-VAE/.run_ids/FT_MULTICORPUS_swiglu_ep359"
+RUN_ID_FILE="$WORK/C-VAE/.run_ids/FT_MULTICORPUS_swiglu_ep359_ms_add"
 if [ -f "$RUN_ID_FILE" ]; then
     export WANDB_RESUME=must
     export WANDB_RUN_ID=$(cat "$RUN_ID_FILE")
@@ -99,7 +89,7 @@ if [ -f "$RUN_ID_FILE" ]; then
 fi
 
 # ─── Resume: freshest of {hpc_ckpt_* (signal), last.ckpt (periodic)} ──────────
-RUN_BASE="$WORK/C-VAE/runs/FT_MULTICORPUS_swiglu_ep359"
+RUN_BASE="$WORK/C-VAE/runs/FT_MULTICORPUS_swiglu_ep359_ms_add"
 pick_ckpt() {
     ls -t "$RUN_BASE"/*/hpc_ckpt_*.ckpt "$RUN_BASE"/*/checkpoints/last.ckpt 2>/dev/null | head -1
 }
@@ -127,12 +117,13 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         +init_from_disc=false \
         trainer.trainer.freeze_encoder=true \
         trainer.trainer.warmup_steps=0 \
-        trainer.trainer.epochs=3000 \
+        trainer.trainer.epochs=1500 \
         trainer.trainer.check_val_every_n_epoch=2 \
         trainer.trainer.save_every_n_epochs=25 \
         trainer.loss_config.bottleneck.weights.kl=0.0 \
         trainer.loss_config.spectral.weights.stft_mse=1.0 \
         trainer.loss_config.spectral.weights.mrstft=0.0 \
+        trainer.loss_config.mrstft_sd.weights.mrstft_sd=1.0 \
         trainer.loss_config.mrmel.weights.mrmel=0.5 \
         trainer.optimizer.lr=1e-4 \
         trainer.scheduler.inv_gamma=200000 \
@@ -154,9 +145,10 @@ while [ $attempt -le $MAX_ATTEMPTS ]; do
         "+trainer.trainer.compile=false" \
         "++trainer.trainer.ema_decay=0.9998" \
         trainer.wandb.use_wandb=true \
-        trainer.trainer.ckpt_dir=checkpoints/FT_MULTICORPUS_swiglu_ep359 \
-        trainer.wandb.name=FT_MULTICORPUS_swiglu_ep359 \
-        $CKPT_ARG
+        trainer.trainer.ckpt_dir=checkpoints/FT_MULTICORPUS_swiglu_ep359_ms_add \
+        trainer.wandb.name=FT_MULTICORPUS_swiglu_ep359_ms_add \
+        $CKPT_ARG \
+        "$@"
 
     EXIT=$?
     [ $EXIT -eq 0 ] && break

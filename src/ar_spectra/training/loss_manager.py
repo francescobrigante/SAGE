@@ -311,6 +311,20 @@ class LossManager(nn.Module):
                     )
                 )
 
+        if "mrstft_sd" in self.loss_config:
+            mrstft_sd_weight = self.loss_config["mrstft_sd"]["weights"]["mrstft_sd"]
+            if mrstft_sd_weight > 0.0:
+                mrstft_sd_cfg = dict(self.loss_config["mrstft_sd"].get("config", {}) or {})
+                mrstft_sd_cfg.setdefault("sample_rate", self.sample_rate)
+                self.mrstft_sd = signal.SumAndDifferenceSTFTLoss(**mrstft_sd_cfg)
+                gen_loss_modules.append(
+                    LossWithTarget(
+                        self.mrstft_sd, target_key="reals", input_key="decoded",
+                        name="mrstft_sd_loss", weight=mrstft_sd_weight,
+                        decay=self.loss_config["mrstft_sd"].get("decay", 1.0),
+                    )
+                )
+
         if "hubert" in self.loss_config:
             hubert_weight = self.loss_config["hubert"]["weights"]["hubert"]
             if hubert_weight > 0.0:

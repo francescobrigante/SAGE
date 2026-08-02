@@ -15,7 +15,7 @@
 #          evaluation/sota_models/build_refs_10s.slurm <data_dir> --max-files 20
 # ============================================================
 #SBATCH --job-name=build_refs_10s
-#SBATCH --account=IscrC_AHNetBio
+#SBATCH --account=IscrC_MM
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
@@ -35,6 +35,10 @@ shift
 EXTRA=("$@")
 
 module load profile/deeplrn cineca-ai/4.3.0
+# Compute on IscrC_MM (IscrC_AHNetBio budget exhausted), but WORK/FAST must point to
+# IscrC_AHNetBio where repo, venv, datasets and HF cache live (user-owned, world-readable).
+export WORK=/leonardo_work/IscrC_AHNetBio
+export FAST=/leonardo_scratch/fast/IscrC_AHNetBio
 unset PYTHONPATH
 source $WORK/.envs/sota/bin/activate
 

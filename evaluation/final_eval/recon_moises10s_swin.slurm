@@ -14,7 +14,7 @@
 #          evaluation/final_eval/recon_moises10s_swin.slurm --max-files 12
 # ============================================================
 #SBATCH --job-name=fe_recon_m10s_swin
-#SBATCH --account=IscrC_AHNetBio
+#SBATCH --account=IscrC_MM
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
@@ -30,6 +30,10 @@ set -uo pipefail
 mkdir -p logs
 
 module load profile/deeplrn cineca-ai/4.3.0
+# Compute on IscrC_MM (IscrC_AHNetBio budget exhausted), but WORK/FAST must point to
+# IscrC_AHNetBio where repo, venv, datasets and HF cache live (user-owned, world-readable).
+export WORK=/leonardo_work/IscrC_AHNetBio
+export FAST=/leonardo_scratch/fast/IscrC_AHNetBio
 export HF_HOME="$FAST/hf_cache"
 export HF_HUB_OFFLINE=1
 export http_proxy='http://login07:3150'
@@ -46,7 +50,8 @@ set +a
 cd $WORK/C-VAE
 source $WORK/.envs/c_vae/bin/activate
 
-DATA_DIR="$FAST/datasets/moisesdb/chunks_mix_original/original"
+# DATA_DIR overridable via env (default = mixtures) → same wrapper serves stems too.
+: "${DATA_DIR:=$FAST/datasets/moisesdb/chunks_mix_original/original}"
 : "${EVAL_ROOT:=$WORK/C-VAE/runs/final_eval/recon_moisesdb_10s}"
 mkdir -p "$EVAL_ROOT"
 

@@ -19,6 +19,8 @@ stable_audio_baseline/
 papers/
 .run_ids/
 listening_tests/
+evaluation/stereo_diagnosis/plots
+evaluation/maeb/figures/
 
 src/c_vae/swin/cuda_kernels/build/
 src/c_vae/swin/cuda_kernels/swin_window_process.egg-info/

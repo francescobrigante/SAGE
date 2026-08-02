@@ -15,7 +15,7 @@
 #          evaluation/final_eval/recon_moises10s_sota.slurm codicodec --max-files 12
 # ============================================================
 #SBATCH --job-name=fe_recon_m10s_sota
-#SBATCH --account=IscrC_AHNetBio
+#SBATCH --account=IscrC_MM
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
@@ -35,6 +35,10 @@ shift
 EXTRA=("$@")
 
 module load profile/deeplrn cineca-ai/4.3.0
+# Compute on IscrC_MM (IscrC_AHNetBio budget exhausted), but WORK/FAST must point to
+# IscrC_AHNetBio where repo, venv, datasets and HF cache live (user-owned, world-readable).
+export WORK=/leonardo_work/IscrC_AHNetBio
+export FAST=/leonardo_scratch/fast/IscrC_AHNetBio
 unset PYTHONPATH
 source $WORK/.envs/sota/bin/activate
 
@@ -50,7 +54,8 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 cd $WORK/C-VAE
 
-DATA_DIR="$FAST/datasets/moisesdb/chunks_mix_original/original"
+# DATA_DIR overridable via env (default = mixtures) → same wrapper serves stems too.
+: "${DATA_DIR:=$FAST/datasets/moisesdb/chunks_mix_original/original}"
 : "${EVAL_ROOT:=$WORK/C-VAE/runs/final_eval/recon_moisesdb_10s}"
 mkdir -p "$EVAL_ROOT"
 
