@@ -9,10 +9,8 @@ import torch
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "evaluation"))
 
-from eval_dataloader import batch_align
+from utils import batch_align          # evaluation/utils.py
 
 SR = 44100
 

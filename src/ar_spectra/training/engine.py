@@ -19,7 +19,7 @@ def select_training_phase(use_disc: bool, warmup_mode: str, disc_phase: bool, wa
 
     ``disc_phase`` is a per-batch alternation flag owned by the training wrapper (a
     boolean toggled once per batch). It is deliberately NOT derived from
-    ``global_step``: with an auxiliary optimizer present (e.g. MERT distillation), the
+    ``global_step``: with an auxiliary optimizer present (e.g. CLAP distillation), the
     gen phase calls TWO ``optimizer.step()`` (gen + aux) so ``global_step`` advances by
     2 on gen batches and 1 on disc batches — using its parity then keeps it even and
     starves the disc phase. A per-batch toggle alternates correctly regardless of how
@@ -118,39 +118,6 @@ class AutoencoderEngine(nn.Module):
             return None
         return self.teacher_model.encode(encoder_input, return_info=False)
 
-    def _augment_waveform(self, wav: torch.Tensor) -> torch.Tensor:
-        """Apply random lightweight augmentations to a batch of waveforms: gain, shelving EQ, time-shift, and bandpass."""
-        B, C, T = wav.shape
-        import random
-
-        # 1. Random Gain [0.8, 1.2]
-        gain = 0.8 + 0.4 * torch.rand(B, 1, 1, device=wav.device)
-        wav = wav * gain
-
-        # 2. Random stable first-order FIR shelving filter: y[n] = x[n] + alpha * x[n-1]
-        # with alpha in [-0.3, 0.3].
-        alpha = -0.3 + 0.6 * torch.rand(B, 1, 1, device=wav.device)
-        wav_prev = torch.nn.functional.pad(wav[:, :, :-1], (1, 0))
-        wav = wav + alpha * wav_prev
-
-        # 3. Vectorized random circular Time Shift (up to 5% of sequence length)
-        max_shift = int(0.05 * T)
-        if max_shift > 0:
-            shift = torch.randint(-max_shift, max_shift + 1, (B,), device=wav.device)
-            indices = (torch.arange(T, device=wav.device).unsqueeze(0) - shift.unsqueeze(1)) % T
-            wav = torch.gather(wav, -1, indices.unsqueeze(1).expand(-1, C, -1))
-
-        # 4. Random simple highpass + lowpass shelving filter
-        beta = 0.2 * torch.rand(B, 1, 1, device=wav.device)
-        wav_prev_hp = torch.nn.functional.pad(wav[:, :, :-1], (1, 0))
-        wav = wav - beta * wav_prev_hp
-        
-        if random.random() < 0.5:
-            wav_prev_lp = torch.nn.functional.pad(wav[:, :, :-1], (1, 0))
-            wav = 0.5 * (wav + wav_prev_lp)
-
-        return wav
-
     def compute(self, batch: Tuple[torch.Tensor, torch.Tensor], global_step: int,
                 disc_phase: Optional[bool] = None) -> Dict[str, Any]:
         """Compute forward and loss breakdown for a training batch.
@@ -235,27 +202,12 @@ class AutoencoderEngine(nn.Module):
             loss_info.update(encoder_info)
             loss_info.update(bottleneck_info)
 
-            # Encode second view for contrastive loss (Fase 4) -- gen step only.
-            if (not disc_step) and getattr(self.loss_manager, "contrastive_enabled", False):
-                aug_waveforms = self._augment_waveform(orig_waveforms)
-                sp_aug = self.autoencoder.stft(aug_waveforms)
-                is_complex = getattr(self.autoencoder.encoder, "is_complex", False)
-                if not is_complex:
-                    sp_aug = self.autoencoder._pack_complex(sp_aug)
-                if warmed_up and self.encoder_freeze_on_warmup:
-                    with torch.no_grad():
-                        augmented_latents = self.autoencoder.encode(sp_aug, return_info=False)
-                else:
-                    augmented_latents = self.autoencoder.encode(sp_aug, return_info=False)
-                loss_info["augmented_latents"] = augmented_latents
-
             # Optional latent masking (denoising-VAE augmentation), before decode.
             if self.latent_mask_ratio > 0.0:
                 mask = torch.rand_like(latents) < self.latent_mask_ratio
                 latents = torch.where(mask, torch.zeros_like(latents), latents)
                 loss_info["latents"] = latents
 
-            # encoder_info passed explicitly: the contrastive encode overwrites the cached _last_encoder_info
             sp_decoded = self.autoencoder.decode(latents, encoder_info=encoder_info, apply_inverse=False)
 
             # if has pre-transform, invert it otherwise use decoded as is (linear)
@@ -323,7 +275,6 @@ class AutoencoderEngine(nn.Module):
         gen_breakdown: Dict[str, torch.Tensor] = {}
         disc_total = None
         disc_breakdown: Dict[str, torch.Tensor] = {}
-        vf_w_adaptive = None
 
         if disc_step:
             # decoded is detached (no_grad forward) → disc.loss() updates only the disc
@@ -342,26 +293,10 @@ class AutoencoderEngine(nn.Module):
 
             gen_total, gen_breakdown = self.loss_manager.losses_gen(loss_info)
 
-            # VA-VAE adaptive VF weighting (Fase 1): rescale VF by ||grad_z L_rec|| / ||grad_z L_vf||
-            if getattr(self.loss_manager, "vf_adaptive", False):
-                vf_raw = gen_breakdown.get(self.loss_manager.vf_loss_name)
-                nll = gen_breakdown.get(self.loss_manager.vf_recon_name)
-                z = loss_info["latents"]
-                if (vf_raw is not None and nll is not None
-                        and vf_raw.requires_grad and z.requires_grad):
-                    g_nll = torch.autograd.grad(nll, z, retain_graph=True)[0]
-                    g_vf = torch.autograd.grad(vf_raw, z, retain_graph=True)[0]
-                    vf_w_adaptive = (g_nll.norm() / (g_vf.norm() + 1e-4)).clamp(0.0, 1e8).detach()
-                    vf_eff = self.loss_manager.vf_hyper * vf_w_adaptive
-                    gen_total = gen_total - vf_raw + vf_eff * vf_raw
-                    gen_breakdown[self.loss_manager.vf_loss_name] = (vf_eff * vf_raw).detach()
-
         # Stats per logging
         data_std = loss_info["encoder_input"].std()
         latent_std = loss_info["latents"].std()
         stats = {"data_std": data_std, "latent_std": latent_std}
-        if vf_w_adaptive is not None:
-            stats["vf_w_adaptive"] = vf_w_adaptive
 
         return {
             "phase": phase,

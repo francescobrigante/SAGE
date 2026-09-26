@@ -23,8 +23,9 @@ dependencies = [
     "pyyaml>=6.0",
     # TEMPORARY (phase F2 removes it): varlen reads the repo-root config.py, which loads .env.
     "python-dotenv>=1.0.1",
-    # TEMPORARY (removal candidate in phase F1b): imported on the inference path by the
-    # complex-valued blocks (ar_spectra/blocks/normalization/complex.py), unused by the real-valued SAGE.
+    # TEMPORARY (phase F2 moves them to an optional [complex] extra with lazy imports): imported on the
+    # inference path by the complex-valued blocks (ar_spectra/blocks/normalization/complex.py), which the
+    # real-valued SAGE (is_complex=False) never calls.
     "complextorch==1.2.0",           # numpy requirement overridden below (see tool.uv.dependency-metadata)
     "complexpytorch>=0.4",
 ]
@@ -47,9 +48,10 @@ train = [
     "pillow>=10.0",
     "plotly>=5.0",
     "umap-learn>=0.5.5",
-    # TEMPORARY (removal candidate in phase F1b): imported by models/pretransforms.py, reached via
-    # discriminators/__init__ from the unused transformer/HIL discriminators, not by the paper's WavTokenizer one.
+    # Alternative discriminators (the paper uses WavTokenizer): wavelet pretransform (transformer/HIL)
+    # and CQT front-end (subband).
     "pywavelets>=1.4",
+    "nnaudio>=0.3.3",
 ]
 # Evaluation of SAGE: reconstruction metrics (FAD, CLAP, CDPAM, SI-SDR/STFT) and MAEB probing.
 # Metric-stack versions are the ones used for the paper's tables.
@@ -95,7 +97,7 @@ name = "stable-audio-3"
 version = "0.1.0"
 requires-dist = ["einops", "einops-exts", "safetensors", "torchaudio", "packaging"]
 
-# TEMPORARY (goes away with the complex-valued code, phase F1b): complextorch 1.2.0 declares
+# complextorch 1.2.0 (complex-valued blocks, is_complex=True) declares
 # numpy>=2.2, which conflicts with fadtk==1.1.0 (numpy<2) of the paper's metric stack. SAGE is
 # real-valued and never calls complextorch; the paper environment ran numpy 1.26.4. We keep its
 # other requirements and relax only numpy.
@@ -132,6 +134,8 @@ allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Repo root (train.py, dataloader.py, config.py), src/ and evaluation/ are importable from every test.
+pythonpath = [".", "src", "evaluation"]
 markers = [
     "slow: tests that run the full 1024x128 encoder/decoder (deselect with '-m not slow')",
     "smoke: fast end-to-end checks of inference, training, fine-tuning and evaluation",

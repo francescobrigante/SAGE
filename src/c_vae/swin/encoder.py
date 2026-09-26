@@ -16,7 +16,6 @@ from ar_spectra.models.implementations.abstract_ae import AbstractEncoder
 from .swin_stage import SwinStage
 from .patches import PatchEmbed, PatchMerging
 from .utils import init_swin_weights, make_norm, random_patch_mask
-from .perceiver import PerceiverCompression
 
 
 class SwinEncoder(AbstractEncoder):
@@ -93,8 +92,6 @@ class SwinEncoder(AbstractEncoder):
         abs_pos_embed: bool = False,
         mim_mask_ratio: float = 0.0,
         use_smooth_convs: bool = False,
-        use_perceiver_compression: bool = False,
-        num_perceiver_queries: int = 128,
         fold_freq_to_channels: bool = False,
     ) -> None:
 
@@ -200,15 +197,6 @@ class SwinEncoder(AbstractEncoder):
         self._final_dim: int = stage_dims[-1]                            # 384
         self._final_resolution: Tuple[int, int] = stage_resolutions[-1]  # (32, 4)
 
-        if use_perceiver_compression:
-            self.compressor = PerceiverCompression(
-                dim=self._final_dim,
-                num_queries=num_perceiver_queries,
-                grid_size=self._final_resolution,
-                is_complex=is_complex
-            )
-            self._final_resolution = (num_perceiver_queries, 1)
-
         # ── Option C: learned freq-fold head (fold_freq_to_channels) ───────────────
         # When True, the F_lat latent freq bands are folded into the feature dim
         # BEFORE the head, and a single learned FC collapses (F_lat * final_dim) ->
@@ -216,8 +204,6 @@ class SwinEncoder(AbstractEncoder):
         # with frequency mixed by a learned projection (vs the default structural
         # per-token FC that keeps the F_lat × T_lat grid). Default False = legacy path.
         self.fold_freq_to_channels = bool(fold_freq_to_channels)
-        if self.fold_freq_to_channels and use_perceiver_compression:
-            raise ValueError("fold_freq_to_channels is incompatible with perceiver compression")
 
         # Final norm + projection to latent dimension
         self.norm = make_norm(self._final_dim, is_complex)
@@ -274,9 +260,6 @@ class SwinEncoder(AbstractEncoder):
         # Stage 2 + PatchMerging:                 (B,  512, 192)  grid  (64,  8)
         # Stage 3 + PatchMerging:                 (B,  128, 384)  grid  (32,  4)
         # Stage 4 (no merge):                     (B,  128, 384)  grid  (32,  4)
-
-        if hasattr(self, 'compressor'):
-            x = self.compressor(x)
 
         x = self.norm(x)                        # (B, L=F*T, final_dim)
 

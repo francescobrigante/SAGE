@@ -1,13 +1,10 @@
 # Top-level Hydra composition file
 # You can override any group from CLI, e.g.:
 #   python train.py trainer.epochs=10 data.train_dataloader.batch_size=4
-# Legacy fallback: set trainer.use_json=true trainer.json_path=ar_spectra/config/experiments/SEANet_STFT.json
 
 defaults:
   - data: fma               # single-corpus FMA (default). Multi-corpus: data=multicorpus
-  # - models: hf_autoencoder_kl
-  - models: SEANet_real_model
-  # - models: simple_transformer_AE
+  - models: swin_real_swiglu_xsa   # SAGE architecture (paper)
   - trainer@trainer
   - _self_
 

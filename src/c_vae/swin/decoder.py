@@ -18,7 +18,6 @@ from .swin_stage import SwinStage
 from .patches import PatchExpand, PatchUnembed, SpatialConvSmooth
 from .postnet import ResidualPostNet
 from .utils import init_swin_weights, make_norm
-from .perceiver import PerceiverDecompression
 
 
 class SwinDecoder(AbstractDecoder):
@@ -82,7 +81,6 @@ class SwinDecoder(AbstractDecoder):
         is_complex: bool = False,
         complex_activation: str = "ComplexGELU1d",
         use_smooth_convs: bool = False,
-        use_perceiver_compression: bool = False,
         use_postnet: bool = False,
         postnet_hidden: int = 64,
         fold_freq_to_channels: bool = False,
@@ -135,14 +133,6 @@ class SwinDecoder(AbstractDecoder):
         _proj_out_dim = (self._f_lat * stage_dims[0]
                          if self.fold_freq_to_channels else stage_dims[0])
         self.input_proj = NormLinear(channels, _proj_out_dim, is_complex=is_complex)
-
-        if use_perceiver_compression:
-            self.decompressor = PerceiverDecompression(
-                dim=stage_dims[0],
-                num_queries=stage_resolutions[0][0] * stage_resolutions[0][1],
-                grid_size=stage_resolutions[0],
-                is_complex=is_complex
-            )
 
         # Stochastic depth
         total_blocks = sum(depths)
@@ -259,9 +249,6 @@ class SwinDecoder(AbstractDecoder):
             dim0 = self._stage_dims[0]
             x = x.view(B, T_lat, self._f_lat, dim0)              # (B, T, F, C)
             x = x.permute(0, 2, 1, 3).reshape(B, self._f_lat * T_lat, dim0)  # (B, F*T, C)
-
-        if hasattr(self, 'decompressor'):
-            x = self.decompressor(x)
 
         # Swin stages with PatchExpand between them (+ optional spatial smoothers)
         for i, stage in enumerate(self.stages):

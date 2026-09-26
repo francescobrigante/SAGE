@@ -15,9 +15,6 @@ import pytest
 import torch
 import torch.nn as nn
 
-_SRC = "/Users/francesco/Desktop/C-VAE/src"
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
 
 from c_vae.swin.windowing import window_partition, window_reverse
 from c_vae.swin.attention import WindowAttention

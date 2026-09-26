@@ -662,7 +662,7 @@ def main(cfg: DictConfig):
             err(f"Error details: {e}", prefix="TRAINER")
             err("To fix this, you can:", prefix="TRAINER")
             err("1. Decrease batch size (e.g., `data.train_dataloader.batch_size=8` instead of 32)", prefix="TRAINER")
-            err("2. Decrease model size (e.g., lower `block_out_channels` in `conf/model/hf_autoencoder_kl.yaml`)", prefix="TRAINER")
+            err("2. Decrease model size (e.g., lower `models.model.swin.embed_dim`)", prefix="TRAINER")
             err("3. Use a smaller dataset or shorter audio segments", prefix="TRAINER")
             err("4. Disable profilers or decrease `accumulate_grad_batches`", prefix="TRAINER")
             err("="*80 + "\n", prefix="TRAINER")

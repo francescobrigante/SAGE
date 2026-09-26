@@ -5,10 +5,7 @@
 # complex-STFT MSE lacks, mono/near-silent safety, and loss_manager wiring.
 # ===============
 import importlib.util
-import sys
-
-sys.path.insert(0, "/leonardo_work/IscrC_AHNetBio/C-VAE/src")
-sys.path.insert(0, "/leonardo_work/IscrC_AHNetBio/C-VAE")
+import os
 
 import pytest
 import torch
@@ -31,9 +28,14 @@ def _sd_loss(w_ms=1.0, w_lr=1.0, perceptual_weighting=False):
     )
 
 
+# Stable Audio Open's vendored auraloss.py (stable-audio-tools, training/losses/auraloss.py).
+# Not a dependency: point SAO_AURALOSS_PY at a checkout to run the parity test.
+_SAO_AURALOSS = os.environ.get("SAO_AURALOSS_PY", "")
+
+
 def _load_sao_auraloss():
     """Import Stable Audio Open's vendored auraloss.py standalone (no package init)."""
-    path = "/leonardo_work/IscrC_AHNetBio/C-VAE/stable_audio_baseline/stable_audio_tools/training/losses/auraloss.py"
+    path = _SAO_AURALOSS
     spec = importlib.util.spec_from_file_location("sao_auraloss", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -42,10 +44,8 @@ def _load_sao_auraloss():
 
 def test_parity_ms_branch_vs_sao_auraloss():
     """Our mid/side branch (w_ms=1, w_lr=0) must equal SAO's SumAndDifferenceSTFTLoss."""
-    import os
-    sao_path = "/leonardo_work/IscrC_AHNetBio/C-VAE/stable_audio_baseline/stable_audio_tools/training/losses/auraloss.py"
-    if not os.path.exists(sao_path):
-        pytest.skip("SAO baseline (stable_audio_baseline) not available for parity check")
+    if not os.path.isfile(_SAO_AURALOSS):
+        pytest.skip("set SAO_AURALOSS_PY to stable-audio-tools' auraloss.py for the parity check")
     sao = _load_sao_auraloss()
 
     torch.manual_seed(0)

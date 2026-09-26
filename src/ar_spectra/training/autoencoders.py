@@ -235,18 +235,6 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             warn(f"scheduler: missing '_target_', using fallback {default_sched['_target_']}")
             sched_spec = default_sched
 
-        def _is_muon_optimizer(spec: dict) -> bool:
-            return spec.get("_target_") == "ar_spectra.training.optimizers.MuonAdamW"
-
-        def _adamw_fallback_from_gen(spec: dict) -> dict:
-            return {
-                "_target_": "torch.optim.AdamW",
-                "lr": spec.get("adamw_lr", spec.get("lr", default_opt["lr"])),
-                "betas": spec.get("adamw_betas", spec.get("betas", default_opt["betas"])),
-                "eps": spec.get("adamw_eps", 1e-8),
-                "weight_decay": spec.get("weight_decay", 0.0),
-            }
-
         # Excludes 1-D params (LayerNorm/BN scale+bias) and all .bias from weight decay.
         wd_exclude = opt_spec.pop("weight_decay_exclude_1d", False)
         weight_decay = opt_spec.get("weight_decay", 0.0)
@@ -276,20 +264,12 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         sched_interval = sched_spec.pop("interval", "epoch")
 
         # Create optimizers via Hydra instantiate.
-        # Muon needs named model parameters for conservative Swin-only grouping;
-        # all other optimizer targets keep the established params/group path.
-        if _is_muon_optimizer(opt_spec):
-            opt_spec["weight_decay_exclude_1d"] = wd_exclude
-            opt_gen = hydra_instantiate(opt_spec, model=self.autoencoder, _convert_="all")
-        else:
-            opt_gen = hydra_instantiate(opt_spec, params=_build_param_groups(self.autoencoder), _convert_="all")
+        opt_gen = hydra_instantiate(opt_spec, params=_build_param_groups(self.autoencoder), _convert_="all")
 
         opt_disc = None
         if self.use_disc and self.discriminator is not None:
             # Use disc-specific spec if provided (e.g. different lr/betas/wd), else fall back to gen spec.
-            disc_spec_raw = self._disc_optimizer_spec if self._disc_optimizer_spec else (
-                _adamw_fallback_from_gen(opt_spec) if _is_muon_optimizer(opt_spec) else opt_spec
-            )
+            disc_spec_raw = self._disc_optimizer_spec if self._disc_optimizer_spec else opt_spec
             disc_spec = deepcopy(disc_spec_raw) if isinstance(disc_spec_raw, dict) else deepcopy(opt_spec)
             if "_target_" not in disc_spec:
                 disc_spec["_target_"] = opt_spec.get("_target_", default_opt["_target_"])
@@ -301,13 +281,11 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         else:
             disc_lr_log = "n/a"
 
-        # --- Aux optimizer for latent-alignment modules
+        # --- Aux optimizer for the loss submodules (CLAP distillation head)
         opt_aux = None
         aux_params = self.engine.loss_manager.aux_parameters()
         if aux_params:
-            aux_spec_raw = self._aux_optimizer_spec if self._aux_optimizer_spec else (
-                _adamw_fallback_from_gen(opt_spec) if _is_muon_optimizer(opt_spec) else opt_spec
-            )
+            aux_spec_raw = self._aux_optimizer_spec if self._aux_optimizer_spec else opt_spec
             aux_spec = deepcopy(aux_spec_raw) if isinstance(aux_spec_raw, dict) else deepcopy(opt_spec)
             if "_target_" not in aux_spec:
                 aux_spec["_target_"] = opt_spec.get("_target_", default_opt["_target_"])

@@ -4,7 +4,6 @@
 # ===============
 import sys
 
-sys.path.insert(0, "/leonardo_work/IscrC_AHNetBio/C-VAE/src")
 
 import torch
 

@@ -11,13 +11,7 @@ from ..models.discriminators import (
 from ..models.bottlenecks import VAEBottleneck
 from .losses.base import MultiLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss, SelfLoss
 from .losses.perceptual import MelSpectrogramLoss, HubertLoss
-from .losses.generative import LatentFlowMatchingLoss
-from .losses.semantic import (
-    CLAPTeacher, MERTTeacher, LatentVFLoss, LatentCosineDistillLoss,
-    OctaveChromaTarget, ILDTarget, LatentChromaILDLoss,
-    LatentContrastiveLoss,
-)
-from ..models.latent_dit import LatentDiT
+from .losses.semantic import CLAPTeacher, LatentCosineDistillLoss
 from .losses import signal
 from .losses.spectral import (
     MultiResSpectralConvergence,
@@ -183,7 +177,9 @@ class LossManager(nn.Module):
             disc_type = self.loss_config['discriminator']['type']
             disc_cfg = self.loss_config['discriminator']['config']
             if disc_type == 'oobleck':
-                self.discriminator = OobleckDiscriminator(**disc_cfg)
+                cfg = dict(disc_cfg)
+                in_ch = cfg.pop('in_channels', self.audio_channels)
+                self.discriminator = OobleckDiscriminator(in_channels=in_ch, **cfg)
             elif disc_type == 'encodec':
                 self.discriminator = EncodecDiscriminator(in_channels=self.audio_channels, **disc_cfg)
             elif disc_type == 'dac':
@@ -374,99 +370,22 @@ class LossManager(nn.Module):
                 warmup = self.loss_config["semantic_distill"].get("detach_warmup_steps", 25000)
                 latent_dim = int(distill_cfg.pop("latent_dim"))
                 proj_dim = int(distill_cfg.pop("proj_dim", 512))
-                # teacher_type selects the frozen semantic teacher (default "clap" →
-                # unchanged legacy behavior; "mert" → framewise MERT-v1-95M layer 4).
                 teacher_type = str(
                     self.loss_config["semantic_distill"].get("teacher_type", "clap")
                 ).lower()
+                if teacher_type != "clap":
+                    raise ValueError(f"semantic_distill.teacher_type={teacher_type!r}: only 'clap' is supported")
                 self.distill_proj = nn.Linear(latent_dim, proj_dim)   # → aux_parameters() → opt_aux
-                if teacher_type == "mert":
-                    self.mert_teacher = MERTTeacher(
-                        str(_root_config.MODELS_DIR / "MERT-v1-95M"),
-                        src_sr=self.sample_rate
-                    )
-                    distill_teacher = self.mert_teacher               # (B,768,T) → loss time-pools
-                else:
-                    self.clap_teacher = CLAPTeacher(                  # attr name unchanged → resume-safe
-                        str(_root_config.MODELS_DIR / "LAION_CLAP" / "music_audioset_epoch_15_esc_90.14.pt"),
-                        src_sr=self.sample_rate
-                    )
-                    distill_teacher = self.clap_teacher              # (B,512) global embedding
+                self.clap_teacher = CLAPTeacher(                      # attr name unchanged → resume-safe
+                    str(_root_config.MODELS_DIR / "LAION_CLAP" / "music_audioset_epoch_15_esc_90.14.pt"),
+                    src_sr=self.sample_rate
+                )
                 gen_loss_modules.append(
-                    LatentCosineDistillLoss(
-                        self.distill_proj, distill_teacher, weight=distill_weight,
+                    LatentCosineDistillLoss(                          # (B,512) global CLAP embedding
+                        self.distill_proj, self.clap_teacher, weight=distill_weight,
                         detach_warmup_steps=warmup, **distill_cfg
                     )
                 )
-
-        if "semantic_regression" in self.loss_config:
-            reg_weight = self.loss_config["semantic_regression"]["weights"].get("regression", 0.0)
-            if reg_weight > 0.0:
-                reg_cfg = dict(self.loss_config["semantic_regression"].get("config", {}) or {})
-                warmup = self.loss_config["semantic_regression"].get("detach_warmup_steps", 25000)
-                D = int(reg_cfg.get("latent_dim", 64))
-                _OCTAVES = [(1, 1.0), (5, 1.5), (9, 1.0)]                # (center_octave, width)
-                chroma_heads = nn.ModuleList([nn.Conv1d(D, 128, 1) for _ in _OCTAVES])
-                ild_head = nn.Conv1d(D, 32, 1)
-                chroma_targets = nn.ModuleList([
-                    OctaveChromaTarget(oct, w, sr=self.sample_rate) for oct, w in _OCTAVES
-                ])
-                ild_target = ILDTarget(sr=self.sample_rate)
-                # chroma_ild registers learnable heads → aux_parameters() → opt_aux
-                self.chroma_ild = nn.ModuleDict({
-                    "chroma": chroma_heads,
-                    "ild": nn.ModuleList([ild_head]),
-                })
-                gen_loss_modules.append(
-                    LatentChromaILDLoss(
-                        chroma_heads=chroma_heads,
-                        ild_head=ild_head,
-                        chroma_targets=chroma_targets,
-                        ild_target=ild_target,
-                        weight=reg_weight,
-                        detach_warmup_steps=int(warmup),
-                    )
-                )
-
-        if "latent_flow" in self.loss_config:
-            flow_weight = self.loss_config["latent_flow"]["weights"]["flow"]
-            if flow_weight > 0.0:
-                flow_cfg = dict(self.loss_config["latent_flow"].get("config", {}) or {})
-                warmup = self.loss_config["latent_flow"].get("detach_warmup_steps", 10000)
-                scale_invariant = self.loss_config["latent_flow"].get("scale_invariant", True)
-                latent_dim = flow_cfg.pop("latent_dim")          # channels of featurized latent
-                # DiT registered as self.flow_dit → aux_parameters() collects it into opt_aux
-                # (opt_gen only sees the autoencoder, LATENT_ALIGNMENT_PLAN.md §0.4).
-                self.flow_dit = LatentDiT(latent_dim=latent_dim, **flow_cfg)
-                gen_loss_modules.append(
-                    LatentFlowMatchingLoss(
-                        self.flow_dit, weight=flow_weight, detach_warmup_steps=warmup,
-                        scale_invariant=scale_invariant,
-                    )
-                )
-
-        if "contrastive" in self.loss_config:
-            contr_weight = self.loss_config["contrastive"]["weights"].get("contr", 0.0)
-            if contr_weight > 0.0:
-                contr_cfg = dict(self.loss_config["contrastive"].get("config", {}) or {})
-                warmup = self.loss_config["contrastive"].get("detach_warmup_steps", 20000)
-                latent_dim = int(contr_cfg.pop("latent_dim", 64))
-                proj_dim = int(contr_cfg.pop("proj_dim", 256))
-                tau = float(contr_cfg.pop("tau", 0.1))
-                
-                # Proiettore MLP: Linear -> SiLU -> Linear
-                self.contr_proj = nn.Sequential(
-                    nn.Linear(latent_dim, proj_dim),
-                    nn.SiLU(),
-                    nn.Linear(proj_dim, proj_dim)
-                )
-                gen_loss_modules.append(
-                    LatentContrastiveLoss(
-                        self.contr_proj, tau=tau,
-                        weight=contr_weight, detach_warmup_steps=warmup
-                    )
-                )
-                self.contrastive_enabled = True
 
         if "time" in self.loss_config:
             if self.loss_config["time"]["weights"].get("l1", 0.0) > 0.0:
@@ -483,11 +402,10 @@ class LossManager(nn.Module):
 
         self.losses_gen = MultiLoss(gen_loss_modules)
 
-        # Names of learnable latent-alignment submodules (set by per-phase loss blocks,
-        # LATENT_ALIGNMENT_PLAN.md Fasi 1-4/6). Collected by aux_parameters() so they
-        # land in opt_aux — opt_gen only sees the autoencoder, so without this any
-        # learnable loss-module weights would never be updated.
-        self._aux_module_names = ("vf_proj", "distill_proj", "chroma_ild", "contr_proj", "flow_dit")
+        # Learnable loss submodules (the CLAP distillation head). Collected by
+        # aux_parameters() so they land in opt_aux — opt_gen only sees the autoencoder,
+        # so without this the head would never be updated.
+        self._aux_module_names = ("distill_proj",)
 
         self.losses_disc = None
         if self.use_disc:
@@ -516,11 +434,10 @@ class LossManager(nn.Module):
         return None
 
     def aux_parameters(self) -> list:
-        """Learnable params of latent-alignment submodules, for the aux optimizer.
+        """Learnable params of the loss submodules (CLAP distillation head), for the aux optimizer.
 
         opt_gen is built from the autoencoder only, so these modules need their own
-        optimizer (LATENT_ALIGNMENT_PLAN.md §0.4). Returns [] when no alignment block
-        is active — today's behavior is then unchanged (opt_aux is not created).
+        optimizer. Returns [] when distillation is off (opt_aux is then not created).
         """
         params = []
         for name in self._aux_module_names:
