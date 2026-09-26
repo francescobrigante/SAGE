@@ -13,7 +13,7 @@ plots/
 Swin-Transformer-main/
 *.sh
 *.ps1
-tests/
+# tests/ is versioned (release test suite)
 runs/
 stable_audio_baseline/
 papers/
