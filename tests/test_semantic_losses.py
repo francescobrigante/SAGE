@@ -13,7 +13,7 @@ Uses a tiny STUB teacher (no CLAP load) so the tests are fast and snapshot-free.
 import torch
 from torch import nn
 
-from ar_spectra.training.losses.semantic import LatentCosineDistillLoss
+from sage.nn.losses.semantic import LatentCosineDistillLoss
 
 
 class _StubTeacher(nn.Module):
@@ -54,7 +54,7 @@ def test_distill_zero_when_aligned():
     """Loss → 0 when z_proj and t_avg point in the same direction."""
     B, C, F_lat, T_lat = 2, 16, 4, 32
     distill_proj = nn.Linear(C * F_lat, 768, bias=False)
-    from ar_spectra.training.losses.semantic import standardize_bottleneck
+    from sage.nn.losses.semantic import standardize_bottleneck
     z = torch.randn(B, C, F_lat * T_lat)
     # Compute the clip projection that the loss will produce, and make the teacher match it.
     with torch.no_grad():

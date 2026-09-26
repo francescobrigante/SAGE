@@ -9,7 +9,7 @@
 #   CC5  Decoder accepts a complex latent and returns a complex reconstruction
 #   CC6  Full round-trip (encoder → bottleneck → decoder) produces a finite
 #        complex reconstruction matching the input's spatial shape
-#   CC7  The AutoEncoder wrapper wires everything correctly with is_complex
+#   CC7  The SAGEAutoencoder wrapper wires everything correctly with is_complex
 # ===========================================================================
 
 import pytest
@@ -20,10 +20,10 @@ from pathlib import Path
 
 import train  # noqa: F401  (registers ${mul:} / ${config:} resolvers)
 
-from c_vae.swin.encoder import SwinEncoder
-from c_vae.swin.decoder import SwinDecoder
-from c_vae.bottleneck import ComplexVAEBottleneck
-from ar_spectra.models.autoencoder import AutoEncoder
+from sage.model.encoder import SAGEEncoder
+from sage.model.decoder import SAGEDecoder
+from sage.nn.complex.bottleneck import ComplexVAEBottleneck
+from sage.model.autoencoder import SAGEAutoencoder
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
 
@@ -74,8 +74,8 @@ def bottleneck(cplx_cfg):
 
 def test_components_instantiate(encoder, decoder, bottleneck):
     """Encoder, decoder, and bottleneck instantiate from the composed config."""
-    assert isinstance(encoder, SwinEncoder)
-    assert isinstance(decoder, SwinDecoder)
+    assert isinstance(encoder, SAGEEncoder)
+    assert isinstance(decoder, SAGEDecoder)
     assert isinstance(bottleneck, ComplexVAEBottleneck)
 
 
@@ -154,14 +154,14 @@ def test_full_roundtrip_complex(encoder, decoder, bottleneck):
 
 
 # ---------------------------------------------------------------------------
-# CC7: AutoEncoder wrapper with is_complex
+# CC7: SAGEAutoencoder wrapper with is_complex
 # ---------------------------------------------------------------------------
 
 def test_autoencoder_wrapper_complex(cplx_cfg):
-    """AutoEncoder.from_config builds a working complex model."""
+    """SAGEAutoencoder.from_config builds a working complex model."""
     from omegaconf import OmegaConf
     model_cfg = OmegaConf.to_container(cplx_cfg.models.model, resolve=True)
-    ae = AutoEncoder.from_config(model_cfg)
+    ae = SAGEAutoencoder.from_config(model_cfg)
     ae.eval()
 
     x = _cplx_input()
@@ -169,7 +169,7 @@ def test_autoencoder_wrapper_complex(cplx_cfg):
         latents, enc_info, bn_info = ae.encode(x, return_info=True)
         recon = ae.decode(latents, encoder_info=enc_info)
 
-    assert recon is not None, "AutoEncoder returned no reconstruction"
+    assert recon is not None, "SAGEAutoencoder returned no reconstruction"
     assert recon.shape == x.shape, (
         f"Reconstruction shape {recon.shape} ≠ input shape {x.shape}"
     )

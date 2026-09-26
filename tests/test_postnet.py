@@ -1,19 +1,19 @@
 # ===============
 # ResidualPostNet tests: exact identity at init, gradient flow into the
-# zero conv, and SwinDecoder integration (use_postnet flag + strict=False
+# zero conv, and SAGEDecoder integration (use_postnet flag + strict=False
 # checkpoint loading leaves the pretrained function bit-identical).
 # ===============
 import sys
 
 import torch
 
-from c_vae.swin.postnet import ResidualPostNet
-from c_vae.swin.decoder import SwinDecoder
+from sage.model.swin.postnet import ResidualPostNet
+from sage.model.decoder import SAGEDecoder
 
 
-def _tiny_decoder(use_postnet: bool) -> SwinDecoder:
+def _tiny_decoder(use_postnet: bool) -> SAGEDecoder:
     """2-stage real decoder on the production (1024, 128) STFT geometry."""
-    return SwinDecoder(
+    return SAGEDecoder(
         channels=16, in_channels=4, embed_dim=8,
         depths=[1, 1], num_heads=[2, 2],
         window_size=(4, 32), patch_size=(64, 1),
@@ -53,8 +53,8 @@ def test_decoder_postnet_flag_and_identity():
     assert torch.equal(out, out_no_post)
 
 
-def _forward_to_norm(dec: SwinDecoder, z: torch.Tensor) -> torch.Tensor:
-    """Replicate SwinDecoder.forward up to (but excluding) norm/unembed."""
+def _forward_to_norm(dec: SAGEDecoder, z: torch.Tensor) -> torch.Tensor:
+    """Replicate SAGEDecoder.forward up to (but excluding) norm/unembed."""
     x = z.transpose(1, 2)
     x = dec.input_proj(x)
     for i, stage in enumerate(dec.stages):

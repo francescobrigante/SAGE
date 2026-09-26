@@ -16,7 +16,7 @@ import math
 import pytest
 import torch
 
-from ar_spectra.training.losses.signal import (
+from sage.nn.losses.signal import (
     SpectralConvergenceLoss,
     SumAndDifferenceSTFTLoss,
 )

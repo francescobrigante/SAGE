@@ -7,8 +7,8 @@ Semantic-distillation infrastructure tests:
 """
 import torch
 
-from ar_spectra.training.losses.semantic import standardize_bottleneck
-from ar_spectra.training.loss_manager import LossManager
+from sage.nn.losses.semantic import standardize_bottleneck
+from sage.training.loss_manager import LossManager
 
 
 def test_standardize_bottleneck_real_fold_is_value_preserving():

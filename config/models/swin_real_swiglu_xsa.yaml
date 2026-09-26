@@ -19,7 +19,7 @@ models:
           beta: 0.35
 
     bottleneck:
-      _target_: ar_spectra.models.bottlenecks.VAEBottleneck
+      _target_: sage.nn.bottleneck.VAEBottleneck
       parameters_to_predict: ${models.model.parameters_to_predict}
 
     swin:
@@ -42,7 +42,7 @@ models:
       use_checkpoint: false
 
     encoder:
-      _target_: c_vae.swin.encoder.SwinEncoder
+      _target_: sage.model.encoder.SAGEEncoder
       in_channels: 4
       is_complex: false
       embed_dim: ${models.model.swin.embed_dim}
@@ -69,7 +69,7 @@ models:
       use_smooth_convs: false
 
     decoder:
-      _target_: c_vae.swin.decoder.SwinDecoder
+      _target_: sage.model.decoder.SAGEDecoder
       is_complex: false
       channels: ${models.model.latent_channels}
       in_channels: 4

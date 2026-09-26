@@ -24,7 +24,7 @@ multi_corpus:
 # as a dataset in the multi-corpus branch, but train.py reads its STFT/cac/sample_rate
 # fields for the model/demo config, and the corpora below interpolate from it.
 train_dataset:
-  _target_: dataloader.OnTheFlySTFTDataset
+  _target_: sage.training.data.dataset.OnTheFlySTFTDataset
   audio_dir: ${config:FMA_FULL_AUDIO}
   target_frames: 128
   sample_rate: ${config:DEFAULT_SAMPLE_RATE}
@@ -40,7 +40,7 @@ train_dataset:
   skip_mismatched_sr: false
   skip_mismatched_channels: false
   partial_read: true
-  custom_metadata_module: src.ar_spectra.utils.metadata.fma
+  custom_metadata_module: sage.training.data.metadata.fma
   custom_metadata_kwargs:
     split: training
     subset: ${data.fma_subset}
@@ -54,7 +54,7 @@ train_dataset:
 # file is shorter than the window).
 corpora:
   # ── 0: FMA-full (music anchor, ~84k) ───────────────────────────────────────
-  - _target_: dataloader.OnTheFlySTFTDataset
+  - _target_: sage.training.data.dataset.OnTheFlySTFTDataset
     audio_dir: ${config:FMA_FULL_AUDIO}
     target_frames: ${data.train_dataset.target_frames}
     sample_rate: ${data.train_dataset.sample_rate}
@@ -73,14 +73,14 @@ corpora:
     # Persisted filtered filelist → skips the ~11-min probe on resume. Subset in the name
     # so switching tier uses a distinct cache. Delete the .txt to force a rebuild.
     filelist_cache: "${config:FILELIST_CACHE_DIR}/fma_full_train_${data.fma_subset}.txt"
-    custom_metadata_module: src.ar_spectra.utils.metadata.fma
+    custom_metadata_module: sage.training.data.metadata.fma
     custom_metadata_kwargs:
       split: training
       subset: ${data.fma_subset}
       metadata_csv: ${config:FMA_METADATA}
 
   # ── 1: MTG-Jamendo split-0 train (music, leakage-free, ~33k) ───────────────
-  - _target_: dataloader.OnTheFlySTFTDataset
+  - _target_: sage.training.data.dataset.OnTheFlySTFTDataset
     audio_dir: ${config:JAMENDO_AUDIO}
     target_frames: ${data.train_dataset.target_frames}
     sample_rate: ${data.train_dataset.sample_rate}
@@ -97,12 +97,12 @@ corpora:
     skip_mismatched_channels: false
     partial_read: true
     filelist_cache: "${config:FILELIST_CACHE_DIR}/jamendo_split0_train.txt"
-    custom_metadata_module: src.ar_spectra.utils.metadata.jamendo
+    custom_metadata_module: sage.training.data.metadata.jamendo
     custom_metadata_kwargs:
       split_tsv: ${config:JAMENDO_SPLIT_TSV}
 
   # ── 2: M4Singer (Mandarin singing, ~21k) — the rotating corpus ─────────────
-  - _target_: dataloader.OnTheFlySTFTDataset
+  - _target_: sage.training.data.dataset.OnTheFlySTFTDataset
     audio_dir: ${config:M4SINGER_AUDIO}
     target_frames: ${data.train_dataset.target_frames}
     sample_rate: ${data.train_dataset.sample_rate}
@@ -119,7 +119,7 @@ corpora:
     skip_mismatched_channels: false
     partial_read: true
     filelist_cache: "${config:FILELIST_CACHE_DIR}/m4singer.txt"
-    custom_metadata_module: src.ar_spectra.utils.metadata.m4singer
+    custom_metadata_module: sage.training.data.metadata.m4singer
     custom_metadata_kwargs: {}
 
 train_dataloader:
@@ -133,7 +133,7 @@ train_dataloader:
 
 # Validation: FMA-only, identical to the single-corpus config (comparable metrics).
 eval_dataset:
-  _target_: dataloader.OnTheFlySTFTDataset
+  _target_: sage.training.data.dataset.OnTheFlySTFTDataset
   audio_dir: ${config:DATA_PATH}
   target_frames: 128
   sample_rate: ${config:DEFAULT_SAMPLE_RATE}
@@ -148,7 +148,7 @@ eval_dataset:
   skip_mismatched_sr: false
   skip_mismatched_channels: false
   skip_failed_samples: true
-  custom_metadata_module: src.ar_spectra.utils.metadata.fma
+  custom_metadata_module: sage.training.data.metadata.fma
   custom_metadata_kwargs:
     split: validation
     subset: ${data.fma_subset}   # match LARGE eval (FMA-large val = 10,958); single source of truth

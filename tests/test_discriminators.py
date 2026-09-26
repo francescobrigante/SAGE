@@ -14,7 +14,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from ar_spectra.training.loss_manager import LossManager
+from sage.training.loss_manager import LossManager
 
 
 # ---------------------------------------------------------------------------
@@ -139,15 +139,15 @@ DISC_CONFIGS = {
 
 
 # Expected class hierarchy after LossManager instantiation
-from ar_spectra.models.discriminators import (
+from sage.nn.discriminators import (
     OobleckDiscriminator,
     EncodecDiscriminator,
     BigVGANDiscriminator,
     MultiTransformerDiscriminator,
     HILDiscriminator,
 )
-from ar_spectra.models.discriminators.dac import DACGANLoss
-from ar_spectra.models.discriminators.wavtokenizer import WavTokenizerGANLoss
+from sage.nn.discriminators.dac import DACGANLoss
+from sage.nn.discriminators.wavtokenizer import WavTokenizerGANLoss
 
 _EXPECTED_CLASS = {
     "oobleck": OobleckDiscriminator,

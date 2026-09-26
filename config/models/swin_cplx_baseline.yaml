@@ -36,7 +36,7 @@ models:
 
     # ── bottleneck ───────────────────────────────────────────────────────────────
     bottleneck:
-      _target_: c_vae.bottleneck.ComplexVAEBottleneck
+      _target_: sage.nn.complex.bottleneck.ComplexVAEBottleneck
       apply_cholesky_constraints: false
       apply_spectral_parameterization: false
       proper: false
@@ -57,7 +57,7 @@ models:
 
     # ── encoder ─────────────────────────────────────────────────────────────────
     encoder:
-      _target_: c_vae.swin.encoder.SwinEncoder
+      _target_: sage.model.encoder.SAGEEncoder
       in_channels: 2                    # stereo complex STFT (complex_L, complex_R)
       is_complex: true
       embed_dim: ${models.model.swin.embed_dim}
@@ -80,7 +80,7 @@ models:
 
     # ── decoder ─────────────────────────────────────────────────────────────────
     decoder:
-      _target_: c_vae.swin.decoder.SwinDecoder
+      _target_: sage.model.decoder.SAGEDecoder
       is_complex: true
       channels: ${models.model.latent_channels}
       in_channels: 2

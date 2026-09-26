@@ -6,7 +6,7 @@
 import torch
 import pytest
 
-from ar_spectra.blocks.transformer_sat import (
+from sage.nn.transformer import (
     TransformerBlock, ContinuousTransformer, TransformerResamplingBlock,
 )
 

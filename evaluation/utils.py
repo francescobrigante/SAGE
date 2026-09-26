@@ -21,7 +21,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from ar_spectra.utils.console import warn
+from sage.utils.console import warn
 
 
 # ── I/O helpers ───────────────────────────────────────────────
@@ -248,7 +248,7 @@ def infer_batch(codec, waveforms: list[torch.Tensor], chunk_samples: int) -> lis
     All chunks from all files are stacked into a single GPU call.
 
     Args:
-        codec:         EuleroEncodeDecode instance (already on device).
+        codec:         sage.SAGE instance (already on device).
         waveforms:     List of [C, T] tensors on GPU.
         chunk_samples: Model context window in samples.
 

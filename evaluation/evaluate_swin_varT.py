@@ -34,9 +34,9 @@ sys.path.insert(0, str(_PROJ_ROOT))
 sys.path.insert(0, str(_EVAL_DIR))
 sys.path.insert(0, str(_PROJ_ROOT / "src"))
 
-from ar_spectra.models.inference import EuleroEncodeDecode
-from ar_spectra.utils.console import ok, warn, info, err
-from c_vae.swin.varlen import resolve
+from sage.inference import SAGE
+from sage.utils.console import ok, warn, info, err
+from sage.model.swin.varlen import resolve
 from config import DATA_PATH, DEFAULT_AUDIO_EXTENSIONS, DEFAULT_MAX_FILES, FMA_METADATA
 from losses import compute_sdr_and_sisdr, stft_loss, spectral_losses, cdpam_score
 
@@ -329,7 +329,7 @@ def _parse_args() -> argparse.Namespace:
                         "Default: False (backward-compatible).")
     p.add_argument("--varlen",          default=None,
                    help="Variable-length seam fix on the collapsed Swin stages: a preset "
-                        "from config/inference/varlen.yaml (tri2, hard2, tri4, ...) or 'off' "
+                        "from sage/model/swin/varlen.yaml (tri2, hard2, tri4, ...) or 'off' "
                         "for the original single-phase attention. Default = the project "
                         "default in that file. See VARLEN_SEAMS.md.")
     return p.parse_args()
@@ -447,7 +447,7 @@ def main() -> None:
             info("[RESUME] already done — skipping.", prefix="EVAL"); continue
 
         try:
-            codec = EuleroEncodeDecode(ckpt_path, device=device, varlen=args.varlen)
+            codec = SAGE.from_checkpoint(ckpt_path, device=device, varlen=args.varlen)
         except Exception as e:
             err(f"Failed to load {ckpt_path.name}: {e}"); continue
 

@@ -136,7 +136,7 @@ def test_pre_transform_roundtrip():
     print("Test 4: PowerMagnitudeTransform round-trip")
     print("=" * 70)
     
-    from ar_spectra.training.pre_transform import PowerMagnitudeTransform
+    from sage.nn.pre_transform import PowerMagnitudeTransform
     
     torch.manual_seed(42)
     B, C, F, T = 2, 2, 1025, 128
@@ -166,12 +166,12 @@ def test_pre_transform_roundtrip():
 
 
 def test_full_autoencoder_stft_istft():
-    """Test 5: Full AutoEncoder.stft() → AutoEncoder.istft() with freq crop"""
+    """Test 5: Full SAGEAutoencoder.stft() → SAGEAutoencoder.istft() with freq crop"""
     print("\n" + "=" * 70)
-    print("Test 5: AutoEncoder.stft() → istft() (no model, just STFT/iSTFT)")
+    print("Test 5: SAGEAutoencoder.stft() → istft() (no model, just STFT/iSTFT)")
     print("=" * 70)
     
-    from ar_spectra.models.autoencoder import AutoEncoder
+    from sage.model.autoencoder import SAGEAutoencoder
     import torch.nn as nn
     
     # Create a minimal autoencoder just for STFT/iSTFT
@@ -182,7 +182,7 @@ def test_full_autoencoder_stft_istft():
         def forward(self, x, encoder_info=None):
             return x
     
-    ae = AutoEncoder(encoder=DummyEncoder(), decoder=DummyDecoder())
+    ae = SAGEAutoencoder(encoder=DummyEncoder(), decoder=DummyDecoder())
     ae.set_stft_config({"n_fft": 2048, "hop_length": 512, "win_length": 2048})
     
     torch.manual_seed(42)
@@ -221,7 +221,7 @@ def test_pack_unpack_complex():
     print("Test 6: _pack_complex → _unpack_complex round-trip")
     print("=" * 70)
     
-    from ar_spectra.models.autoencoder import AutoEncoder
+    from sage.model.autoencoder import SAGEAutoencoder
     import torch.nn as nn
     
     class DummyEncoder(nn.Module):
@@ -231,7 +231,7 @@ def test_pack_unpack_complex():
         def forward(self, x, encoder_info=None):
             return x
     
-    ae = AutoEncoder(encoder=DummyEncoder(), decoder=DummyDecoder())
+    ae = SAGEAutoencoder(encoder=DummyEncoder(), decoder=DummyDecoder())
     
     torch.manual_seed(42)
     B, C, F, T = 2, 2, 1024, 128
@@ -261,22 +261,22 @@ def test_encode_decode_amplitude_with_swin():
     print("Test 7: Full Swin encode→decode with random weights")
     print("=" * 70)
     
-    from ar_spectra.models.autoencoder import AutoEncoder
-    from c_vae.swin.encoder import SwinEncoder
-    from c_vae.swin.decoder import SwinDecoder
-    from c_vae.bottleneck import ComplexVAEBottleneck
-    from ar_spectra.training.pre_transform import PowerMagnitudeTransform
+    from sage.model.autoencoder import SAGEAutoencoder
+    from sage.model.encoder import SAGEEncoder
+    from sage.model.decoder import SAGEDecoder
+    from sage.nn.complex.bottleneck import ComplexVAEBottleneck
+    from sage.nn.pre_transform import PowerMagnitudeTransform
     
     torch.manual_seed(42)
     
-    encoder = SwinEncoder(
+    encoder = SAGEEncoder(
         in_channels=2, embed_dim=64, depths=[2, 2, 6, 2],
         num_heads=[4, 8, 16, 32], window_size=8, patch_size=4,
         dimension=24,  # 3 * 8
         is_complex=True, complex_activation="ComplexGELU1d",
     )
     
-    decoder = SwinDecoder(
+    decoder = SAGEDecoder(
         channels=8, in_channels=2, embed_dim=64,
         depths=[2, 6, 2, 2], num_heads=[32, 16, 8, 4],
         window_size=8, patch_size=4,
@@ -289,7 +289,7 @@ def test_encode_decode_amplitude_with_swin():
         proper=False,
     )
     
-    ae = AutoEncoder(
+    ae = SAGEAutoencoder(
         encoder=encoder, decoder=decoder, bottleneck=bottleneck,
         pre_transform={"type": "power_norm", "apply_target": True,
                        "apply_inverse": True, "config": {"alpha": 0.65, "beta": 0.35}},

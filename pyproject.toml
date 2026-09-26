@@ -21,29 +21,24 @@ dependencies = [
     "omegaconf>=2.3.0,<2.4",
     "rich>=14.0",
     "pyyaml>=6.0",
-    # TEMPORARY (phase F2 removes it): varlen reads the repo-root config.py, which loads .env.
-    "python-dotenv>=1.0.1",
-    # TEMPORARY (phase F2 moves them to an optional [complex] extra with lazy imports): imported on the
-    # inference path by the complex-valued blocks (ar_spectra/blocks/normalization/complex.py), which the
-    # real-valued SAGE (is_complex=False) never calls.
-    "complextorch==1.2.0",           # numpy requirement overridden below (see tool.uv.dependency-metadata)
-    "complexpytorch>=0.4",
+    "soundfile>=0.13.1",             # audio I/O of scripts/encode_decode.py
 ]
 
 [project.optional-dependencies]
 # Training: both phases (pretraining with the CLAP teacher, decoder fine-tuning).
 train = [
     "lightning==2.6.0",
+    # TEMPORARY (phase F5 replaces it): the repo-root config.py reads data/model paths from .env.
+    "python-dotenv>=1.0.1",
     "wandb>=0.23.0",
     "descript-audio-codec>=1.0.0",   # `dac` + `audiotools`: DAC sub-discriminators, mel loss
     "laion-clap==1.1.7",             # frozen CLAP teacher (semantic distillation)
     "scipy>=1.12",
-    "soundfile>=0.13.1",
     "librosa>=0.10.2",
     "mutagen>=1.47.0",               # fast audio-duration probing in the data pipeline
     "safetensors>=0.6.2",
     "tqdm>=4.66",
-    # W&B demo logging during training (ar_spectra/utils/aeiou.py: spectrogram images, latent UMAP)
+    # W&B demo logging during training (sage/utils/aeiou.py: spectrogram images, latent UMAP)
     "matplotlib>=3.8",
     "pillow>=10.0",
     "plotly>=5.0",
@@ -76,6 +71,13 @@ baselines = [
     "codicodec==0.1.2",
     "diffusers==0.30.0",             # AutoencoderOobleck = Stable Audio Open VAE
     "stable-audio-3",                # SAME-L / SAME-S autoencoders (git, see tool.uv below)
+]
+
+# Complex-valued building blocks (sage.nn.complex), only for models built with is_complex=True.
+# The real-valued SAGE of the paper does not need them.
+complex = [
+    "complextorch==1.2.0",           # numpy requirement overridden below (see tool.uv.dependency-metadata)
+    "complexpytorch>=0.4",
 ]
 
 [dependency-groups]
@@ -127,14 +129,14 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 # Current layout; becomes a single `src/sage` package in phase F2.
-packages = ["src/ar_spectra", "src/c_vae"]
+packages = ["src/sage"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Repo root (train.py, dataloader.py, config.py), src/ and evaluation/ are importable from every test.
+# Repo root (train.py, config.py), src/ and evaluation/ are importable from every test.
 pythonpath = [".", "src", "evaluation"]
 markers = [
     "slow: tests that run the full 1024x128 encoder/decoder (deselect with '-m not slow')",

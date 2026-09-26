@@ -136,8 +136,8 @@ def add_stable_audio_to_path(repo_root: Path) -> None:
         sys.path.insert(0, str(vendored))
 
 
-def add_ar_spectra_to_path(repo_root: Path) -> None:
-    """Put src/ on sys.path so ar_spectra/c_vae are importable in maeb_dl.
+def add_src_to_path(repo_root: Path) -> None:
+    """Put src/ on sys.path so the sage package is importable in maeb_dl.
 
     Called only by swin_encoder.py at module load time (NOT at compatibility
     import time, so SAO jobs are unaffected).

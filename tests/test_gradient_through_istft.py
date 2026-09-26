@@ -2,7 +2,7 @@
 Test: can the MRSTFT gradient flow through iSTFT to correct a global 
 scale factor applied to the spectrogram (as the decoder would output)?
 
-This tests the exact ar_spectra pipeline:
+This tests the exact sage pipeline:
   spec * alpha → inverse_pre_transform → istft → MRSTFT(decoded_wav, gt_wav)
 
 If ∂L/∂alpha is zero or negligible, the gradient is being blocked somewhere
@@ -11,8 +11,8 @@ in the iSTFT chain.
 import torch
 import sys
 
-from ar_spectra.training.losses.spectral import MultiResolutionSpectrogramLoss
-from ar_spectra.models.autoencoder import AutoEncoder
+from sage.nn.losses.spectral import MultiResolutionSpectrogramLoss
+from sage.model.autoencoder import SAGEAutoencoder
 import torch.nn as nn
 
 
@@ -28,7 +28,7 @@ def test_gradient_through_istft():
     class DummyDecoder(nn.Module):
         def forward(self, x, encoder_info=None): return x
 
-    ae = AutoEncoder(encoder=DummyEncoder(), decoder=DummyDecoder())
+    ae = SAGEAutoencoder(encoder=DummyEncoder(), decoder=DummyDecoder())
     ae.set_stft_config({"n_fft": 2048, "hop_length": 512, "win_length": 2048})
 
     mrstft = MultiResolutionSpectrogramLoss(
@@ -87,14 +87,14 @@ def test_gradient_through_istft_with_pretransform():
     print("Test: MRSTFT gradient through pre_transform + iSTFT")
     print("=" * 70)
 
-    from ar_spectra.training.pre_transform import PowerMagnitudeTransform
+    from sage.nn.pre_transform import PowerMagnitudeTransform
     
     class DummyEncoder(nn.Module):
         def forward(self, x): return x, {}
     class DummyDecoder(nn.Module):
         def forward(self, x, encoder_info=None): return x
 
-    ae = AutoEncoder(encoder=DummyEncoder(), decoder=DummyDecoder(),
+    ae = SAGEAutoencoder(encoder=DummyEncoder(), decoder=DummyDecoder(),
                      pre_transform={"type": "power_norm", "config": {"alpha": 0.65, "beta": 0.35}})
     ae.set_stft_config({"n_fft": 2048, "hop_length": 512, "win_length": 2048})
 
@@ -154,7 +154,7 @@ def test_gradient_through_pack_unpack_istft():
     class DummyDecoder(nn.Module):
         def forward(self, x, encoder_info=None): return x
 
-    ae = AutoEncoder(encoder=DummyEncoder(), decoder=DummyDecoder())
+    ae = SAGEAutoencoder(encoder=DummyEncoder(), decoder=DummyDecoder())
     ae.set_stft_config({"n_fft": 2048, "hop_length": 512, "win_length": 2048})
 
     mrstft = MultiResolutionSpectrogramLoss(
@@ -213,7 +213,7 @@ def test_direct_waveform_vs_istft_gradient_strength():
     class DummyDecoder(nn.Module):
         def forward(self, x, encoder_info=None): return x
 
-    ae = AutoEncoder(encoder=DummyEncoder(), decoder=DummyDecoder())
+    ae = SAGEAutoencoder(encoder=DummyEncoder(), decoder=DummyDecoder())
     ae.set_stft_config({"n_fft": 2048, "hop_length": 512, "win_length": 2048})
 
     mrstft = MultiResolutionSpectrogramLoss(
@@ -238,7 +238,7 @@ def test_direct_waveform_vs_istft_gradient_strength():
     loss_direct.backward()
     grad_direct = alpha_direct.grad.item()
 
-    # Test 2: Spectrogram scale → iSTFT (ar_spectra-like)
+    # Test 2: Spectrogram scale → iSTFT (sage-like)
     alpha_istft = torch.tensor(alpha_val, requires_grad=True)
     spec_scaled = spec_cropped * alpha_istft
     wav_recon = ae.istft(spec_scaled, target_length=T)
@@ -249,8 +249,8 @@ def test_direct_waveform_vs_istft_gradient_strength():
 
     print(f"\n  At α = {alpha_val}:")
     print(f"  SAO-like (direct wav scale):     loss={loss_direct.item():.6f}, ∂L/∂α = {grad_direct:.8f}")
-    print(f"  ar_spectra (spec→iSTFT scale):   loss={loss_istft.item():.6f}, ∂L/∂α = {grad_istft:.8f}")
-    print(f"  Gradient ratio (ar_spectra/SAO): {grad_istft/grad_direct:.4f}")
+    print(f"  sage (spec→iSTFT scale):   loss={loss_istft.item():.6f}, ∂L/∂α = {grad_istft:.8f}")
+    print(f"  Gradient ratio (SAGE/SAO): {grad_istft/grad_direct:.4f}")
     print()
     if abs(grad_istft / grad_direct) > 0.9:
         print("  ✓ Gradients are comparable — iSTFT is NOT blocking the scale signal.")

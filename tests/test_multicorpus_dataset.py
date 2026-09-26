@@ -15,7 +15,7 @@ import torchaudio
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-import dataloader as dl
+import sage.training.data.dataset as dl
 
 SR = 44100
 SEGMENT = 127 * 512

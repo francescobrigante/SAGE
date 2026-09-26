@@ -10,7 +10,7 @@ import os
 import pytest
 import torch
 
-from ar_spectra.training.losses.signal import SumAndDifferenceSTFTLoss
+from sage.nn.losses.signal import SumAndDifferenceSTFTLoss
 
 # 6 SAO resolutions used by the mrstft_sd config (n_fft=32 omitted).
 _FFT = [2048, 1024, 512, 256, 128, 64]
@@ -139,7 +139,7 @@ def test_pred_normalized_sc_no_spike_and_anticollapse():
 
 def test_registers_in_loss_manager():
     """The `mrstft_sd` block builds the loss and appends a named LossWithTarget."""
-    from ar_spectra.training.loss_manager import LossManager
+    from sage.training.loss_manager import LossManager
 
     class _DummyAE(torch.nn.Module):
         bottleneck = None

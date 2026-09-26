@@ -128,7 +128,7 @@ def main() -> None:
     if not tasks:
         raise ValueError("No tasks resolved. Check --tasks.")
 
-    # Import lazily — pulls ar_spectra + complextorch (heavy first time).
+    # Import lazily — pulls sage + complextorch (heavy first time).
     from maeb.swin_encoder import SwinEncoder, build_swin_model_meta
     model = SwinEncoder(
         model_name=str(ckpt_path),

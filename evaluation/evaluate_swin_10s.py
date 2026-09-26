@@ -3,7 +3,7 @@
 # evaluation/evaluate_swin_10s.py
 # Reconstruction eval for Swin C-VAE checkpoints on the colleague's
 # chunks_mix_original dataset (1998 × 10s WAVs). Same structure as
-# evaluate_sao_10s.py but loads a Swin ckpt via EuleroEncodeDecode.
+# the SOTA evaluator but loads a SAGE checkpoint via SAGE.from_checkpoint.
 #
 # Reference data layout (data_dir = chunks_mix_original/original/):
 #   embeddings/clap-laion-{audio,music}/{stem}.npy — pre-computed ref CLAP
@@ -35,9 +35,9 @@ for _p in (str(_PROJ_ROOT), str(_PROJ_ROOT / "src"), str(_EVAL_DIR),
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from ar_spectra.models.inference import EuleroEncodeDecode
-from c_vae.swin.varlen import resolve
-from ar_spectra.utils.console import ok, warn, info, err
+from sage.inference import SAGE
+from sage.model.swin.varlen import resolve
+from sage.utils.console import ok, warn, info, err
 from losses import compute_sdr_and_sisdr, stft_loss, spectral_losses, cdpam_score
 from utils import (atomic_save_npy, silence_output, ch_name,
                    CHANNEL_MID, CHANNEL_SIDE, CHANNELS)
@@ -203,7 +203,7 @@ def _parse_args() -> argparse.Namespace:
                         "Opt-in: off by default → old runs unchanged. Writes ms_metrics.csv.")
     p.add_argument("--varlen", default=None,
                    help="Variable-length seam fix on the collapsed Swin stages: a preset "
-                        "from config/inference/varlen.yaml (tri2, hard2, tri4, ...) or 'off' "
+                        "from sage/model/swin/varlen.yaml (tri2, hard2, tri4, ...) or 'off' "
                         "for the original single-phase attention. Default = the project "
                         "default in that file. The mode actually applied is recorded in "
                         "metrics/varlen.json; a run without that file is a baseline run.")
@@ -261,7 +261,7 @@ def main() -> None:
                  prefix="EVAL")
 
     info(f"Loading Swin checkpoint: {ckpt_path.name}...", prefix="EVAL")
-    codec      = EuleroEncodeDecode(ckpt_path, device=device, varlen=args.varlen)
+    codec      = SAGE.from_checkpoint(ckpt_path, device=device, varlen=args.varlen)
     sr: int    = codec.sample_rate or 44100
     ch: int    = codec.audio_channels or 2
     stft_cfg   = getattr(codec.autoencoder, "_stft_config", None)

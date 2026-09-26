@@ -9,7 +9,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from ar_spectra.training.engine import AutoencoderEngine
+from sage.training.engine import AutoencoderEngine
 
 
 class _StubAE(nn.Module):

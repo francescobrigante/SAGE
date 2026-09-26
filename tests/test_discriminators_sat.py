@@ -39,7 +39,7 @@ def mono():
 class TestPretransforms:
 
     def test_complex_stft_shape(self):
-        from ar_spectra.models.pretransforms import ComplexSTFTPretransform
+        from sage.nn.discriminators.pretransforms import ComplexSTFTPretransform
         pt = ComplexSTFTPretransform(channels=2, n_fft=1024)
         x = torch.randn(B, 2, T)
         z = pt.encode(x)
@@ -47,7 +47,7 @@ class TestPretransforms:
         assert z.ndim == 3
 
     def test_patched_shape(self):
-        from ar_spectra.models.pretransforms import PatchedPretransform
+        from sage.nn.discriminators.pretransforms import PatchedPretransform
         pt = PatchedPretransform(channels=2, patch_size=29)
         x = torch.randn(B, 2, T)
         z = pt.encode(x)
@@ -55,7 +55,7 @@ class TestPretransforms:
         assert z.ndim == 3
 
     def test_patched_decode_roundtrip(self):
-        from ar_spectra.models.pretransforms import PatchedPretransform
+        from sage.nn.discriminators.pretransforms import PatchedPretransform
         pt = PatchedPretransform(channels=2, patch_size=16)
         x = torch.randn(B, 2, 1024)
         z = pt.encode(x)
@@ -63,7 +63,7 @@ class TestPretransforms:
         assert x_rec.shape == x.shape
 
     def test_wavelet_shape(self):
-        from ar_spectra.models.pretransforms import WaveletPretransform
+        from sage.nn.discriminators.pretransforms import WaveletPretransform
         pt = WaveletPretransform(channels=2, levels=4)
         x = torch.randn(B, 2, 8192)  # must be multiple of 2^4
         z = pt.encode(x)
@@ -71,7 +71,7 @@ class TestPretransforms:
         assert z.shape[-1] == 8192 // pt.downsampling_ratio
 
     def test_wavelet_decode_roundtrip(self):
-        from ar_spectra.models.pretransforms import WaveletPretransform
+        from sage.nn.discriminators.pretransforms import WaveletPretransform
         pt = WaveletPretransform(channels=2, levels=4)
         x = torch.randn(B, 2, 8192)
         z = pt.encode(x)
@@ -86,7 +86,7 @@ class TestPretransforms:
 class TestTransformerBlock:
 
     def test_forward_shape(self):
-        from ar_spectra.blocks.transformer_sat import TransformerBlock
+        from sage.nn.transformer import TransformerBlock
         block = TransformerBlock(
             256, dim_heads=64, add_rope=True, norm_type='dyt',
             attn_kwargs={'qk_norm': 'dyt', 'differential': True},
@@ -97,7 +97,7 @@ class TestTransformerBlock:
         assert out.shape == x.shape
 
     def test_sliding_window(self):
-        from ar_spectra.blocks.transformer_sat import TransformerBlock
+        from sage.nn.transformer import TransformerBlock
         block = TransformerBlock(128, dim_heads=64, add_rope=True, norm_type='rms_norm',
                                   attn_kwargs={'differential': False})
         x = torch.randn(B, 64, 128)
@@ -112,7 +112,7 @@ class TestTransformerBlock:
 class TestTransformerResamplingBlock:
 
     def test_stride_reduction(self):
-        from ar_spectra.blocks.transformer_sat import TransformerResamplingBlock
+        from sage.nn.transformer import TransformerResamplingBlock
         trb = TransformerResamplingBlock(64, 128, stride=4, sliding_window=[2, 2],
                                          transformer_depth=2)
         x = torch.randn(B, 64, 64)
@@ -120,7 +120,7 @@ class TestTransformerResamplingBlock:
         assert out.shape == (B, 128, 16), f'Expected (B, 128, 16), got {out.shape}'
 
     def test_return_features(self):
-        from ar_spectra.blocks.transformer_sat import TransformerResamplingBlock
+        from sage.nn.transformer import TransformerResamplingBlock
         trb = TransformerResamplingBlock(32, 64, stride=2, sliding_window=[3, 3],
                                          transformer_depth=3)
         x = torch.randn(B, 32, 32)
@@ -135,14 +135,14 @@ class TestTransformerResamplingBlock:
 class TestPQMF:
 
     def test_analysis_shape(self):
-        from ar_spectra.models.discriminators.hil import PQMF
+        from sage.nn.discriminators.hil import PQMF
         pqmf = PQMF(subbands=4, taps=62, cutoff_freq=0.142, beta=9.0)
         x = torch.randn(B, 1, 4096)
         y = pqmf(x)
         assert y.shape == (B, 4, 4096 // 4), f'Expected (B, 4, 1024), got {y.shape}'
 
     def test_synthesis_shape(self):
-        from ar_spectra.models.discriminators.hil import PQMF
+        from sage.nn.discriminators.hil import PQMF
         pqmf = PQMF(subbands=4, taps=62, cutoff_freq=0.142, beta=9.0)
         x = torch.randn(B, 1, 4096)
         y = pqmf.analysis(x)
@@ -159,7 +159,7 @@ class TestMultiTransformerDiscriminator:
 
     @pytest.fixture
     def disc(self):
-        from ar_spectra.models.discriminators.transformer import MultiTransformerDiscriminator
+        from sage.nn.discriminators.transformer import MultiTransformerDiscriminator
         return MultiTransformerDiscriminator(
             in_channels=2,
             loss_type='rpgan',
@@ -183,7 +183,7 @@ class TestMultiTransformerDiscriminator:
             assert not torch.isnan(t), f'NaN in {t}'
 
     def test_hinge_loss(self, stereo):
-        from ar_spectra.models.discriminators.transformer import MultiTransformerDiscriminator
+        from sage.nn.discriminators.transformer import MultiTransformerDiscriminator
         disc = MultiTransformerDiscriminator(
             in_channels=2, loss_type='hinge',
             patched_kwargs={'enabled': True, 'depths': [1, 1, 1]},
@@ -200,7 +200,7 @@ class TestHILDiscriminator:
 
     @pytest.fixture
     def disc(self):
-        from ar_spectra.models.discriminators.hil import HILDiscriminator
+        from sage.nn.discriminators.hil import HILDiscriminator
         return HILDiscriminator(
             filters=32,
             in_channels=2,
@@ -228,7 +228,7 @@ class TestLossManagerRouting:
 
     def test_transformer_disc_type_accepted(self):
         """Verify loss_manager correctly routes disc_type='transformer'."""
-        from ar_spectra.training.loss_manager import LossManager
+        from sage.training.loss_manager import LossManager
 
         class FakeBottleneck:
             pass
@@ -248,5 +248,5 @@ class TestLossManagerRouting:
         }
         lm = LossManager(FakeAE(), sample_rate=44100, loss_config=loss_config, audio_channels=2)
         assert lm.discriminator is not None
-        from ar_spectra.models.discriminators.transformer import MultiTransformerDiscriminator
+        from sage.nn.discriminators.transformer import MultiTransformerDiscriminator
         assert isinstance(lm.discriminator, MultiTransformerDiscriminator)

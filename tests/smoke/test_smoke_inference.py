@@ -38,8 +38,8 @@ def single_thread():
 
 
 def _load(varlen: str):
-    from ar_spectra.models.inference import EuleroEncodeDecode
-    return EuleroEncodeDecode(PAPER_CKPT, device="cpu", varlen=varlen)
+    from sage import SAGE
+    return SAGE.from_checkpoint(PAPER_CKPT, device="cpu", varlen=varlen)
 
 
 @needs_ckpt
@@ -86,3 +86,35 @@ def test_bit_exact_against_golden_local(name, mode, single_thread):
     for case, t in cases.items():
         ref = np.load(GOLDEN_LOCAL / f"{name}__{mode}__{case}.npy")
         assert np.array_equal(t.numpy(), ref), f"{name}/{mode}/{case}: max|Δ|={np.abs(t.numpy() - ref).max():.3e}"
+
+
+@needs_ckpt
+@needs_golden
+@pytest.mark.parametrize("name", ["crop_train_len_128frames", "moises10s_mix"])
+def test_reconstruct_matches_the_evaluator_path(name, single_thread):
+    """SAGE.reconstruct (pad -> encode -> decode -> trim) is bit-identical to the golden evaluator path."""
+    codec = _load("tri2")
+    wav = torch.from_numpy(np.load(GOLDEN_DIR / "inputs" / f"{name}.npy"))
+    rec_mu = codec.reconstruct(wav, deterministic=True)
+    torch.manual_seed(0)
+    rec_z = codec.reconstruct(wav)                                  # sampled z, as the paper metrics
+    for case, t in {"recon_mu": rec_mu, "recon_z": rec_z}.items():
+        ref = np.load(GOLDEN_LOCAL / f"{name}__tri2__{case}.npy")
+        assert t.shape == wav.shape and np.array_equal(t.numpy(), ref), f"{name}/{case}"
+
+
+def test_encode_decode_script(tiny_pretrain_ckpt, audio_dir, tmp_path):
+    """scripts/encode_decode.py: encode + decode restores the input length and equals reconstruct."""
+    import subprocess, sys
+    import soundfile as sf
+    from conftest import REPO
+    wav_in = sorted(audio_dir.glob("*.wav"))[0]
+    run = lambda *a: subprocess.run([sys.executable, str(REPO / "scripts" / "encode_decode.py"), *map(str, a),
+                                     "--ckpt", str(tiny_pretrain_ckpt), "--device", "cpu", "--deterministic"],
+                                    capture_output=True, text=True, timeout=300, check=True)
+    run("encode", wav_in, tmp_path / "z.pt")
+    run("decode", tmp_path / "z.pt", tmp_path / "a.wav")
+    run("reconstruct", wav_in, tmp_path / "b.wav")
+    a, sr = sf.read(tmp_path / "a.wav")
+    b, _ = sf.read(tmp_path / "b.wav")
+    assert sr == 44100 and a.shape == sf.read(wav_in)[0].shape and np.array_equal(a, b)

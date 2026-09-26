@@ -1,13 +1,13 @@
 # ===============
 # Tests for deterministic encode path: VAEBottleneck.encode(deterministic=True)
-# returns μ exactly, is reproducible, and the flag threads through AutoEncoder.
+# returns μ exactly, is reproducible, and the flag threads through SAGEAutoencoder.
 # ===============
 import sys
 
 import torch
 from torch import nn
 
-from ar_spectra.models.bottlenecks import VAEBottleneck
+from sage.nn.bottleneck import VAEBottleneck
 
 
 def _pre_bn(B=2, C=16, L=128):

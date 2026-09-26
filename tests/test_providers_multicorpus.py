@@ -16,7 +16,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-from ar_spectra.utils.metadata import jamendo, m4singer
+from sage.training.data.metadata import jamendo, m4singer
 import config
 
 JAMENDO_TRAIN_COUNT = 32_859

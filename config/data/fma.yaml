@@ -4,7 +4,7 @@
 fma_subset: medium
 
 train_dataset:
-  _target_: dataloader.OnTheFlySTFTDataset
+  _target_: sage.training.data.dataset.OnTheFlySTFTDataset
   audio_dir: ${config:DATA_PATH}
   target_frames: 128
   sample_rate: ${config:DEFAULT_SAMPLE_RATE}
@@ -19,7 +19,7 @@ train_dataset:
   skip_failed_samples: true
   skip_mismatched_sr: false
   skip_mismatched_channels: false
-  custom_metadata_module: src.ar_spectra.utils.metadata.fma
+  custom_metadata_module: sage.training.data.metadata.fma
   custom_metadata_kwargs:
     split: training
     subset: ${data.fma_subset}
@@ -35,7 +35,7 @@ train_dataloader:
   drop_last: true
 
 eval_dataset:
-  _target_: dataloader.OnTheFlySTFTDataset
+  _target_: sage.training.data.dataset.OnTheFlySTFTDataset
   audio_dir: ${config:DATA_PATH}
   target_frames: 128
   sample_rate: ${config:DEFAULT_SAMPLE_RATE}
@@ -50,7 +50,7 @@ eval_dataset:
   skip_mismatched_sr: false
   skip_mismatched_channels: false
   skip_failed_samples: true
-  custom_metadata_module: src.ar_spectra.utils.metadata.fma
+  custom_metadata_module: sage.training.data.metadata.fma
   custom_metadata_kwargs:
     split: validation
     subset: ${data.fma_subset}

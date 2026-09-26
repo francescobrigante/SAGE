@@ -107,7 +107,7 @@ def run_training(overrides: list[str], out_dir: Path) -> Path:
     """Compose the Hydra config exactly as `python train.py <overrides>` would, run it, return the newest checkpoint."""
     from hydra import compose, initialize_config_dir
     import train                                                  # registers the ${config:} / ${mul:} resolvers
-    import ar_spectra.training.loss_manager as loss_manager
+    import sage.training.loss_manager as loss_manager
 
     with initialize_config_dir(config_dir=str(REPO / "config"), version_base=None):
         cfg = compose(config_name="main", overrides=overrides)

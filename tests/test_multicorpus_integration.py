@@ -8,28 +8,15 @@
 #   advancing the sampler+dataset epoch rotates the M4 chunk AND moves the
 #   crop window, and a single-GPU pass covers every static-corpus item.
 # ===============================================================
-import sys
-import types
-from pathlib import Path
 
 import torch
 import torchaudio
+from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-# stub losses pkg (login-node torchaudio ABI) before importing initialization
-_LOSSES = "ar_spectra.training.losses"
-if _LOSSES not in sys.modules:
-    _stub = types.ModuleType(_LOSSES)
-    _stub.__path__ = [str(PROJECT_ROOT / "src/ar_spectra/training/losses")]
-    _stub.__package__ = _LOSSES
-    _stub.__spec__ = None
-    sys.modules[_LOSSES] = _stub
-
-import dataloader as dl
-from ar_spectra.utils.sampling import MultiCorpusRotatingSampler
-from ar_spectra.training.initialization import collate_stft
-from ar_spectra.training.callbacks import MultiCorpusEpochSetter
+import sage.training.data.dataset as dl
+from sage.training.data.sampling import MultiCorpusRotatingSampler
+from sage.training.initialization import collate_stft
+from sage.training.callbacks import MultiCorpusEpochSetter
 from torch.utils.data import DataLoader
 from types import SimpleNamespace
 

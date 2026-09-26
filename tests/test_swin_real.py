@@ -1,5 +1,5 @@
 # ===============================================================
-# Phase 3 test suite — SwinEncoder / SwinDecoder (Exp 0, real-valued).
+# Phase 3 test suite — SAGEEncoder / SAGEDecoder (Exp 0, real-valued).
 # Covers U1–U12 (unit) and I1–I5 (integration) from EXPERIMENTS.md §5.
 #
 # Markers
@@ -16,15 +16,15 @@ import torch
 import torch.nn as nn
 
 
-from c_vae.swin.windowing import window_partition, window_reverse
-from c_vae.swin.attention import WindowAttention
-from c_vae.swin.swin_block import SwinTransformerBlock
-from c_vae.swin.patches import PatchEmbed, PatchMerging, PatchExpand
-from c_vae.swin.swin_stage import SwinStage as BasicLayer
-from c_vae.swin.encoder import SwinEncoder
-from c_vae.swin.decoder import SwinDecoder
-from ar_spectra.models.autoencoder import AutoEncoder
-from ar_spectra.models.bottlenecks import VAEBottleneck
+from sage.model.swin.windowing import window_partition, window_reverse
+from sage.model.swin.attention import WindowAttention
+from sage.model.swin.block import SwinTransformerBlock
+from sage.model.swin.patches import PatchEmbed, PatchMerging, PatchExpand
+from sage.model.swin.stage import SwinStage as BasicLayer
+from sage.model.encoder import SAGEEncoder
+from sage.model.decoder import SAGEDecoder
+from sage.model.autoencoder import SAGEAutoencoder
+from sage.nn.bottleneck import VAEBottleneck
 
 
 # ---------------------------------------------------------------------------
@@ -42,8 +42,8 @@ DIMENSION = 128        # parameters_to_predict(2) × latent_channels(64)
 
 @pytest.fixture(scope="module")
 def enc_full():
-    """Production SwinEncoder (embed_dim=48).  Slow to construct + run."""
-    return SwinEncoder(
+    """Production SAGEEncoder (embed_dim=48).  Slow to construct + run."""
+    return SAGEEncoder(
         in_channels=4,
         embed_dim=48,
         depths=[2, 2, 4, 2],
@@ -56,8 +56,8 @@ def enc_full():
 
 @pytest.fixture(scope="module")
 def dec_full():
-    """Production SwinDecoder (embed_dim=48).  Slow to construct + run."""
-    return SwinDecoder(
+    """Production SAGEDecoder (embed_dim=48).  Slow to construct + run."""
+    return SAGEDecoder(
         channels=LATENT_CH,
         in_channels=4,
         embed_dim=48,
@@ -70,8 +70,8 @@ def dec_full():
 
 @pytest.fixture(scope="module")
 def enc_mini():
-    """Mini SwinEncoder (embed_dim=8, 1 block per stage) — fast for integration tests."""
-    return SwinEncoder(
+    """Mini SAGEEncoder (embed_dim=8, 1 block per stage) — fast for integration tests."""
+    return SAGEEncoder(
         in_channels=4,
         embed_dim=8,
         depths=[1, 1, 1, 1],
@@ -84,8 +84,8 @@ def enc_mini():
 
 @pytest.fixture(scope="module")
 def dec_mini():
-    """Mini SwinDecoder (embed_dim=8, 1 block per stage) — fast for integration tests."""
-    return SwinDecoder(
+    """Mini SAGEDecoder (embed_dim=8, 1 block per stage) — fast for integration tests."""
+    return SAGEDecoder(
         channels=8,          # latent_channels = embed_dim for mini
         in_channels=4,
         embed_dim=8,
@@ -98,9 +98,9 @@ def dec_mini():
 
 @pytest.fixture(scope="module")
 def ae_mini(enc_mini, dec_mini):
-    """AutoEncoder with mini encoder + decoder + real VAEBottleneck."""
+    """SAGEAutoencoder with mini encoder + decoder + real VAEBottleneck."""
     bn = VAEBottleneck()
-    return AutoEncoder(encoder=enc_mini, decoder=dec_mini, bottleneck=bn)
+    return SAGEAutoencoder(encoder=enc_mini, decoder=dec_mini, bottleneck=bn)
 
 
 # ===========================================================================
@@ -294,7 +294,7 @@ def test_u10_merge_expand_grid_roundtrip():
 
 @pytest.mark.slow
 def test_u11_encoder_shape(enc_full):
-    """SwinEncoder maps (B, 4, 1024, 128) → (B, 128, 128) with feature_shape info."""
+    """SAGEEncoder maps (B, 4, 1024, 128) → (B, 128, 128) with feature_shape info."""
     x = torch.randn(B, 4, 1024, 128)
     with torch.no_grad():
         latents, info = enc_full(x)
@@ -309,7 +309,7 @@ def test_u11_encoder_shape(enc_full):
 
 @pytest.mark.slow
 def test_u12_decoder_shape(dec_full):
-    """SwinDecoder maps (B, 64, 128) → (B, 4, 1024, 128)."""
+    """SAGEDecoder maps (B, 64, 128) → (B, 4, 1024, 128)."""
     z = torch.randn(B, LATENT_CH, 128)
     with torch.no_grad():
         out = dec_full(z)
@@ -328,7 +328,7 @@ _MINI_LC  = 8        # latent_channels = embed_dim
 
 
 # ---------------------------------------------------------------------------
-# I1 — AutoEncoder full forward: shapes correct, no NaN
+# I1 — SAGEAutoencoder full forward: shapes correct, no NaN
 # ---------------------------------------------------------------------------
 
 def test_i1_autoencoder_forward(ae_mini, enc_mini):
@@ -353,16 +353,16 @@ def test_i1_autoencoder_forward(ae_mini, enc_mini):
 
 def test_i2_gradient_flow():
     """loss.backward() propagates non-None gradients to every encoder+decoder param."""
-    enc = SwinEncoder(
+    enc = SAGEEncoder(
         in_channels=4, embed_dim=8, depths=[1, 1, 1, 1],
         num_heads=[1, 2, 4, 8], window_size=4, patch_size=4, dimension=16,
     )
-    dec = SwinDecoder(
+    dec = SAGEDecoder(
         channels=8, in_channels=4, embed_dim=8,
         depths=[1, 1, 1, 1], num_heads=[8, 4, 2, 1],
         window_size=4, patch_size=4,
     )
-    ae = AutoEncoder(encoder=enc, decoder=dec, bottleneck=VAEBottleneck())
+    ae = SAGEAutoencoder(encoder=enc, decoder=dec, bottleneck=VAEBottleneck())
 
     x = torch.randn(B, 4, 1024, 128)
     latents, enc_info, bn_info = ae.encode(x, return_info=True)

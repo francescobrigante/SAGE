@@ -17,13 +17,13 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-# Path inject MUST happen before ar_spectra import so maeb_dl can find src/.
+# Path inject MUST happen before sage import so maeb_dl can find src/.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))  # put evaluation/ on path for compatibility
 from maeb import compatibility                              # noqa: E402
-compatibility.add_ar_spectra_to_path(_REPO_ROOT)          # inject src/ into sys.path
+compatibility.add_src_to_path(_REPO_ROOT)          # inject src/ into sys.path
 
-from ar_spectra.models.inference import EuleroEncodeDecode  # noqa: E402
+from sage.inference import SAGE  # noqa: E402
 
 import torchaudio                                          # noqa: E402
 from tqdm.auto import tqdm                                 # noqa: E402
@@ -99,7 +99,7 @@ class SwinEncoder(AbsEncoder):
         self.max_audio_length_seconds = max_audio_length_seconds
 
         _device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        loader = EuleroEncodeDecode(model_name, device=_device)
+        loader = SAGE.from_checkpoint(model_name, device=_device)
         self.autoencoder = loader.autoencoder
         self.device: torch.device = loader.device
 
@@ -239,7 +239,7 @@ class SwinEncoder(AbsEncoder):
 
         Corrupt / unreadable clips are skipped (substituted with a zero
         embedding) so a single bad file never aborts the whole task — mirroring
-        the skip-on-failure policy of the ar_spectra training dataloader, while
+        the skip-on-failure policy of the sage training dataloader, while
         preserving one embedding per dataset row (label/qrel alignment).
         """
         all_embeddings: list[torch.Tensor] = []

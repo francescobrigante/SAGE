@@ -8,10 +8,10 @@
 # Purpose: bound how much of the distillation teacher's semantic power survives
 # inside SAGE's 64-d invertible latent. The checkpoint MUST be the exact one
 # distilled in training (music_audioset_epoch_15_esc_90.14.pt, see
-# CLAPTeacher in src/ar_spectra/training/losses/semantic.py:46 and
+# CLAPTeacher in src/sage/nn/losses/semantic.py and
 # loss_manager.py:391) — a different CLAP would answer a different question.
 # This file re-creates that loading inline rather than importing CLAPTeacher:
-# maeb_dl is an ISOLATED venv without ar_spectra on the path. Keep in sync.
+# maeb_dl is an ISOLATED venv without sage on the path. Keep in sync.
 #
 # Two caveats to tabulate with the numbers (both make the oracle OPTIMISTIC):
 #   * 512-d vs SAGE's 64-d — not width-matched (same convention as SAME's 256-d).

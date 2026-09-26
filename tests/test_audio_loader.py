@@ -15,8 +15,8 @@ from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-import ar_spectra.utils.audio as audio_mod
-from ar_spectra.utils.audio import _torchaudio_load_safe, load_waveform
+import sage.utils.audio as audio_mod
+from sage.utils.audio import _torchaudio_load_safe, load_waveform
 
 SIGALRM_AVAILABLE = hasattr(signal, "SIGALRM")
 
@@ -28,7 +28,7 @@ def _wav(channels: int = 2, samples: int = 44100, sr: int = 44100):
 # ── T1: successful load returns tensor and sample rate ────────────────────────
 
 def test_success_returns_wav():
-    with patch("ar_spectra.utils.audio.torchaudio.load", return_value=_wav()) as mock:
+    with patch("sage.utils.audio.torchaudio.load", return_value=_wav()) as mock:
         wav, sr = _torchaudio_load_safe("/fake/path.mp3")
     assert sr == 44100
     assert wav.shape == (2, 44100)
@@ -46,7 +46,7 @@ def test_timeout_raises_runtime_error(monkeypatch):
         time.sleep(4)
         return _wav()
 
-    with patch("ar_spectra.utils.audio.torchaudio.load", side_effect=_slow):
+    with patch("sage.utils.audio.torchaudio.load", side_effect=_slow):
         with pytest.raises(RuntimeError, match="/fake/path.mp3"):
             _torchaudio_load_safe("/fake/path.mp3")
 
@@ -57,7 +57,7 @@ def test_timeout_raises_runtime_error(monkeypatch):
 def test_signal_restored_after_success():
     prior_handler = signal.getsignal(signal.SIGALRM)
 
-    with patch("ar_spectra.utils.audio.torchaudio.load", return_value=_wav()):
+    with patch("sage.utils.audio.torchaudio.load", return_value=_wav()):
         _torchaudio_load_safe("/fake/path.mp3")
 
     assert signal.getsignal(signal.SIGALRM) is prior_handler
@@ -76,7 +76,7 @@ def test_signal_restored_after_timeout(monkeypatch):
         time.sleep(4)
         return _wav()
 
-    with patch("ar_spectra.utils.audio.torchaudio.load", side_effect=_slow):
+    with patch("sage.utils.audio.torchaudio.load", side_effect=_slow):
         with pytest.raises(RuntimeError):
             _torchaudio_load_safe("/fake/path.mp3")
 
@@ -89,7 +89,7 @@ def test_signal_restored_after_timeout(monkeypatch):
 # Passes post-fix (load_waveform calls _torchaudio_load_safe).
 
 def test_load_waveform_uses_safe_loader():
-    with patch("ar_spectra.utils.audio._torchaudio_load_safe", return_value=_wav()) as mock:
+    with patch("sage.utils.audio._torchaudio_load_safe", return_value=_wav()) as mock:
         load_waveform("/fake/path.mp3", target_sample_rate=44100, expected_channels=2)
     # load_waveform forwards the (default, whole-file) windowing args through
     mock.assert_called_once_with("/fake/path.mp3", frame_offset=0, num_frames=-1)
@@ -99,7 +99,7 @@ def test_load_waveform_uses_safe_loader():
 
 def test_load_waveform_mono_to_stereo():
     mono_wav, sr = _wav(channels=1, samples=22050)
-    with patch("ar_spectra.utils.audio._torchaudio_load_safe", return_value=(mono_wav, sr)):
+    with patch("sage.utils.audio._torchaudio_load_safe", return_value=(mono_wav, sr)):
         wav, _, ch_mismatch, _ = load_waveform("/fake/path.mp3", target_sample_rate=sr, expected_channels=2)
     assert wav.shape[0] == 2
     assert ch_mismatch is True
@@ -111,7 +111,7 @@ def test_load_waveform_stereo_to_mono():
     stereo_wav, sr = _wav(channels=2, samples=22050)
     stereo_wav[0] = 1.0
     stereo_wav[1] = 3.0
-    with patch("ar_spectra.utils.audio._torchaudio_load_safe", return_value=(stereo_wav, sr)):
+    with patch("sage.utils.audio._torchaudio_load_safe", return_value=(stereo_wav, sr)):
         wav, _, ch_mismatch, _ = load_waveform("/fake/path.mp3", target_sample_rate=sr, expected_channels=1)
     assert wav.shape[0] == 1
     assert ch_mismatch is True
@@ -122,7 +122,7 @@ def test_load_waveform_stereo_to_mono():
 
 def test_load_waveform_resamples():
     wav_22k, _ = _wav(channels=2, samples=22050, sr=22050)
-    with patch("ar_spectra.utils.audio._torchaudio_load_safe", return_value=(wav_22k, 22050)):
+    with patch("sage.utils.audio._torchaudio_load_safe", return_value=(wav_22k, 22050)):
         wav, sr_out, _, sr_mismatch = load_waveform("/fake/path.mp3", target_sample_rate=44100, expected_channels=2)
     assert sr_out == 44100
     assert sr_mismatch is True

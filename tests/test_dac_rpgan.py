@@ -11,8 +11,8 @@ import sys
 import pytest
 import torch
 
-from ar_spectra.models.discriminators import DACGANLoss, DACDiscriminator
-from ar_spectra.models.discriminators.types import get_relativistic_losses
+from sage.nn.discriminators import DACGANLoss, DACDiscriminator
+from sage.nn.discriminators.types import get_relativistic_losses
 
 SR = 44100
 

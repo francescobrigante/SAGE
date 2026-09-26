@@ -10,7 +10,7 @@ import sys
 import numpy as np
 import pytest
 
-from ar_spectra.training.callbacks import ValFADCallback
+from sage.training.callbacks import ValFADCallback
 
 
 def test_lazy_import_isolation():
@@ -22,7 +22,7 @@ def test_lazy_import_isolation():
     import subprocess
     code = (
         "import sys\n"
-        "from ar_spectra.training.callbacks import ValFADCallback\n"
+        "from sage.training.callbacks import ValFADCallback\n"
         "assert 'fadtk' not in sys.modules, 'fadtk leaked into module import'\n"
         "print('OK')\n"
     )

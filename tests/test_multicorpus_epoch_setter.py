@@ -7,23 +7,9 @@
 #   and no-op when there is no train dataloader yet. Validation never
 #   triggers it, so val stays at epoch 0 (fixed crops).
 # ===============================================================
-import sys
-import types
-from pathlib import Path
 from types import SimpleNamespace
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-# stub the losses package (login-node torchaudio ABI) before importing callbacks
-_LOSSES = "ar_spectra.training.losses"
-if _LOSSES not in sys.modules:
-    _stub = types.ModuleType(_LOSSES)
-    _stub.__path__ = [str(PROJECT_ROOT / "src/ar_spectra/training/losses")]
-    _stub.__package__ = _LOSSES
-    _stub.__spec__ = None
-    sys.modules[_LOSSES] = _stub
-
-from ar_spectra.training.callbacks import MultiCorpusEpochSetter
+from sage.training.callbacks import MultiCorpusEpochSetter
 
 
 class _Recorder:

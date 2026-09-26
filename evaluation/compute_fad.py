@@ -15,7 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from utils import downmix, CHANNEL_MID
 
-from ar_spectra.utils.console import ok, warn
+from sage.utils.console import ok, warn
 
 from fadtk.fad import get_cache_embedding_path, calc_frechet_distance
 from fadtk.model_loader import CLAPLaionModel, MERTModel

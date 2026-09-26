@@ -7,7 +7,7 @@ import sys
 
 import torch
 
-from ar_spectra.models.discriminators.wavtokenizer import (
+from sage.nn.discriminators.wavtokenizer import (
     WavTokenizerDiscriminator,
     WavTokenizerGANLoss,
 )

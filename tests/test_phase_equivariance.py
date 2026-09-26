@@ -12,7 +12,7 @@ import torch.nn as nn
 import sys
 import os
 
-from ar_spectra.blocks.activations import (
+from sage.nn.activations import (
     ComplexGELU1d, CGeLU, ModReLU, get_activation,
 )
 

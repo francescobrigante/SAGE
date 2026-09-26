@@ -11,7 +11,7 @@ import sys
 
 import torch
 
-from ar_spectra.training.losses.spectral import adaptive_log_mag, MRSTFTSame
+from sage.nn.losses.spectral import adaptive_log_mag, MRSTFTSame
 
 
 def test_adaptive_log_mag_zero_on_identical():
@@ -71,7 +71,7 @@ def test_mrstft_same_backprop():
 
 def test_mrstft_same_registers_in_loss_manager():
     # The `mrstft_same` block builds an MRSTFTSame and appends a LossWithTarget.
-    from ar_spectra.training.loss_manager import LossManager
+    from sage.training.loss_manager import LossManager
 
     class _DummyAE(torch.nn.Module):
         bottleneck = None

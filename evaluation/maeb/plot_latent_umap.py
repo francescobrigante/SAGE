@@ -28,7 +28,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_EVAL_DIR.parent))            # evaluation/ — for `from maeb import …`
 
 from maeb import compatibility                        # noqa: E402 — side-effect
-compatibility.add_ar_spectra_to_path(_REPO_ROOT)
+compatibility.add_src_to_path(_REPO_ROOT)
 
 import numpy as np                                   # noqa: E402
 import torch                                         # noqa: E402

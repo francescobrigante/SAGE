@@ -11,7 +11,7 @@ from pathlib import Path
 import sys
 import os
 
-from ar_spectra.utils.config_guards import check_cac_consistency
+from sage.utils.config_guards import check_cac_consistency
 
 
 # ── Hotspot A: clip_grad_norm value ──────────────────────────────────────────

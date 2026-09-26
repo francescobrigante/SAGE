@@ -15,7 +15,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-from ar_spectra.utils.sampling import MultiCorpusRotatingSampler
+from sage.training.data.sampling import MultiCorpusRotatingSampler
 
 # corpus 0 = FMA-like, 1 = Jamendo-like (both static), 2 = M4-like (rotating)
 SIZES = [10, 6, 8]

@@ -8,8 +8,8 @@
 
 import torch
 
-from c_vae.swin.encoder import SwinEncoder
-from c_vae.swin.decoder import SwinDecoder
+from sage.model.encoder import SAGEEncoder
+from sage.model.decoder import SAGEDecoder
 
 
 # Mini geometry: same as champion (PS=[64,1], 3 stages -> grid 4×32) but tiny embed.
@@ -24,16 +24,16 @@ DIM = P2P * LAT_CH            # encoder output channels = 16
 B, F, T = 2, 1024, 128       # input spectrogram (B, 4, 1024, 128)
 
 
-def _enc(fold: bool) -> SwinEncoder:
-    return SwinEncoder(
+def _enc(fold: bool) -> SAGEEncoder:
+    return SAGEEncoder(
         in_channels=4, is_complex=False, embed_dim=EMBED, depths=DEPTHS,
         num_heads=HEADS, window_size=WIN, patch_size=PS, dimension=DIM,
         time_frames=T, fold_freq_to_channels=fold,
     )
 
 
-def _dec(fold: bool) -> SwinDecoder:
-    return SwinDecoder(
+def _dec(fold: bool) -> SAGEDecoder:
+    return SAGEDecoder(
         channels=LAT_CH, in_channels=4, is_complex=False, embed_dim=EMBED,
         depths=DEPTHS[::-1], num_heads=HEADS[::-1], window_size=WIN,
         patch_size=PS, time_frames=T, fold_freq_to_channels=fold,

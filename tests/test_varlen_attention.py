@@ -1,5 +1,5 @@
 # ===============================================================
-# Tests for variable-length multi-phase attention (c_vae/swin/varlen.py).
+# Tests for variable-length multi-phase attention (sage/model/swin/varlen.py).
 # Guards the two properties the fix must have: it is inert at the training
 # resolution (so no published number can move), and a single phase 0
 # reproduces the baseline bit-for-bit at any length.
@@ -11,8 +11,8 @@ import pytest
 import torch
 
 
-from c_vae.swin.swin_block import SwinTransformerBlock
-from c_vae.swin.varlen import (VarlenConfig, enable_varlen, group_bounds,
+from sage.model.swin.block import SwinTransformerBlock
+from sage.model.swin.varlen import (VarlenConfig, enable_varlen, group_bounds,
                                is_collapsed, load_config, phase_weights, resolve)
 
 # SAGE's deepest stage: grid (4, 32) at training, window (4, 32) → collapse guard fires.
@@ -180,8 +180,8 @@ def test_config_validates_its_inputs():
 # --------------------------------------------------------------------------
 # The project default
 # --------------------------------------------------------------------------
-# From 2026-09-22 config/inference/varlen.yaml ships mode: tri2, and
-# EuleroEncodeDecode applies it to every checkpoint it loads. These two tests
+# From 2026-09-22 sage/model/swin/varlen.yaml ships mode: tri2, and
+# SAGE.from_checkpoint applies it to every checkpoint it loads. These two tests
 # exist so that default cannot drift silently: the first pins what it is, the
 # second pins the property that makes shipping it safe.
 

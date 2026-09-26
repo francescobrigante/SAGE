@@ -30,12 +30,12 @@ from rich.console import Console
 
 console = Console()
 
-from ar_spectra.models.autoencoder import AutoEncoder
-from ar_spectra.training.autoencoders import AutoencoderTrainingWrapper, AutoencoderValDemoCallback
-from ar_spectra.training.initialization import collate_stft
-from ar_spectra.utils.reproducibility import configure_reproducibility
-from ar_spectra.utils.run_config import _is_rank0, get_rank, get_world_size, get_checkpoint_dir, resolve_run_name
-from ar_spectra.utils.console import ok, warn, err
+from sage.model.autoencoder import SAGEAutoencoder
+from sage.training.lightning_module import SAGELightningModule, AutoencoderValDemoCallback
+from sage.training.initialization import collate_stft
+from sage.utils.reproducibility import configure_reproducibility
+from sage.utils.run_config import _is_rank0, get_rank, get_world_size, get_checkpoint_dir, resolve_run_name
+from sage.utils.console import ok, warn, err
 
 import logging
 logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
@@ -44,11 +44,11 @@ import config
 OmegaConf.register_new_resolver("config", lambda key: getattr(config, key))
 OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
-from ar_spectra.training.callbacks import DatasetEpochSetter, MultiCorpusEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger, ValFADCallback
-from dataloader import MultiCorpusDataset
-from ar_spectra.utils.sampling import MultiCorpusRotatingSampler
-from ar_spectra.utils.model_info import extract_model_config
-from ar_spectra.utils.config_guards import check_cac_consistency
+from sage.training.callbacks import DatasetEpochSetter, MultiCorpusEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger, ValFADCallback
+from sage.training.data.dataset import MultiCorpusDataset
+from sage.training.data.sampling import MultiCorpusRotatingSampler
+from sage.utils.model_info import extract_model_config
+from sage.utils.config_guards import check_cac_consistency
 
 class WandbConfigLogger:
     """Utility per caricare l'intera cartella di configurazione Hydra su W&B.
@@ -151,7 +151,7 @@ def _load_autoencoder_weights(wrapper, ckpt_file: str, use_ema: bool = True) -> 
     ``wrapper.engine.autoencoder`` with ``strict=False``.
 
     Args:
-        wrapper:   The AutoencoderTrainingWrapper whose autoencoder receives weights.
+        wrapper:   The SAGELightningModule whose autoencoder receives weights.
         ckpt_file: Path to the source checkpoint (e.g. M5's last.ckpt).
         use_ema:   If True, prefer EMA weights; else the live training weights.
     """
@@ -183,7 +183,7 @@ def _load_discriminator_weights(wrapper, ckpt_file: str) -> None:
     a previously-trained discriminator rather than re-initialising it.
 
     Args:
-        wrapper:   The AutoencoderTrainingWrapper whose discriminator receives weights.
+        wrapper:   The SAGELightningModule whose discriminator receives weights.
         ckpt_file: Path to the source checkpoint (e.g. N6's last.ckpt).
     """
     prefix = "engine.loss_manager.discriminator."
@@ -370,7 +370,7 @@ def main(cfg: DictConfig):
     # Model instantiation via Hydra
     # ─────────────────────────────────────────────────────────────────────────
     model_cfg = OmegaConf.to_container(cfg.models.model, resolve=True)
-    autoencoder = AutoEncoder.from_config(model_cfg)
+    autoencoder = SAGEAutoencoder.from_config(model_cfg)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Config guard: complex model + cac=True is a silent training failure
@@ -422,7 +422,7 @@ def main(cfg: DictConfig):
     loss_config_dict = OmegaConf.to_container(trainer_cfg.get("loss_config", {}), resolve=True) or {}
     kl_beta_target = float((loss_config_dict.get("bottleneck") or {}).get("weights", {}).get("kl", 0.0))
 
-    wrapper = AutoencoderTrainingWrapper(
+    wrapper = SAGELightningModule(
         autoencoder=autoencoder,
         sample_rate=sample_rate,
         audio_channels=audio_channels,

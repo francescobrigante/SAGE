@@ -4,7 +4,7 @@
 # an aux optimizer the gen phase did 2 steps → global_step stayed even → disc starved).
 # ===============
 import pytest
-from ar_spectra.training.engine import select_training_phase
+from sage.training.engine import select_training_phase
 
 
 def _steps_for_phase(phase: str, has_aux: bool) -> int:

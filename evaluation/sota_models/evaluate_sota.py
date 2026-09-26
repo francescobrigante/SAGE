@@ -37,7 +37,7 @@ for _p in (str(_PROJ_ROOT), str(_PROJ_ROOT / "src"), str(_EVAL_DIR), str(_SOTA_D
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from ar_spectra.utils.console import ok, warn, info, err
+from sage.utils.console import ok, warn, info, err
 from losses import compute_sdr_and_sisdr, stft_loss, spectral_losses, cdpam_score
 from utils import (write_csv, collect_fma_files, atomic_save_npy,
                    load_or_embed, target_cache_path, silence_output)
