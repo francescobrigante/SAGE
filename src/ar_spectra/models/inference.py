@@ -250,6 +250,7 @@ class EuleroEncodeDecode:
         *,
         device: Optional[Union[str, torch.device]] = None,
         strict: bool = False,
+        varlen: Optional[str] = None,
     ) -> None:
         self.checkpoint_path = Path(checkpoint_path)
         if not self.checkpoint_path.is_file():
@@ -302,8 +303,34 @@ class EuleroEncodeDecode:
 
         self.autoencoder.to(self.device)
         self.autoencoder.eval()
-        
+
+        # Multi-phase attention on the stages whose window covers the whole
+        # training grid. Applied here because this is the single point every
+        # inference path goes through, and because training never does: the
+        # Lightning modules build their AutoEncoder directly. Inert at or below
+        # the training length, so short-segment results are bit-identical.
+        self._apply_varlen(varlen)
+
         ok(f"Loaded checkpoint: {self.checkpoint_path}", prefix="CHECKPOINT")
+
+    def _apply_varlen(self, varlen: Optional[str]) -> None:
+        """Enable the variable-length seam fix on the collapsed Swin stages.
+
+        Args:
+            varlen: Preset name from ``config/inference/varlen.yaml``, or
+                ``"off"`` for the original single-phase attention. ``None``
+                takes the project default from that file.
+
+        Sets ``varlen_mode`` (what ran) and ``varlen_blocks`` (how many blocks
+        it touched — 0 means the architecture has no collapsed stage and the
+        fix is a no-op). Non-Swin checkpoints never reach this method.
+        """
+        from c_vae.swin.varlen import enable_varlen, load_config, resolve
+
+        self.varlen_mode = str(load_config().mode) if varlen is None else str(varlen)
+        self.varlen_blocks = enable_varlen(self.autoencoder, resolve(self.varlen_mode))
+        ok(f"varlen={self.varlen_mode} su {self.varlen_blocks} blocchi collassati",
+           prefix="CHECKPOINT")
 
     @staticmethod
     def _resolve_device(device: Optional[Union[str, torch.device]]) -> torch.device:

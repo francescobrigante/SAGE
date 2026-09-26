@@ -6,7 +6,7 @@
 
 import torch
 import numpy as np
-from typing import List, Any
+from typing import List, Any, Optional
 import scipy.signal
 import librosa.filters as librosa_filters
 
@@ -171,10 +171,32 @@ class FIRFilter(torch.nn.Module):
         return y
 
 class SpectralConvergenceLoss(torch.nn.Module):
-    def __init__(self):
-        super(SpectralConvergenceLoss, self).__init__()
+    """Spectral convergence ``‖|X|−|Y|‖_F / ‖|Y|‖_F`` with a guarded denominator.
+
+    **L5 (STEREO_COLLAPSE_DIAGNOSIS §11.4).** Under SAO's reversed argument chain
+    ``y_mag`` is the RECONSTRUCTION, so the denominator vanishes exactly when the
+    prediction collapses — the case this term exists to punish. Unguarded that is
+    a division by zero (inf/NaN gradients). The floor keeps the penalty steep but
+    finite; for any non-degenerate pair the value is unchanged, because at
+    ``eps_rel = 1e-3`` the floor only binds below a ~60 dB collapse.
+
+    Args:
+        eps_rel: denominator floor as a fraction of ``‖X‖`` — scale-free, so the
+            guard behaves identically at any signal level.
+        eps_abs: absolute floor, guarding the case ``‖X‖ = 0`` too.
+    """
+
+    def __init__(self, eps_rel: float = 1e-3, eps_abs: float = 1e-12):
+        super().__init__()
+        self.eps_rel = eps_rel
+        self.eps_abs = eps_abs
+
     def forward(self, x_mag, y_mag):
-        return (torch.norm(y_mag - x_mag, p="fro", dim=[-1, -2]) / torch.norm(y_mag, p="fro", dim=[-1, -2])).unsqueeze(-1).unsqueeze(-1)
+        num   = torch.norm(y_mag - x_mag, p="fro", dim=[-1, -2])          # (B, ...)
+        den   = torch.norm(y_mag,         p="fro", dim=[-1, -2])          # (B, ...)
+        floor = torch.norm(x_mag,         p="fro", dim=[-1, -2])          # (B, ...)
+        floor = (self.eps_rel * floor).clamp_min(self.eps_abs)            # (B, ...)
+        return (num / torch.maximum(den, floor)).unsqueeze(-1).unsqueeze(-1)
 
 class STFTMagnitudeLoss(torch.nn.Module):
     def __init__(self, log=True, log_eps=0.0, log_fac=1.0, distance="L1", reduction="mean"):
@@ -213,6 +235,8 @@ class STFTLoss(torch.nn.Module):
         perceptual_weighting: bool = False,
         scale_invariance: bool = False,
         eps: float = 1e-8,
+        sc_eps_rel: float = 1e-3,       # L5: floor del denominatore SC, relativo a ‖X‖
+        sc_eps_abs: float = 1e-12,      # L5: floor assoluto
         output: str = "loss",
         reduction: str = "mean",
         mag_distance: str = "L1",
@@ -242,7 +266,7 @@ class STFTLoss(torch.nn.Module):
         self.retain_batch_dim = retain_batch_dim
 
         self.phs_used = bool(self.w_phs)
-        self.spectralconv = SpectralConvergenceLoss()
+        self.spectralconv = SpectralConvergenceLoss(eps_rel=sc_eps_rel, eps_abs=sc_eps_abs)
         self.logstft = STFTMagnitudeLoss(log=True, reduction=reduction if not self.retain_batch_dim else "none", distance=mag_distance, **kwargs)
         self.linstft = STFTMagnitudeLoss(log=False, reduction=reduction if not self.retain_batch_dim else "none", distance=mag_distance, **kwargs)
 
@@ -378,6 +402,10 @@ class SumAndDifferenceSTFTLoss(torch.nn.Module):
         perceptual_weighting: bool = True,  # A-weighting FIR pre-filter (SAO default)
         w_ms: float = 1.0,                  # weight of the mid/side branch (SAO: 1.0)
         w_lr: float = 1.0,                  # weight of the left/right branch (SAO: 1.0 → 0.5 each)
+        w_mid: Optional[float] = None,      # L1: overrides the Mid half of the M/S branch
+        w_side: Optional[float] = None,     # L1: overrides the Side half of the M/S branch
+        side_gate_db: Optional[float] = None,   # L2: skip the Side term below this S/M ratio
+        gate_eps: float = 1e-12,
         **kwargs,
     ):
         super().__init__()
@@ -393,8 +421,23 @@ class SumAndDifferenceSTFTLoss(torch.nn.Module):
             perceptual_weighting=perceptual_weighting,
             **kwargs,
         )
-        self.w_ms = w_ms                        # mid/side branch weight
+        self.w_ms = w_ms                        # mid/side branch weight (legacy knob)
         self.w_lr = w_lr                        # left/right branch weight
+        # L1 — the M/S branch is `w_ms · ½(mid + side)`, so each half defaults to
+        # `w_ms/2`: leaving w_mid/w_side unset reproduces SAO bit-for-bit, while
+        # setting them addresses Mid and Side independently. Side-only is
+        # `w_lr=0, w_mid=0, w_side=1` — the only configuration whose gradient on
+        # the Mid is exactly zero (antisymmetric on L/R, cancels in M=L+R), hence
+        # the only one that cannot move FAD/CLAP/CDPAM, which see the Mid alone.
+        self.w_mid = 0.5 * w_ms if w_mid is None else w_mid
+        self.w_side = 0.5 * w_ms if w_side is None else w_side
+        # L2 — a target whose Side sits this far below its Mid carries no stereo
+        # information (mono duplicated to 2 channels: 7.0 % of the training
+        # corpus exactly, 10.4 % below −40 dB). There the log-magnitude term
+        # actively teaches |Ŝ| → 0, i.e. it teaches the collapse. Skip, don't
+        # clamp: a clamped term still has a gradient pointing the wrong way.
+        self.side_gate_db = side_gate_db
+        self.gate_eps = gate_eps
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         if pred.shape != target.shape:
@@ -403,10 +446,49 @@ class SumAndDifferenceSTFTLoss(torch.nn.Module):
         m_t, s_t = self.sd(target)                                     # (B, 1, T) each
         # SAO reversed-order chain (AuralossLoss "wrong order"): STFTLoss gets
         # input=target, target=pred → SC normalizes by the RECONSTRUCTION.
-        ms = 0.5 * (self.mrstft(m_t, m_p) + self.mrstft(s_t, s_p))     # mid/side branch → scalar
-        lr = 0.5 * (self.mrstft(target[:, 0:1], pred[:, 0:1]) +       # left  channel
-                    self.mrstft(target[:, 1:2], pred[:, 1:2]))         # right channel → scalar
-        return self.w_ms * ms + self.w_lr * lr                         # scalar
+        total = pred.new_zeros(())                                     # scalar accumulator
+        if self.w_mid:
+            total = total + self.w_mid * self.mrstft(m_t, m_p)         # mid term
+        if self.w_side:
+            total = total + self.w_side * self._side_term(s_t, s_p, m_t)
+        if self.w_lr:
+            lr = 0.5 * (self.mrstft(target[:, 0:1], pred[:, 0:1]) +     # left  channel
+                        self.mrstft(target[:, 1:2], pred[:, 1:2]))      # right channel
+            total = total + self.w_lr * lr
+        return total                                                   # scalar
+
+    def _side_term(self, s_t: torch.Tensor, s_p: torch.Tensor,
+                   m_t: torch.Tensor) -> torch.Tensor:
+        """Side MR-STFT, restricted to the items whose target actually has a Side.
+
+        L2: items below ``side_gate_db`` are dropped from the batch rather than
+        down-weighted, so the term is the mean over the items that carry stereo
+        information — its magnitude stays comparable instead of being diluted by
+        the mono ones.
+
+        Args:
+            s_t: target side, ``(B, 1, T)``.
+            s_p: predicted side, ``(B, 1, T)``.
+            m_t: target mid, ``(B, 1, T)`` — the reference the gate is relative to.
+
+        Returns:
+            Scalar loss; exactly ``0`` (still attached to the graph) when every
+            item in the batch is gated out.
+        """
+        if self.side_gate_db is None:
+            return self.mrstft(s_t, s_p)
+
+        e_s = s_t.pow(2).sum(dim=(-2, -1))                             # (B,)
+        e_m = m_t.pow(2).sum(dim=(-2, -1))                             # (B,)
+        ratio_db = 10.0 * torch.log10(e_s / e_m.clamp_min(self.gate_eps)
+                                      + self.gate_eps)                 # (B,)
+        keep = ratio_db >= self.side_gate_db                           # (B,) bool
+
+        if not bool(keep.any()):
+            return (s_p.sum() * 0.0)          # graph-connected zero, no gradient
+        if bool(keep.all()):
+            return self.mrstft(s_t, s_p)
+        return self.mrstft(s_t[keep], s_p[keep])                       # (B', 1, T)
 
 
 class SISDRLoss(torch.nn.Module):
@@ -432,3 +514,103 @@ class SISDRLoss(torch.nn.Module):
 class MelSTFTLoss(STFTLoss):
     def __init__(self, sample_rate, fft_size=1024, hop_size=256, win_length=1024, window="hann_window", w_sc=1.0, w_log_mag=1.0, w_lin_mag=0.0, w_phs=0.0, n_mels=128, **kwargs):
         super(MelSTFTLoss, self).__init__(fft_size, hop_size, win_length, window, w_sc, w_log_mag, w_lin_mag, w_phs, sample_rate, "mel", n_mels, **kwargs)
+
+
+class StereoCoherenceLoss(torch.nn.Module):
+    r"""**L6** — inter-channel coherence, the differentiable surrogate of ``d_pan``.
+
+    Targets the normalised Mid/Side cross-correlation per TF bin::
+
+        γ = 2·M·S* / (|M|² + |S|²)          γ ∈ ℂ,  |γ| ≤ 1
+
+    A single complex number that carries both perceptually-validated metrics
+    (STEREO_COLLAPSE_DIAGNOSIS §11.3), verified numerically:
+
+    * ``Re(γ) = p``, i.e. **exactly** the pan the metric measures (err 3.6e-07).
+    * ``|γ| = 2r/(1+r²)`` with ``r = |S|/|M|`` — monotone in the width.
+    * ``arg(γ)`` is the Mid↔Side relative phase.
+
+    Why this and not a magnitude term. ``mrstft_sd`` is spectral-convergence +
+    log-magnitude: both on ``|X|``. Rotating ``arg(S)`` by 90° at fixed magnitude
+    moves ``d_width`` by 4.8e-09 (numerically nothing) and ``d_pan`` by 0.715 —
+    a magnitude loss is provably blind to what pan measures, so it restores the
+    Side's energy with whatever phase is cheapest. Measured consequence: the M/S
+    arms fix the level (−0.08 dB) and leave ``d_pan`` pinned at the mono null.
+
+    Why not the existing ``w_phs``. ``normalized_complex_distance_loss`` divides
+    per bin by ``½(|x|+|y|)``, so a near-silent bin — where phase is noise — gets
+    full weight. Here the denominator is ``|M|²+|S|²``: γ goes smoothly to 0 as
+    the Side vanishes instead of blowing up, and the energy weight silences those
+    bins a second time. Where the reference is mono (γ≈0) a large γ̂ is penalised,
+    so the term also punishes *hallucinated* Side — the ``ms_replace`` failure.
+
+    Gradient sensitivity. Near collapse the width is quadratic in ``r`` while
+    ``|γ|`` is linear: their slopes differ by ``1/r``, so at the measured
+    baseline (−12.4 dB → r = 0.24) this term carries ~4× the gradient of a
+    width-based one, exactly in the regime where the model is stuck.
+
+    ``pred``'s Mid is **detached**, so ∂L/∂M̂ is exactly zero and the gradient on
+    L and R is antisymmetric — it cancels bit-for-bit in the M = L+R projection.
+    That is what makes the term safe to graft onto a half-trained checkpoint:
+    FAD/CLAP/CDPAM see the Mid alone (§4.4) and cannot be moved by it.
+    """
+
+    def __init__(
+        self,
+        fft_sizes: List[int] = (2048, 1024, 512),
+        hop_sizes: List[int] = (512, 256, 128),
+        win_lengths: List[int] = (2048, 1024, 512),
+        window: str = "hann_window",
+        detach_mid: bool = True,        # keeps ∂L/∂Mid exactly zero — see class docstring
+        side_gate_db: Optional[float] = None,   # L2: skip items whose target Side is negligible
+        eps: float = 1e-12,
+        **kwargs,
+    ):
+        super().__init__()
+        self.fft_sizes = list(fft_sizes)
+        self.hop_sizes = list(hop_sizes)
+        self.win_lengths = list(win_lengths)
+        self.detach_mid = detach_mid
+        self.side_gate_db = side_gate_db
+        self.eps = eps
+        for i, wl in enumerate(self.win_lengths):
+            self.register_buffer(f"win_{i}", get_window(window, wl).float(), persistent=False)
+
+    def _gamma(self, m: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
+        """γ = 2·M·S*/(|M|²+|S|²) for complex STFTs, shape-preserving."""
+        return 2.0 * m * s.conj() / (m.abs().square() + s.abs().square() + self.eps)
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        if pred.shape != target.shape:
+            raise ValueError(f"Shape mismatch: {pred.shape} vs {target.shape}")
+
+        m_p = (pred[:, 0] + pred[:, 1]) / 2 ** 0.5                     # (B, T)
+        s_p = (pred[:, 0] - pred[:, 1]) / 2 ** 0.5                     # (B, T)
+        m_t = (target[:, 0] + target[:, 1]) / 2 ** 0.5                 # (B, T)
+        s_t = (target[:, 0] - target[:, 1]) / 2 ** 0.5                 # (B, T)
+
+        if self.side_gate_db is not None:                              # L2, item-level
+            ratio_db = 10.0 * torch.log10(
+                s_t.square().sum(-1) / m_t.square().sum(-1).clamp_min(self.eps) + self.eps)
+            keep = ratio_db >= self.side_gate_db                       # (B,)
+            if not bool(keep.any()):
+                return pred.sum() * 0.0                                # graph-connected zero
+            if not bool(keep.all()):
+                m_p, s_p, m_t, s_t = m_p[keep], s_p[keep], m_t[keep], s_t[keep]
+
+        total = pred.sum() * 0.0                                       # scalar accumulator
+        for i, (n_fft, hop, wl) in enumerate(zip(self.fft_sizes, self.hop_sizes, self.win_lengths)):
+            win = getattr(self, f"win_{i}").to(pred.device, pred.dtype)
+            stft = lambda x: torch.stft(x, n_fft, hop, wl, window=win,
+                                        return_complex=True, center=True)
+            Mp, Sp = stft(m_p), stft(s_p)                              # (B, F, N) complex
+            Mt, St = stft(m_t), stft(s_t)                              # (B, F, N) complex
+            if self.detach_mid:
+                Mp = Mp.detach()
+
+            d = self._gamma(Mp, Sp) - self._gamma(Mt, St)              # (B, F, N) complex
+            mod = (d.real.square() + d.imag.square() + self.eps).sqrt()  # (B, F, N), |·| smooth at 0
+            w = Mt.abs().square() + St.abs().square()                  # (B, F, N) reference energy
+            total = total + (w * mod).sum() / (w.sum() + self.eps)     # same weighting as d_pan
+
+        return total / len(self.fft_sizes)                             # scalar

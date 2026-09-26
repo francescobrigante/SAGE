@@ -41,9 +41,9 @@ from maeb.runner import run_maeb
 
 log = logging.getLogger(__name__)
 
-# SAME is 256-d native (not width-matched vs the x64-class codecs); allowed but
+# SAME (-L and -S) is 256-d native (not width-matched vs the x64-class codecs); allowed but
 # its MAEB scores must be flagged as upper-biased when tabulated.
-_ALLOWED_MODELS = ("codicodec", "music2latent", "sao-vae", "same")
+_ALLOWED_MODELS = ("codicodec", "music2latent", "sao-vae", "same", "same-s")
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
         epilog=__doc__,
     )
     p.add_argument("--model", required=True, choices=_ALLOWED_MODELS,
-                   help="Adapter key. 'same' is native 256-d (not width-matched).")
+                   help="Adapter key. 'same'/'same-s' are native 256-d (not width-matched).")
     p.add_argument("--tasks", nargs="*", default=None,
                    help=f"Explicit task subset. Allowed: {maeb_tasks.ALLOWED_TASKS}.")
     grp = p.add_mutually_exclusive_group()

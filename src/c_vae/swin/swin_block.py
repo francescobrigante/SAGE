@@ -5,7 +5,7 @@
 # Optional fused CUDA window kernels are loaded at import time.
 # ===============================================================
 
-from typing import Optional, Tuple, Union
+from typing import TYPE_CHECKING, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -18,6 +18,9 @@ from ar_spectra.blocks.activations import get_activation
 from .windowing import window_partition, window_reverse
 from .attention import WindowAttention
 from .utils import make_norm, make_drop_path
+
+if TYPE_CHECKING:                       # avoids a circular import at runtime
+    from .varlen import VarlenConfig
 
 # -----------------------------------------------------------------
 # Optional fused CUDA window kernels
@@ -321,11 +324,72 @@ class SwinTransformerBlock(nn.Module):
         # We will compute the SW-MSA mask dynamically and cache it in forward()
         self._attn_mask_cache = {}
 
-    def _attention_branch(self, x: torch.Tensor) -> torch.Tensor:
+        # Variable-length inference: multi-phase attention on collapsed blocks.
+        # None = disabled (default) → forward() is bit-identical to the original.
+        # Set via c_vae.swin.varlen.enable_varlen(); see varlen.py for the rationale.
+        self.varlen: Optional["VarlenConfig"] = None   # multi-phase config, or None when off
+        self._varlen_weight_cache = {}                 # (W, device, dtype) → (P, W) combination weights
+
+    def _varlen_active(self, time_tokens: int) -> bool:
+        """True when multi-phase attention should replace the single-phase branch.
+
+        Only fires when a config is attached *and* the runtime time axis is longer
+        than the window: at the training length the window already spans the whole
+        axis, so every phase would degenerate and the extra passes would only add
+        wrap-around artefacts. Keeping this guard makes every variant bit-identical
+        to the baseline at the training resolution.
+        """
+        return self.varlen is not None and time_tokens > self.window_size[1]
+
+    def _multiphase_attention(self, x: torch.Tensor) -> torch.Tensor:
+        """Run the attention branch at several grid phases and combine per token.
+
+        The deepest encoder/decoder stage has its shift frozen to 0 by the collapse
+        guard above, so at inference on audio longer than the training segment the
+        window partition tiles the time axis into disjoint blocks with nothing to
+        bridge the seams. Re-running the same branch with the grid translated by
+        each phase gives every token a choice of contexts; the per-token weights
+        (see varlen.phase_weights) favour the phase where the token sits farthest
+        from its attention group's edge.
+
+        Args:
+            x: (B, H*W, C)
+
+        Returns:
+            (B, H*W, C)
+        """
+        from .varlen import phase_weights
+
+        H = self.input_resolution[0]
+        B, L, C = x.shape                                              # (B, H*W, C)
+        W = L // H
+        cfg = self.varlen
+
+        cache_key = (W, x.device, x.dtype)
+        weights = self._varlen_weight_cache.get(cache_key)
+        if weights is None:
+            weights = phase_weights(W, self.window_size[1], cfg).to(x.device, x.dtype)  # (P, W)
+            self._varlen_weight_cache[cache_key] = weights
+
+        acc = None
+        for i, phase in enumerate(cfg.phases):
+            y = self._attention_branch(x, shift_size=(0, phase))       # (B, H*W, C)
+            y = y.view(B, H, W, C) * weights[i].view(1, 1, W, 1)       # (B, H, W, C)
+            acc = y if acc is None else acc + y                        # (B, H, W, C)
+        return acc.view(B, L, C)                                       # (B, H*W, C)
+
+    def _attention_branch(
+        self,
+        x: torch.Tensor,
+        shift_size: Optional[Tuple[int, int]] = None,
+    ) -> torch.Tensor:
         """Apply W-MSA or SW-MSA to a normalized or raw residual branch.
 
         Args:
             x: (B, H*W, C)
+            shift_size: Overrides ``self.shift_size`` for this call only. Used by
+                multi-phase variable-length inference to sweep the grid phase
+                without mutating module state. None = use the block's own shift.
 
         Returns:
             (B, H*W, C)
@@ -336,7 +400,7 @@ class SwinTransformerBlock(nn.Module):
         W = L // H
 
         wh, ww = self.window_size
-        sh, sw = self.shift_size
+        sh, sw = self.shift_size if shift_size is None else shift_size
 
         pad_l = pad_t = 0
         pad_r = (ww - W % ww) % ww
@@ -346,14 +410,16 @@ class SwinTransformerBlock(nn.Module):
         Wp = W + pad_r
 
         # cached attention mask uses -100.0 for cross-region pairs so softmax -> 0 after exp.
-        if max(self.shift_size) > 0:
+        if max(sh, sw) > 0:
             # Cache the mask already ON the target device, keyed by (grid, device):
             # the SW-MSA mask is constant per grid, so building + H2D-copying it on
             # every forward was a needless per-shifted-block transfer (a sync point).
             # Keying on device keeps DDP/multi-device correct (each replica caches its
             # own). This mask only feeds the softmax in WindowAttention and never the
             # fused CUDA window kernels, so caching it cannot affect them.
-            cache_key = (Hp, Wp, x.device)
+            # The shift is part of the key: the mask depends on it, and multi-phase
+            # inference calls this method with several shifts on the same block.
+            cache_key = (Hp, Wp, sh, sw, x.device)
             attn_mask = self._attn_mask_cache.get(cache_key)
             if attn_mask is None:
                 img_mask = torch.zeros((1, Hp, Wp, 1))
@@ -382,7 +448,7 @@ class SwinTransformerBlock(nn.Module):
             x = F.pad(x, (0, 0, pad_l, pad_r, pad_t, pad_b))
 
         # Cyclic shift + window partition
-        if max(self.shift_size) > 0:
+        if max(sh, sw) > 0:
             # not cuda
             if not self.fused_window_process:
                 shifted_x = torch.roll(x, shifts=(-sh, -sw), dims=(1, 2))
@@ -412,7 +478,7 @@ class SwinTransformerBlock(nn.Module):
 
         # Reverse window partition + reverse cyclic shift
         attn_windows = attn_windows.view(-1, wh, ww, C)
-        if max(self.shift_size) > 0:
+        if max(sh, sw) > 0:
             # not cuda
             if not self.fused_window_process:
                 shifted_x = window_reverse(attn_windows, self.window_size, Hp, Wp)  # (B, Hp, Wp, C)
@@ -448,12 +514,20 @@ class SwinTransformerBlock(nn.Module):
             (B, H*W, C)
         """
 
+        # Multi-phase only when explicitly enabled AND the time axis is longer than
+        # the window; otherwise this is the original single-phase branch, unchanged.
+        attn_branch = (
+            self._multiphase_attention
+            if self._varlen_active(x.shape[1] // self.input_resolution[0])
+            else self._attention_branch
+        )
+
         if self.norm_placement == "pre":
-            x = x + self.drop_path(self._attention_branch(self.norm1(x)))
+            x = x + self.drop_path(attn_branch(self.norm1(x)))
             x = x + self.drop_path(self.mlp(self.norm2(x)))           # (B, H*W, C)
         else:
             # Res-Post-LN (Swin V2): norm applied to branch output, residual added after
-            x = x + self.drop_path(self.norm1(self._attention_branch(x)))  # (B, H*W, C)
+            x = x + self.drop_path(self.norm1(attn_branch(x)))        # (B, H*W, C)
             x = x + self.drop_path(self.norm2(self.mlp(x)))           # (B, H*W, C)
         return x
 

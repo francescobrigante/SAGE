@@ -168,6 +168,54 @@ loss_config:
       perceptual_weighting: true    # A-weighting FIR pre-filter (SAO default)
       w_ms: 1.0                     # mid/side branch weight (SAO: 1.0)
       w_lr: 1.0                     # left/right branch weight (SAO: 1.0 → 0.5 per channel)
+      # ── L1/L2/L5 (STEREO_COLLAPSE_DIAGNOSIS §11.4) — default = SAO invariato ──
+      # L1: pesi separati per Mid e Side. null → w_ms/2 ciascuno (comportamento SAO).
+      # Solo-Side = w_lr:0, w_mid:0, w_side:1 → gradiente sul Mid esattamente nullo,
+      # quindi FAD/CLAP/CDPAM (che vedono solo il Mid) non possono peggiorare.
+      w_mid:  null
+      w_side: null
+      # L2: salta il termine Side quando il TARGET ha S/M sotto questa soglia (dB).
+      # null = nessun gate. -40 copre il 10,4% di finestre near-mono del corpus
+      # (7,0% mono esatto), dove il termine log-mag insegnerebbe |Ŝ| → 0.
+      side_gate_db: null
+      # L5: floor del denominatore della spectral convergence. Con l'ordine SAO
+      # invertito il denominatore È la ricostruzione, quindi va a zero proprio nel
+      # caso che la loss deve punire. Vincola solo sotto un collasso di ~60 dB.
+      sc_eps_rel: 1.0e-3
+      sc_eps_abs: 1.0e-12
+  # ── A — ComplexMSE solo-Side normalizzata (STEREO_COLLAPSE_DIAGNOSIS §11.4) ──
+  # ‖Ŝ−S‖²/(‖S‖²+ε) sullo stesso spettrogramma CAC power-norm di stft_mse.
+  # La ComplexMSE contiene GIÀ la fase del Side (identità del parallelogramma,
+  # rapporto misurato 1.00000012) ma il Side è il 6,0% dell'energia → ~6% del
+  # gradiente. Normalizzando per ‖S‖² il termine diventa scale-free e i passaggi
+  # con poco Side non sono più annegati. Mid-ortogonale come L1 e L6.
+  mse_side:
+    weights:
+      mse_side: 0.0               # off di default
+    config:
+      normalize: true             # true → nessun λ da tarare
+      side_gate_db: null          # come L2
+
+  # ── L6 — coerenza inter-canale (STEREO_COLLAPSE_DIAGNOSIS §11.4) ──────────
+  # Surrogato differenziabile di d_pan: penalizza γ = 2·M·S*/(|M|²+|S|²), la
+  # cross-correlazione normalizzata M/S. Re(γ) È esattamente il pan (err 3.6e-07).
+  # Serve perché mrstft_sd è solo-magnitudine: ruotando arg(S) di 90° a magnitudine
+  # fissa, d_width si muove di 4.8e-09 e d_pan di 0.715 — la loss di magnitudine
+  # rimette l'energia del Side con qualunque fase, ed è per questo che tutti gli
+  # arm M/S hanno corretto il livello lasciando d_pan inchiodato al null mono.
+  stereo_coh:
+    weights:
+      stereo_coh: 0.0             # off di default
+    config:
+      fft_sizes:   [2048, 1024, 512]   # solo risoluzioni grandi: a n_fft=64 la
+      hop_sizes:   [512,  256,  128]   # coerenza non ha risoluzione in frequenza
+      win_lengths: [2048, 1024, 512]
+      detach_mid: true            # ∂L/∂Mid esattamente 0 → FAD/CLAP non toccabili
+      side_gate_db: null          # come L2: -40 salta gli item senza Side
+      # ⚠️ γ è invariante a uno scaling COMUNE di M e S → L6 non corregge il
+      # LIVELLO del Side, solo la sua direzione. Va sempre accoppiata a un
+      # termine di livello (mrstft_sd solo-Side, o la ComplexMSE sul Side).
+
   bottleneck:
     weights:
       kl: 1.0e-3          # annealed from 0 to kl_beta_target over kl_annealing_epochs

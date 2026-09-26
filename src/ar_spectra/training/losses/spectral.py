@@ -825,3 +825,75 @@ class MRSTFTSame(nn.Module):
             losses_per_res.append(self.w_sc * l_sc + self.w_lm * l_lm + self.w_ifgd * l_ifgd)
         return torch.stack(losses_per_res).mean()
 
+
+
+class SideComplexMSE(ComplexMSE):
+    r"""**Intervention A** — complex MSE on the Side channel alone, normalised.
+
+    ``L = λ · ‖Ŝ − S‖² / (‖S‖² + ε)``  with  ``S = (c₀ − c₁)/√2``
+
+    computed on the same power-normalised CAC spectrogram ``stft_mse`` already
+    uses, so it inherits the absolute-phase anchoring instead of duplicating it.
+
+    **Why this is not redundant with ``stft_mse``.** By the parallelogram identity
+    a complex MSE in M/S equals the one in L/R — measured ratio 1.00000012 — so
+    the existing term *does* contain the Side's phase error. It is not an
+    information problem, it is a weighting one: with the Side 12.4 dB below the
+    Mid it is **6.0 % of the energy**, hence ~6 % of the gradient, and at ×64
+    compression discarding it is the rate-distortion optimum (§4.2, §5). Adding
+    ``λ`` on the Side half turns the total into ``MSE(M) + (1+λ)·MSE(S)``, which
+    is *not* a rescaling of the original — it is genuinely new gradient.
+
+    **Why not a magnitude term.** ``mrstft_sd`` is spectral-convergence plus
+    log-magnitude: rotating ``arg(S)`` by 90° at fixed magnitude moves ``d_width``
+    by 4.8e-09 and ``d_pan`` by 0.715. A magnitude loss restores the Side's energy
+    with whatever phase is cheapest — measured: every M/S arm fixed the level and
+    left ``d_pan`` pinned at the mono null (§1.2). A complex MSE constrains phase.
+
+    **Mid-orthogonal by construction.** The term depends only on the prediction's
+    Side, so ∂L/∂L̂ = −∂L/∂R̂ and the projection onto M = L+R cancels exactly —
+    FAD/CLAP/CDPAM measure the Mid alone (§4.4) and cannot be moved.
+
+    Args:
+        normalize: divide by ``‖S‖²`` per item. Scale-free, so quiet-Side items
+            are not drowned by loud ones — which is the whole point — and there
+            is no ``λ`` left to tune. With ``False`` the raw mean is returned.
+        side_gate_db: L2 gate. Items whose target Side sits below this ratio to
+            the Mid are dropped (mono duplicated to two channels: no Side to fit).
+    """
+
+    def __init__(self, *, normalize: bool = True,
+                 side_gate_db: Optional[float] = None, **kwargs):
+        super().__init__(**kwargs)
+        self.normalize = normalize
+        self.side_gate_db = side_gate_db
+
+    def forward(self, S_hat: torch.Tensor, S: torch.Tensor,
+                weight: Optional[torch.Tensor] = None) -> torch.Tensor:
+        X_hat = to_complex_spectrogram(S_hat)                      # (B, 2, F, T) complex
+        X_ref = to_complex_spectrogram(S)                          # (B, 2, F, T) complex
+        if X_hat.shape != X_ref.shape:
+            raise ValueError(f"Shape mismatch: {X_hat.shape} vs {X_ref.shape}.")
+        if X_hat.shape[-3] != 2:
+            raise ValueError(f"SideComplexMSE needs 2 channels, got {X_hat.shape[-3]}.")
+
+        side_hat = (X_hat[..., 0, :, :] - X_hat[..., 1, :, :]) / 2 ** 0.5   # (B, F, T)
+        side_ref = (X_ref[..., 0, :, :] - X_ref[..., 1, :, :]) / 2 ** 0.5   # (B, F, T)
+
+        num = (side_hat - side_ref).abs().pow(self.p).sum(dim=(-2, -1))     # (B,)
+        e_side = side_ref.abs().pow(2).sum(dim=(-2, -1))                    # (B,)
+        per_item = num / e_side.clamp_min(self.eps) if self.normalize \
+            else num / side_ref[0].numel()                                  # (B,)
+
+        if self.side_gate_db is not None:
+            mid_ref = (X_ref[..., 0, :, :] + X_ref[..., 1, :, :]) / 2 ** 0.5
+            e_mid = mid_ref.abs().pow(2).sum(dim=(-2, -1))                  # (B,)
+            keep = 10.0 * torch.log10(e_side / e_mid.clamp_min(self.eps)
+                                      + self.eps) >= self.side_gate_db      # (B,)
+            if not bool(keep.any()):
+                return per_item.sum() * 0.0            # graph-connected zero
+            per_item = per_item[keep]
+
+        if self.reduction == "none":
+            return per_item
+        return per_item.sum() if self.reduction == "sum" else per_item.mean()

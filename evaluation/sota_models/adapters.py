@@ -203,6 +203,17 @@ class SAMEAdapter(CodecAdapter):
 
 
 # ===========================================================================
+# SAME-S — the 108M distilled sibling of SAME-L (stabilityai/SAME-S): same
+# latent (256-d, x4096 temporal), chunked attention (chunk 32 + midpoint shift).
+# Parameter-matched counterpart of SAGE (97M). Key "same" stays = SAME-L so all
+# existing runs/<...>/same/ results keep their meaning.
+# ===========================================================================
+class SAMESAdapter(SAMEAdapter):
+    def __init__(self, device: str = "cuda", model_name: str = "same-s", **kw: Any):
+        super().__init__(device=device, model_name=model_name, **kw)
+
+
+# ===========================================================================
 # Stable Audio Open VAE (Stability AI) — the AutoencoderOobleck VAE used by the
 # diffusers StableAudioPipeline. Per the SAO paper this autoencoder is "a variant
 # of Stable Audio 2.0 trained on CC data" → it IS the SA2-family VAE (CC-retrained
@@ -257,7 +268,8 @@ _ADAPTERS = {
     "identity":     IdentityAdapter,
     "codicodec":    CodicodecAdapter,
     "music2latent": Music2LatentAdapter,
-    "same":         SAMEAdapter,
+    "same":         SAMEAdapter,        # SAME-L (852M)
+    "same-s":       SAMESAdapter,       # SAME-S (108M)
     "sao-vae":      StableAudioVAEAdapter,
 }
 

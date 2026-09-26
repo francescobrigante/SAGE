@@ -15,7 +15,7 @@
 #          evaluation/sota_models/eval_sota_10s.slurm codicodec --max-files 20
 # ============================================================
 #SBATCH --job-name=eval_sota_10s
-#SBATCH --account=IscrC_AHNetBio
+#SBATCH --account=IscrC_MM
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
@@ -28,6 +28,17 @@
 #SBATCH --error=logs/eval_sota_10s_%j.err
 
 set -uo pipefail
+
+# ── Budget switch (F0) ──────────────────────────────────────────────────────
+# IscrC_AHNetBio is at 101% of its allocation, so COMPUTE is billed to IscrC_MM
+# while STORAGE stays on IscrC_AHNetBio: the repo, the venvs, the checkpoints and
+# the HF cache all live there and are user-owned + world-readable, so an IscrC_MM
+# job reads and writes them fine. Without these two exports $WORK resolves to
+# /leonardo_work/IscrC_MM and `source $WORK/.envs/...` fails immediately.
+# Same pattern as evaluation/final_eval/maeb_*.slurm.
+export WORK=/leonardo_work/IscrC_AHNetBio
+export FAST=/leonardo_scratch/fast/IscrC_AHNetBio
+
 mkdir -p logs
 
 MODEL="${1:?Usage: sbatch eval_sota_10s.slurm <codicodec|music2latent|sao-vae|same> [--data-dir DIR] [extra args]}"

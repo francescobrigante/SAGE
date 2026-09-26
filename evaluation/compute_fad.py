@@ -10,6 +10,10 @@ from typing import Optional
 # Add project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+# evaluation/ sul path: `downmix` vive in utils.py ed e' condiviso da tutti
+# gli embedder, così il selettore Mid/Side esiste in UN posto solo.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from utils import downmix, CHANNEL_MID
 
 from ar_spectra.utils.console import ok, warn
 
@@ -34,6 +38,14 @@ def compute_incremental_stats(files: list[Path]) -> tuple[Optional[np.ndarray], 
         if not f.exists(): continue
         x = np.atleast_2d(np.load(f)).astype(np.float64)
         if len(x) == 0: continue
+        # Un solo vettore non-finito avvelena mu/cov in silenzio (il Side di un
+        # file quasi-mono e' ~0 e la normalizzazione per-input puo' dividere per
+        # ~0). Scarta le righe non finite invece di propagarle.
+        finite = np.isfinite(x).all(axis=1)
+        if not finite.all():
+            warn(f"{(~finite).sum()}/{len(x)} embedding non finiti scartati: {f.name}")
+            x = x[finite]
+            if len(x) == 0: continue
         
         if sum_x is None:
             d = x.shape[1]
@@ -70,7 +82,8 @@ def compute_stats(fad, files: list[Path], cache_dir: Path = None, subfolder: str
     return compute_incremental_stats(paths)
 
 
-def embed_mert(model, wav: torch.Tensor, src_sr: int, device) -> np.ndarray:
+def embed_mert(model, wav: torch.Tensor, src_sr: int, device,
+               channel: str = CHANNEL_MID) -> np.ndarray:
     """In-memory MERT embedding from a [C, T] waveform tensor.
 
     Returns (N_chunks, D) float16 array.
@@ -79,7 +92,7 @@ def embed_mert(model, wav: torch.Tensor, src_sr: int, device) -> np.ndarray:
     msr = 24000
     if src_sr != msr:
         wav = torchaudio.functional.resample(wav.cpu(), src_sr, msr)
-    wav_m = wav.mean(0)  # (T,)
+    wav_m = downmix(wav, channel)  # (T,)
 
     cl, hl = 5 * msr, msr
     chunks = [
@@ -111,7 +124,8 @@ def _fadtk_resampler(src_sr: int, dst_sr: int = 24000):
     return _FADTK_RESAMPLERS[src_sr]
 
 
-def embed_mert_framewise(model, wav: torch.Tensor, src_sr: int, device) -> np.ndarray:
+def embed_mert_framewise(model, wav: torch.Tensor, src_sr: int, device,
+                         channel: str = CHANNEL_MID) -> np.ndarray:
     """Per-frame MERT embedding (N_frames, D), matching fadtk's canonical
     pipeline (mono mean + Kaiser resample to 24 kHz + MERTModel._get_embedding,
     NO temporal pooling).
@@ -123,7 +137,7 @@ def embed_mert_framewise(model, wav: torch.Tensor, src_sr: int, device) -> np.nd
     vectors / clip), which lives in a DIFFERENT space and inflates FAD ~50×.
     """
     msr = 24000
-    x = wav.cpu().mean(0, keepdim=True)               # mono (1, T) — fadtk does mean over ch
+    x = downmix(wav.cpu(), channel).unsqueeze(0)      # (1, T) — fadtk does mean over ch
     if src_sr != msr:
         x = _fadtk_resampler(src_sr, msr)(x)
     wav_m = x.squeeze(0).contiguous().numpy().astype(np.float32)  # (T,)
@@ -155,7 +169,8 @@ def get_pann_model(device):
     return _pann_model
 
 
-def embed_pann(wav: torch.Tensor, src_sr: int, device) -> np.ndarray:
+def embed_pann(wav: torch.Tensor, src_sr: int, device,
+               channel: str = CHANNEL_MID) -> np.ndarray:
     """In-memory whole-file PANN (Cnn14_16k) embedding from a [C, T] waveform.
 
     Mono-mix + Kaiser resample to 16 kHz + Cnn14 forward, mirroring the
@@ -164,7 +179,7 @@ def embed_pann(wav: torch.Tensor, src_sr: int, device) -> np.ndarray:
     import resampy
 
     model = get_pann_model(device)
-    wav_mono = wav.mean(0).cpu().numpy()                                  # (T,)
+    wav_mono = downmix(wav, channel).cpu().numpy()                        # (T,)
     if src_sr != 16000:
         wav_mono = resampy.resample(wav_mono, src_sr, 16000)             # (T',)
     if wav_mono.shape[0] < _PANN_MIN_SAMPLES:                            # pad pathologically short clips

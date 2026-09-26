@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv as _csv
+import json
 import sys
 import time
 from pathlib import Path
@@ -29,18 +30,22 @@ from tqdm import tqdm
 
 _EVAL_DIR  = Path(__file__).parent.resolve()
 _PROJ_ROOT = _EVAL_DIR.parent
-for _p in (str(_PROJ_ROOT), str(_PROJ_ROOT / "src"), str(_EVAL_DIR)):
+for _p in (str(_PROJ_ROOT), str(_PROJ_ROOT / "src"), str(_EVAL_DIR),
+           str(_EVAL_DIR / "stereo_diagnosis")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 from ar_spectra.models.inference import EuleroEncodeDecode
+from c_vae.swin.varlen import resolve
 from ar_spectra.utils.console import ok, warn, info, err
 from losses import compute_sdr_and_sisdr, stft_loss, spectral_losses, cdpam_score
-from utils import atomic_save_npy, silence_output
+from utils import (atomic_save_npy, silence_output, ch_name,
+                   CHANNEL_MID, CHANNEL_SIDE, CHANNELS)
 from compute_clap_score import embed_clap, cosine_sim
 from compute_fad import (embed_mert_framewise, embed_pann, get_pann_model, PANN_NAME)
 from fadtk.model_loader import CLAPLaionModel, MERTModel
 from fadtk.fad import calc_frechet_distance
+from ms_eval import MS_COLUMNS, ms_metrics_row   # torch-only; shared with the SOTA evaluator
 
 if not hasattr(np, "float"):
     np.float = np.float64  # type: ignore[attr-defined]
@@ -58,49 +63,20 @@ _CSV_SCHEMA = {
     "clap_audio": ["file", "cosine"],
     # Pure inference time (encode→decode), no metric/loading cost.
     "timing":     ["file", "infer_sec", "audio_sec"],
-    # Opt-in stereo-imaging metrics (--compute-ms-metrics): only written when the
-    # flag is set; absent CSV → notebook reports NaN, so old runs stay compatible.
-    "ms_metrics": ["file", "width_bias", "d_width", "sisdr_s", "sisdr_m"],
+    # Stereo-imaging metrics (--compute-ms-metrics / --ms-only): only written when
+    # one of those flags is set; absent CSV → notebook reports NaN, so old runs
+    # stay compatible. Schema shared with the SOTA evaluator (see ms_eval).
+    "ms_metrics": MS_COLUMNS,
 }
 
-# Lazily-loaded (align, stereo_imaging_distance) from evaluation/stereo_diagnosis/.
-# Imported ONLY when --compute-ms-metrics is set → zero import cost / risk otherwise.
-_STEREO_FNS = None
-
-
 def _compute_ms_metrics(ref: torch.Tensor, pred: torch.Tensor, sr: int) -> dict:
-    """Four stereo-imaging metrics on an aligned (2, T) ref/pred pair.
+    """Stereo-imaging metrics on an aligned (2, T) ref/pred pair.
 
-    width_bias (→0; <0 squash, >0 over-widening) and d_width (→0, unsigned image
-    error) come from stereo_imaging_distance; sisdr_s is SI-SDR on the side channel
-    S=(L−R)/√2 — the channel SAGE collapses; sisdr_m is SI-SDR on the mid
-    M=(L+R)/√2 (guardrail: fixing Side must not degrade Mid). Matches
-    evaluation/stereo_diagnosis definitions so numbers are comparable to the
-    diagnosis table.
+    Thin wrapper over stereo_diagnosis/ms_eval.ms_metrics_row — the same function
+    the SOTA evaluator calls, so the SAGE row and the baseline row are produced by
+    identical code and are directly comparable.
     """
-    global _STEREO_FNS
-    if _STEREO_FNS is None:
-        sys.path.insert(0, str(_EVAL_DIR / "stereo_diagnosis"))
-        from stereo_imaging import align, stereo_imaging_distance   # torch-only, no heavy deps
-        _STEREO_FNS = (align, stereo_imaging_distance)
-    align, stereo_imaging_distance = _STEREO_FNS
-
-    ref_a, pred_a = align(ref.float(), pred.float())                 # delay-compensate (≈no-op for our recon)
-    d = stereo_imaging_distance(ref_a, pred_a, sample_rate=sr)       # width_bias, d_width, …
-    Sr = (ref_a[0] - ref_a[1]) / 2 ** 0.5                            # (T,) reference side
-    Sx = (pred_a[0] - pred_a[1]) / 2 ** 0.5                          # (T,) predicted side
-    Mr = (ref_a[0] + ref_a[1]) / 2 ** 0.5                            # (T,) reference mid
-    Mx = (pred_a[0] + pred_a[1]) / 2 ** 0.5                          # (T,) predicted mid
-    return {"width_bias": d["width_bias"], "d_width": d["d_width"],
-            "sisdr_s": _si_sdr(Sx, Sr), "sisdr_m": _si_sdr(Mx, Mr)}
-
-
-def _si_sdr(est: torch.Tensor, ref: torch.Tensor, eps: float = 1e-10) -> float:
-    """Scale-invariant SDR (dB), matching stereo_diagnosis/measure_imaging.si_sdr."""
-    est, ref = est - est.mean(), ref - ref.mean()
-    a = (est * ref).sum() / (ref.square().sum() + eps)
-    proj = a * ref
-    return float((10 * torch.log10(proj.square().sum() / ((est - proj).square().sum() + eps))).item())
+    return ms_metrics_row(ref, pred, sr)
 
 
 def _pad_for_swin(wav: torch.Tensor, hop_length: int,
@@ -209,15 +185,38 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--new-metrics-only", action="store_true",
                    help="Compute ONLY fad_pann (PANN Cnn14 whole-file FAD): skip everything "
                         "else. Overwrites fad_pann.csv, leaves every other CSV and _done untouched.")
+    p.add_argument("--ms-only", action="store_true",
+                   help="Compute ONLY the stereo-imaging metrics (ms_metrics.csv): one decode "
+                        "pass, NO embedding model loaded. Backfill twin of --new-metrics-only; "
+                        "leaves every other CSV and _done untouched.")
+    p.add_argument("--channel", default=CHANNEL_MID, choices=list(CHANNELS),
+                   help="Channel fed to the FAD embedders and to CDPAM. 'mid' = (L+R)/2 "
+                        "(historical mono downmix, default -> results unchanged); 'side' = "
+                        "(L-R)/2. In 'side' mode ONLY the three FAD sources and CDPAM are "
+                        "computed: SDR/STFT/mel/CLAP-cosine/ms_metrics are channel-agnostic "
+                        "or already measured on the Mid, so recomputing them is waste. "
+                        "Embeddings and ref stats are read/written under '<model>-side/'. "
+                        "Use a SEPARATE --output-dir: the CSV names are unchanged.")
     p.add_argument("--compute-ms-metrics", action="store_true",
                    help="ADD stereo-imaging metrics (width_bias, d_width, sisdr_s, sisdr_m) to the "
                         "default per-file metrics, computed in-memory on the (ref, recon) pair. "
                         "Opt-in: off by default → old runs unchanged. Writes ms_metrics.csv.")
+    p.add_argument("--varlen", default=None,
+                   help="Variable-length seam fix on the collapsed Swin stages: a preset "
+                        "from config/inference/varlen.yaml (tri2, hard2, tri4, ...) or 'off' "
+                        "for the original single-phase attention. Default = the project "
+                        "default in that file. The mode actually applied is recorded in "
+                        "metrics/varlen.json; a run without that file is a baseline run.")
     return p.parse_args()
 
 
 def main() -> None:
     args        = _parse_args()
+    # Modalità Side: si calcolano SOLO le tre sorgenti FAD e CDPAM. SDR/STFT/mel,
+    # la cosine CLAP e ms_metrics sono già misurate sul Mid o indipendenti dal
+    # canale: rifarle sarebbe spreco e sovrascriverebbe risultati validi.
+    side_mode   = args.channel == CHANNEL_SIDE
+    CH          = args.channel
     ckpt_path   = args.checkpoint.expanduser().absolute()
     data_dir    = args.data_dir.expanduser().resolve()
     output_root = args.output_dir.expanduser().resolve()
@@ -229,7 +228,9 @@ def main() -> None:
     elif (args.new_metrics_only and args.resume
           and (metrics_dir / "fad_pann.csv").exists()):
         info("[RESUME] fad_pann.csv exists — skipping.", prefix="EVAL"); return
-    elif (not args.fad_gud_only and not args.new_metrics_only
+    elif args.ms_only and args.resume and (metrics_dir / "ms_metrics.csv").exists():
+        info("[RESUME] ms_metrics.csv exists — skipping.", prefix="EVAL"); return
+    elif (not args.fad_gud_only and not args.new_metrics_only and not args.ms_only
           and args.resume and (metrics_dir / "_done").exists()):
         info("[RESUME] already done — skipping.", prefix="EVAL"); return
 
@@ -242,8 +243,25 @@ def main() -> None:
     pred_root = parts_dir / "pred"
     parts_dir.mkdir(parents=True, exist_ok=True)
 
+    # Per-file resume, so a run killed by a wall limit can be finished by a second
+    # job instead of restarting. A stem counts as done only when its LAST artefact
+    # exists — the PANN embedding, written after every CSV row and every other npy
+    # for that file. Keying on anything earlier (a timing row, say) could skip a
+    # file whose tail metrics were never written. Redoing one file costs nothing:
+    # the merge below keys on the stem and keeps the first row, so duplicates in
+    # parts/*.csv collapse. Restricted to the full run: the --*-only passes have
+    # their own resume, at the granularity of a whole CSV.
+    if args.resume and not (args.sdr_only or args.ms_only or args.fad_gud_only
+                            or args.new_metrics_only or side_mode):
+        _done_dir = pred_root / ch_name(_PANN_NAME, CH)
+        _finished = {f.stem for f in _done_dir.glob("*.npy")} if _done_dir.is_dir() else set()
+        if _finished:
+            audio_files = [f for f in audio_files if f.stem not in _finished]
+            info(f"resume: {len(_finished)} già fatti, restano {len(audio_files)}",
+                 prefix="EVAL")
+
     info(f"Loading Swin checkpoint: {ckpt_path.name}...", prefix="EVAL")
-    codec      = EuleroEncodeDecode(ckpt_path, device=device)
+    codec      = EuleroEncodeDecode(ckpt_path, device=device, varlen=args.varlen)
     sr: int    = codec.sample_rate or 44100
     ch: int    = codec.audio_channels or 2
     stft_cfg   = getattr(codec.autoencoder, "_stft_config", None)
@@ -259,7 +277,7 @@ def main() -> None:
             num_downsamples = 2
     ok(f"sr={sr} ch={ch} hop={hop_length} downsamples={num_downsamples}", prefix="EVAL")
 
-    if not args.sdr_only:
+    if not args.sdr_only and not args.ms_only:
         info("Loading embedding models...", prefix="EVAL")
         embed_models = []
         if not args.fad_gud_only and not args.new_metrics_only:
@@ -268,7 +286,7 @@ def main() -> None:
             mert_ml       = MERTModel(layer=4)
             embed_models.append(mert_ml)
             # CLAP only feeds the CLAP cosine metric → full run only.
-            if not args.new_metrics_only:
+            if not args.new_metrics_only and not side_mode:
                 clap_audio_ml = CLAPLaionModel("audio")
                 clap_music_ml = CLAPLaionModel("music")
                 embed_models.extend([clap_audio_ml, clap_music_ml])
@@ -314,7 +332,8 @@ def main() -> None:
                 err(f"Inference error {stem}: {e}", prefix="EVAL")
                 skipped += 1; continue
 
-            if not args.fad_gud_only and not args.new_metrics_only:
+            if (not args.fad_gud_only and not args.new_metrics_only
+                    and not args.ms_only and not side_mode):
                 _append_csv(parts_dir / "timing.0.csv", _CSV_SCHEMA["timing"],
                             {"file": stem, "infer_sec": infer_sec, "audio_sec": orig_len / sr})
                 sdr_val, sisdr_val = compute_sdr_and_sisdr(wav_ref, pred)
@@ -322,29 +341,32 @@ def main() -> None:
                             {"file": stem, "si_sdr": sisdr_val, "sdr": sdr_val,
                              **spectral_losses(wav_ref, pred)})
 
-                # Opt-in stereo-imaging metrics (needs true stereo ref+pred).
-                if (args.compute_ms_metrics
-                        and wav_ref.shape[0] == 2 and pred.shape[0] == 2):
-                    try:
-                        _append_csv(parts_dir / "ms_metrics.0.csv", _CSV_SCHEMA["ms_metrics"],
-                                    {"file": stem, **_compute_ms_metrics(wav_ref, pred, sr)})
-                    except Exception as e:
-                        warn(f"MS metrics {stem}: {e}", prefix="MS")
+            # Stereo-imaging metrics: ADDED to a full run (--compute-ms-metrics) or the
+            # sole output of a backfill pass (--ms-only). Needs a true stereo pair.
+            if ((args.compute_ms_metrics or args.ms_only) and not side_mode
+                    and not args.fad_gud_only and not args.new_metrics_only
+                    and wav_ref.shape[0] == 2 and pred.shape[0] == 2):
+                try:
+                    _append_csv(parts_dir / "ms_metrics.0.csv", _CSV_SCHEMA["ms_metrics"],
+                                {"file": stem, **_compute_ms_metrics(wav_ref, pred, sr)})
+                except Exception as e:
+                    warn(f"MS metrics {stem}: {e}", prefix="MS")
 
             if (not args.skip_cdpam and not args.sdr_only and not args.fad_gud_only
-                    and not args.new_metrics_only):
+                    and not args.new_metrics_only and not args.ms_only):
                 try:
                     _append_csv(parts_dir / "cdpam.0.csv", _CSV_SCHEMA["cdpam"],
                                 {"file": stem,
-                                 "cdpam": cdpam_score(wav_ref, pred, sr, device=device)})
+                                 "cdpam": cdpam_score(wav_ref, pred, sr, device=device,
+                                                      channel=CH)})
                 except Exception as e:
                     warn(f"CDPAM {stem}: {e}", prefix="CDPAM")
 
-            if not args.sdr_only:
+            if not args.sdr_only and not args.ms_only:
                 try:
                     if not args.fad_gud_only:
                         # CLAP cosine + CLAP pred embeddings → full run only.
-                        if not args.new_metrics_only:
+                        if not args.new_metrics_only and not side_mode:
                             ref_ca = _load_ref_emb(data_dir, _CLAP_AUDIO_NAME, stem)
                             p_ca   = embed_clap(clap_audio_ml, pred, sr, device)
                             if ref_ca is not None:
@@ -363,19 +385,19 @@ def main() -> None:
 
                         # MERT layer-4 framewise → fad_mert source (full run only).
                         if not args.new_metrics_only:
-                            p_mert = embed_mert_framewise(mert_ml, pred, sr, device)
-                            atomic_save_npy(pred_root / _MERT_NAME / f"{stem}.npy", p_mert.astype(np.float16))
+                            p_mert = embed_mert_framewise(mert_ml, pred, sr, device, CH)
+                            atomic_save_npy(pred_root / ch_name(_MERT_NAME, CH) / f"{stem}.npy", p_mert.astype(np.float16))
 
                     # CLAP-gud whole-file → fad_gudgud source (full + --fad-gud-only).
                     if not args.new_metrics_only:
                         from compute_clap_score import embed_clap_gud
-                        p_clap_gud = embed_clap_gud(pred, sr, device)
-                        atomic_save_npy(pred_root / "clap-laion-audio-gud" / f"{stem}.npy", p_clap_gud.astype(np.float16))
+                        p_clap_gud = embed_clap_gud(pred, sr, device, CH)
+                        atomic_save_npy(pred_root / ch_name("clap-laion-audio-gud", CH) / f"{stem}.npy", p_clap_gud.astype(np.float16))
 
                     # PANN Cnn14 whole-file → fad_pann source (full + --new-metrics-only).
                     if not args.fad_gud_only:
-                        p_pann = embed_pann(pred, sr, device)
-                        atomic_save_npy(pred_root / _PANN_NAME / f"{stem}.npy", p_pann.astype(np.float16))
+                        p_pann = embed_pann(pred, sr, device, CH)
+                        atomic_save_npy(pred_root / ch_name(_PANN_NAME, CH) / f"{stem}.npy", p_pann.astype(np.float16))
 
                 except Exception as e:
                     warn(f"Embedding error {stem}: {e}", prefix="EMBED")
@@ -386,8 +408,11 @@ def main() -> None:
 
     ok(f"Done — processed: {processed}  skipped: {skipped}", prefix="EVAL")
 
-    # --new-metrics-only writes no per-file CSV (only the scalar fad_pann below).
-    merge_names = [] if args.new_metrics_only else list(_CSV_SCHEMA)
+    # --new-metrics-only writes no per-file CSV (only the scalar fad_pann below);
+    # --ms-only writes exactly one and touches nothing else.
+    merge_names = ([] if args.new_metrics_only
+                   else ["ms_metrics"] if args.ms_only
+                   else list(_CSV_SCHEMA))
     for name in merge_names:
         cols = _CSV_SCHEMA[name]
         seen: dict[str, dict] = {}
@@ -403,22 +428,34 @@ def main() -> None:
                 w.writeheader(); w.writerows(seen.values())
             ok(f"{name}.csv ({len(seen)} files)", prefix="MERGE")
 
-    if not args.sdr_only:
+    if not args.sdr_only and not args.ms_only:
         if not args.fad_gud_only and not args.new_metrics_only:
-            _fad_from_stats(data_dir, _MERT_NAME,       pred_root / _MERT_NAME,
-                            metrics_dir / "fad_mert.csv",       _MERT_NAME)
+            _fad_from_stats(data_dir, ch_name(_MERT_NAME, CH), pred_root / ch_name(_MERT_NAME, CH),
+                            metrics_dir / "fad_mert.csv",       ch_name(_MERT_NAME, CH))
 
         if not args.new_metrics_only:
-            _fad_from_stats(data_dir, "clap-laion-audio-gud", pred_root / "clap-laion-audio-gud",
-                            metrics_dir / "fad_gudgud.csv",     "clap-laion-audio-gud")
+            _fad_from_stats(data_dir, ch_name("clap-laion-audio-gud", CH),
+                            pred_root / ch_name("clap-laion-audio-gud", CH),
+                            metrics_dir / "fad_gudgud.csv",     ch_name("clap-laion-audio-gud", CH))
 
         if not args.fad_gud_only:
-            _fad_from_stats(data_dir, _PANN_NAME, pred_root / _PANN_NAME,
-                            metrics_dir / "fad_pann.csv", _PANN_NAME)
+            _fad_from_stats(data_dir, ch_name(_PANN_NAME, CH), pred_root / ch_name(_PANN_NAME, CH),
+                            metrics_dir / "fad_pann.csv", ch_name(_PANN_NAME, CH))
 
-    if not args.fad_gud_only and not args.new_metrics_only:
+    if not args.fad_gud_only and not args.new_metrics_only and not args.ms_only:
+        # Provenance: which attention mode produced these numbers. Needed because
+        # the project default is now a multi-phase preset, so rows computed before
+        # and after the fix live side by side in the same table and are otherwise
+        # indistinguishable. Rule: a metrics/ directory WITHOUT this file is a
+        # baseline (single-phase) run.
+        _vl = resolve(codec.varlen_mode)
+        (metrics_dir / "varlen.json").write_text(json.dumps(
+            {"mode": codec.varlen_mode,
+             "blocks": codec.varlen_blocks,
+             "phases": list(_vl.phases) if _vl else [],
+             "combine": _vl.combine if _vl else None}, indent=2) + "\n")
         (metrics_dir / "_done").touch()
-        ok(f"_done → {metrics_dir}", prefix="EVAL")
+        ok(f"_done → {metrics_dir}  (varlen={codec.varlen_mode})", prefix="EVAL")
 
 
 if __name__ == "__main__":

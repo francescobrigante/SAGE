@@ -142,7 +142,7 @@ def _parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--model", required=True,
-                   help="Adapter key: identity | codicodec | music2latent | same")
+                   help="Adapter key: identity | codicodec | music2latent | sao-vae | same | same-s")
     p.add_argument("--target-dir", required=True)
     p.add_argument("--output-dir", required=True)
     p.add_argument("--device", default="cuda")

@@ -26,6 +26,50 @@ from ar_spectra.utils.console import warn
 
 # ── I/O helpers ───────────────────────────────────────────────
 
+# ── Channel selector (Mid vs Side) ───────────────────────────────────────────
+# Ogni embedder (MERT / PANN / CLAP) e CDPAM riducono lo stereo a un canale con
+# la stessa riga: `wav.mean(0)`. Questo selettore la sostituisce SENZA toccare
+# nulla del preprocessing a valle (resample, normalizzazione, quantizzazione),
+# che resta quello definito dagli autori originali: cambia solo QUALE segnale
+# entra. Default "mid" → comportamento bit-identico a prima.
+#
+#   mid  = (L+R)/2   il downmix mono storico: quello che FAD/CLAP/CDPAM vedono
+#   side = (L-R)/2   stessa convenzione di scala del mid (NON /sqrt(2)), così
+#                    le due modalità sono direttamente confrontabili
+CHANNEL_MID  = "mid"
+CHANNEL_SIDE = "side"
+CHANNELS     = (CHANNEL_MID, CHANNEL_SIDE)
+
+
+def ch_name(model_name: str, channel: str = CHANNEL_MID) -> str:
+    """Cache/stats dir name for an embedder on a given channel.
+
+    Side artefacts live under a DISTINCT name ("<model>-side") so a Side
+    prediction can never be scored against Mid reference stats: that mistake is
+    silent and inflates FAD by ~50x (see compute_fad.embed_mert_framewise).
+    """
+    return model_name if channel == CHANNEL_MID else f"{model_name}-{channel}"
+
+
+def downmix(wav: torch.Tensor, channel: str = CHANNEL_MID) -> torch.Tensor:
+    """Reduce a [C, T] waveform to the single channel an embedder consumes.
+
+    Args:
+        wav: waveform [C, T]. Mono input is returned as-is for "mid"; for
+            "side" it is identically zero (a mono signal has no Side).
+        channel: "mid" (default, = wav.mean(0)) or "side".
+
+    Returns:
+        1-D tensor [T]. Callers needing [1, T] add the axis themselves, exactly
+        as they did around the `mean(0, keepdim=True)` they replace.
+    """
+    if channel not in CHANNELS:
+        raise ValueError(f"channel must be one of {CHANNELS}, got {channel!r}")
+    if channel == CHANNEL_MID or wav.shape[0] == 1:
+        return wav.mean(0) if channel == CHANNEL_MID else torch.zeros_like(wav[0])
+    return (wav[0] - wav[1]) / 2
+
+
 def atomic_save_npy(path: Path, data: np.ndarray) -> None:
     """Save numpy array atomically (PID-unique tmp → os.replace).
 

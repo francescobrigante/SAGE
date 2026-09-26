@@ -49,8 +49,8 @@ export HF_HUB_OFFLINE=1
 # node list; pin a MASTER_PORT (distinct from the other multicorpus jobs).
 export MASTER_PORT=29557
 
-export http_proxy='http://login07:3150'
-export https_proxy='http://login07:3150'
+export http_proxy='http://login05:3150'
+export https_proxy='http://login05:3150'
 export WANDB_MODE=online
 export TF_CPP_MIN_LOG_LEVEL=3
 export WANDB_TAGS="$SLURM_JOB_NAME"

@@ -41,7 +41,8 @@ for _p in (str(_PROJ_ROOT), str(_PROJ_ROOT / "src"), str(_EVAL_DIR), str(_SOTA_D
         sys.path.insert(0, _p)
 
 from ar_spectra.utils.console import ok, warn, info, err
-from utils import atomic_save_npy, silence_output
+from utils import (atomic_save_npy, silence_output, ch_name,
+                   CHANNEL_MID, CHANNEL_SIDE, CHANNELS)
 from compute_clap_score import embed_clap, embed_clap_gud
 from compute_fad import (embed_mert_framewise, embed_pann, get_pann_model,
                          compute_incremental_stats, PANN_NAME)
@@ -60,6 +61,7 @@ _PANN_NAME       = PANN_NAME               # pann-cnn14-16k (from compute_fad)
 _STATS_MODELS = (_MERT_NAME, _CLAP_GUD_NAME, _PANN_NAME)
 
 _SKIP_DIRS = frozenset({"embeddings", "stats", "stats_ours", "convert", "metrics", "parts"})
+
 
 
 class _AudioDataset(Dataset):
@@ -101,8 +103,8 @@ def _collect_files(data_dir: Path, max_files: int) -> list[Path]:
 _ALL_NAMES = (_CLAP_AUDIO_NAME, _CLAP_MUSIC_NAME, _MERT_NAME, _CLAP_GUD_NAME, _PANN_NAME)
 
 
-def _all_refs_exist(emb_root: Path, stem: str, want: tuple[str, ...]) -> bool:
-    return all((emb_root / name / f"{stem}.npy").exists() for name in want)
+def _all_refs_exist(emb_root: Path, stem: str, want: tuple[str, ...], channel: str) -> bool:
+    return all((emb_root / ch_name(name, channel) / f"{stem}.npy").exists() for name in want)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -113,6 +115,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--data-dir", required=True, type=Path,
                    help="Flat dir of clean *.wav (refs are written into its embeddings/ + stats_ours/).")
     p.add_argument("--device", default="cuda")
+    p.add_argument("--channel", default=CHANNEL_MID, choices=list(CHANNELS),
+                   help="Which channel to embed: 'mid' = (L+R)/2, the historical mono downmix; "
+                        "'side' = (L-R)/2. Side artefacts are written under '<model>-side/' so "
+                        "they can never be crossed with the Mid reference stats. Every "
+                        "preprocessing step inside the embedders is left untouched.")
     p.add_argument("--num-workers", type=int, default=8)
     p.add_argument("--max-files", type=int, default=0)
     p.add_argument("--resume", action="store_true",
@@ -126,10 +133,12 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _recompute_stats(emb_root: Path, stats_root: Path, want: tuple[str, ...]) -> None:
+def _recompute_stats(emb_root: Path, stats_root: Path, want: tuple[str, ...],
+                     channel: str = CHANNEL_MID) -> None:
     for model_name in _STATS_MODELS:
         if model_name not in want:
             continue
+        model_name = ch_name(model_name, channel)
         npys = sorted((emb_root / model_name).glob("*.npy"))
         if not npys:
             warn(f"No embeddings for {model_name} — stats skipped.", prefix="STATS")
@@ -153,11 +162,22 @@ def main() -> None:
     device = (torch.device("cpu") if args.device == "cpu" or not torch.cuda.is_available()
               else torch.device("cuda:0"))
 
-    want = tuple(args.models) if args.models else _ALL_NAMES
+    channel = args.channel
+    if args.models:
+        want = tuple(args.models)
+    elif channel == CHANNEL_SIDE:
+        # Sul Side servono solo i tre embedder che alimentano una FAD: le due
+        # CLAP per-file esistono per la cosine similarity sul Mid, che non e'
+        # parte di questo studio.
+        want = _STATS_MODELS
+    else:
+        want = _ALL_NAMES
+    info(f"channel = {channel}  ->  artefatti in embeddings/stats_ours/"
+         f"{ch_name('<model>', channel)}", prefix="REFS")
 
     if args.stats_only:
         info(f"[STATS-ONLY] recomputing stats_ours/ from existing embeddings/ for {want}.", prefix="REFS")
-        _recompute_stats(emb_root, stats_root, want)
+        _recompute_stats(emb_root, stats_root, want, channel)
         return
 
     files = _collect_files(data_dir, args.max_files)
@@ -165,7 +185,7 @@ def main() -> None:
         err(f"No WAV files found in {data_dir}"); return
 
     if args.resume:
-        todo = [f for f in files if not _all_refs_exist(emb_root, f.stem, want)]
+        todo = [f for f in files if not _all_refs_exist(emb_root, f.stem, want, channel)]
         info(f"{len(files)} files — {len(todo)} to embed (skip {len(files) - len(todo)} done).",
              prefix="REFS")
     else:
@@ -180,22 +200,22 @@ def main() -> None:
         clap_audio = CLAPLaionModel("audio")
         with silence_output(): clap_audio.load_model()
         clap_audio.model.to(device)
-        embedders[_CLAP_AUDIO_NAME] = lambda wav: embed_clap(clap_audio, wav, sr, device)
+        embedders[_CLAP_AUDIO_NAME] = lambda wav: embed_clap(clap_audio, wav, sr, device, channel)
     if _CLAP_MUSIC_NAME in want:
         clap_music = CLAPLaionModel("music")
         with silence_output(): clap_music.load_model()
         clap_music.model.to(device)
-        embedders[_CLAP_MUSIC_NAME] = lambda wav: embed_clap(clap_music, wav, sr, device)
+        embedders[_CLAP_MUSIC_NAME] = lambda wav: embed_clap(clap_music, wav, sr, device, channel)
     if _MERT_NAME in want:
         mert = MERTModel(layer=4)
         with silence_output(): mert.load_model()
         mert.model.to(device)
-        embedders[_MERT_NAME] = lambda wav: embed_mert_framewise(mert, wav, sr, device)
+        embedders[_MERT_NAME] = lambda wav: embed_mert_framewise(mert, wav, sr, device, channel)
     if _CLAP_GUD_NAME in want:
-        embedders[_CLAP_GUD_NAME] = lambda wav: embed_clap_gud(wav, sr, device)
+        embedders[_CLAP_GUD_NAME] = lambda wav: embed_clap_gud(wav, sr, device, channel)
     if _PANN_NAME in want:
         get_pann_model(device)    # fail-fast on missing checkpoint
-        embedders[_PANN_NAME] = lambda wav: embed_pann(wav, sr, device)
+        embedders[_PANN_NAME] = lambda wav: embed_pann(wav, sr, device, channel)
     ok(f"Embedding models ready ({len(embedders)} embedders).", prefix="REFS")
 
     dataset = _AudioDataset(todo, target_sr=44100, target_channels=2)
@@ -215,7 +235,7 @@ def main() -> None:
                 skipped += 1; continue
             try:
                 for name, fn in embedders.items():
-                    out = emb_root / name / f"{stem}.npy"
+                    out = emb_root / ch_name(name, channel) / f"{stem}.npy"
                     if args.resume and out.exists():
                         continue                       # per-model resume: don't recompute existing
                     atomic_save_npy(out, fn(wav).astype(np.float16))
@@ -230,7 +250,7 @@ def main() -> None:
     ok(f"Embeddings done — processed: {processed}  skipped: {skipped}", prefix="REFS")
 
     info("Computing Fréchet reference stats (mu/cov)...", prefix="REFS")
-    _recompute_stats(emb_root, stats_root, want)
+    _recompute_stats(emb_root, stats_root, want, channel)
     ok(f"References ready under {data_dir}", prefix="REFS")
 
 

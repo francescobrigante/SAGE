@@ -6,6 +6,10 @@ from pathlib import Path
 # Add project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+# evaluation/ sul path: `downmix` vive in utils.py ed e' condiviso da tutti
+# gli embedder, così il selettore Mid/Side esiste in UN posto solo.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from utils import downmix, CHANNEL_MID
 
 import torchaudio
 
@@ -20,7 +24,8 @@ def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (na * nb))
 
 
-def embed_clap(model, wav: torch.Tensor, src_sr: int, device) -> np.ndarray:
+def embed_clap(model, wav: torch.Tensor, src_sr: int, device,
+               channel: str = CHANNEL_MID) -> np.ndarray:
     """In-memory CLAP embedding from a [C, T] waveform tensor.
 
     Returns (N_chunks, D) float16 array.
@@ -31,7 +36,7 @@ def embed_clap(model, wav: torch.Tensor, src_sr: int, device) -> np.ndarray:
     model_sr: int = model.sr
     if src_sr != model_sr:
         wav = torchaudio.functional.resample(wav.cpu(), src_sr, model_sr)
-    wav_np = int16_to_float32(float32_to_int16(wav.mean(0).numpy().reshape(1, -1)))
+    wav_np = int16_to_float32(float32_to_int16(downmix(wav, channel).numpy().reshape(1, -1)))
 
     cs = 10 * model_sr   # 10-s chunk
     hs = model_sr        # 1-s hop
@@ -66,7 +71,8 @@ def get_gud_model(device):
     return _gud_model
 
 
-def embed_clap_gud(wav: torch.Tensor, src_sr: int, device) -> np.ndarray:
+def embed_clap_gud(wav: torch.Tensor, src_sr: int, device,
+                   channel: str = CHANNEL_MID) -> np.ndarray:
     """Extract whole-file CLAP embedding without windowing or int16 quantization.
     Mirrors the 'frechet_audio_distance' package approach (FAD-GUD).
 
@@ -77,7 +83,7 @@ def embed_clap_gud(wav: torch.Tensor, src_sr: int, device) -> np.ndarray:
     model = get_gud_model(device)
     
     # 1. mono-mix
-    wav_mono = wav.mean(0).cpu().numpy()
+    wav_mono = downmix(wav, channel).cpu().numpy()
     
     # 2. resample to 48000 (CLAP native) via resampy
     if src_sr != 48000:

@@ -1,0 +1,37 @@
+# ===============================================================
+# Variable-length inference: multi-phase attention on the collapsed
+# Swin stages (encoder stage 2 / decoder stage 0 for SAGE).
+# Removes the periodic 1.486 s seams that appear when inference audio
+# is longer than the 128-frame training segment.
+# See VARLEN_SEAMS.md for the measurements behind these presets.
+# ===============================================================
+
+varlen:
+
+  # Project default, applied by EuleroEncodeDecode to every checkpoint it loads.
+  # Chosen 2026-09-22 on n=100 MoisesDB 30 s: tri2 removes the seam (dip -1.689
+  # -> -0.081 dB) and is the only candidate that also improves quality on every
+  # single file (SI-SDR better on 100/100 vs baseline), for +5% inference time.
+  # See VARLEN_SEAMS.md section 8.4.
+  #
+  # "off" = original single-phase attention, bit-identical to every result
+  # produced before this fix existed. Pass --varlen off to reproduce them.
+  mode: tri2
+
+  # phases:  grid offsets in time tokens, over a 32-token window.
+  #          Phase 0 is the native partition and never wraps: always include it.
+  # combine: how the per-phase outputs are mixed per token, by the token's
+  #          distance d to the nearest edge of its own attention group.
+  #            mean -> uniform
+  #            tri  -> proportional to d + 1
+  #            hard -> winner-takes-all on d (ties shared)
+  presets:
+
+    mean2: {phases: [0, 16], combine: mean}
+    tri2:  {phases: [0, 16], combine: tri}
+    hard2: {phases: [0, 16], combine: hard}
+
+    mean4: {phases: [0, 8, 16, 24], combine: mean}
+    tri4:  {phases: [0, 8, 16, 24], combine: tri}
+    hard4: {phases: [0, 8, 16, 24], combine: hard}
+

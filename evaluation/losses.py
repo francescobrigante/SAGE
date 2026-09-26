@@ -6,8 +6,16 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import torch
 import torchaudio
+
+# evaluation/ sul path: `downmix` vive in utils.py ed e' condiviso da tutti
+# gli embedder, così il selettore Mid/Side esiste in UN posto solo.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from utils import downmix, CHANNEL_MID
 
 def compute_sdr_and_sisdr(target: torch.Tensor, pred: torch.Tensor, eps: float = 1e-8) -> tuple[float, float]:
     """Compute both standard scale-dependent SDR and scale-invariant SDR (SI-SDR)
@@ -137,7 +145,8 @@ _cdpam_model = None
 _cdpam_resamplers: dict[int, torchaudio.transforms.Resample] = {}
 
 
-def cdpam_score(target: torch.Tensor, pred: torch.Tensor, src_sr: int, device="cpu") -> float:
+def cdpam_score(target: torch.Tensor, pred: torch.Tensor, src_sr: int, device="cpu",
+                channel: str = CHANNEL_MID) -> float:
     """CDPAM perceptual similarity from [C, T] tensors.
 
     CDPAM loads weights with torch.load (weights_only=False required for older
@@ -166,8 +175,8 @@ def cdpam_score(target: torch.Tensor, pred: torch.Tensor, src_sr: int, device="c
         pred   = rs(pred.cpu())
 
     # CDPAM expects float32 mono [1, T] scaled to [-32768, 32768]
-    t = target.float().cpu().mean(0, keepdim=True) * 32768.0
-    p = pred.float().cpu().mean(0, keepdim=True) * 32768.0
+    t = downmix(target.float().cpu(), channel).unsqueeze(0) * 32768.0
+    p = downmix(pred.float().cpu(), channel).unsqueeze(0) * 32768.0
     n = min(t.shape[-1], p.shape[-1])
     with torch.no_grad():
         return float(_cdpam_model.forward(t[..., :n], p[..., :n]).item())

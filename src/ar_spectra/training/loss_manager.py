@@ -25,6 +25,7 @@ from .losses.spectral import (
     PhaseCosineDistance,
     ComplexMSE,
     PerceptualComplexMSE,
+    SideComplexMSE,
     STFTConsistencyLoss,
     InstantaneousFrequencyGroupDelayLoss,
     NormalizedComplexDistanceLoss,
@@ -322,6 +323,39 @@ class LossManager(nn.Module):
                         self.mrstft_sd, target_key="reals", input_key="decoded",
                         name="mrstft_sd_loss", weight=mrstft_sd_weight,
                         decay=self.loss_config["mrstft_sd"].get("decay", 1.0),
+                    )
+                )
+
+        # A — normalised complex MSE on the Side alone. Same tensors as stft_mse
+        # (sp_decoded vs encoder_input), so it inherits the power-norm CAC domain
+        # and the absolute-phase anchoring rather than duplicating them.
+        if "mse_side" in self.loss_config:
+            mse_side_weight = self.loss_config["mse_side"]["weights"]["mse_side"]
+            if mse_side_weight > 0.0:
+                mse_side_cfg = dict(self.loss_config["mse_side"].get("config", {}) or {})
+                self.mse_side = SideComplexMSE(**mse_side_cfg)
+                gen_loss_modules.append(
+                    LossWithTarget(
+                        self.mse_side, input_key="sp_decoded", target_key="encoder_input",
+                        name="mse_side_loss", weight=mse_side_weight,
+                        decay=self.loss_config["mse_side"].get("decay", 1.0),
+                    )
+                )
+
+        # L6 — inter-channel coherence, the differentiable surrogate of d_pan.
+        # Registered separately from mrstft_sd so it can be enabled on its own:
+        # the magnitude term and the phase term address different failures and
+        # cost different things, and the ablation needs to separate them.
+        if "stereo_coh" in self.loss_config:
+            stereo_coh_weight = self.loss_config["stereo_coh"]["weights"]["stereo_coh"]
+            if stereo_coh_weight > 0.0:
+                stereo_coh_cfg = dict(self.loss_config["stereo_coh"].get("config", {}) or {})
+                self.stereo_coh = signal.StereoCoherenceLoss(**stereo_coh_cfg)
+                gen_loss_modules.append(
+                    LossWithTarget(
+                        self.stereo_coh, target_key="reals", input_key="decoded",
+                        name="stereo_coh_loss", weight=stereo_coh_weight,
+                        decay=self.loss_config["stereo_coh"].get("decay", 1.0),
                     )
                 )
 

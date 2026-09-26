@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import argparse
+import csv as _csv
+import json
 import os
 import shutil
 import sys
@@ -34,6 +36,7 @@ sys.path.insert(0, str(_PROJ_ROOT / "src"))
 
 from ar_spectra.models.inference import EuleroEncodeDecode
 from ar_spectra.utils.console import ok, warn, info, err
+from c_vae.swin.varlen import resolve
 from config import DATA_PATH, DEFAULT_AUDIO_EXTENSIONS, DEFAULT_MAX_FILES, FMA_METADATA
 from losses import compute_sdr_and_sisdr, stft_loss, spectral_losses, cdpam_score
 
@@ -198,7 +201,6 @@ def _file_barrier(metrics_dir: Path, local_rank: int, world_size: int,
 def _merge_shards(metrics_dir: Path, stem: str, fieldnames: list[str],
                   world_size: int) -> None:
     """Merge per-rank CSV shards into final CSV and delete shard files."""
-    import csv as _csv
     all_rows: list[dict] = []
     for r in range(world_size):
         p = metrics_dir / f"{stem}_rk{r}.csv"
@@ -208,6 +210,66 @@ def _merge_shards(metrics_dir: Path, stem: str, fieldnames: list[str],
             p.unlink()
     if all_rows:
         write_csv(metrics_dir / f"{stem}.csv", fieldnames, all_rows)
+
+
+# ── Per-file resume ──────────────────────────────────────────
+# Same pattern as evaluate_swin_10s.py: per-file rows are appended (not
+# overwritten) to a "parts" CSV as each file finishes, so a job killed by a
+# wall-time limit loses nothing — a resumed run just keeps appending. The
+# "parts" file is dedup-merged into the real metrics CSV (first occurrence
+# per stem wins) every time a run's own loop completes uninterrupted, so
+# reruns of the single-metric modes (--cdpam-only etc., which don't gate on
+# --resume) stay idempotent instead of duplicating rows.
+#
+# FAD is NOT per-file (it's a Frechet distance over the whole embedding
+# distribution), so it can't be resumed the same way — but its per-file
+# *embeddings* already were (atomic_save_npy). The fix: only feed
+# compute_fad_from_embeddings the files whose embedding actually exists on
+# disk RIGHT NOW, checked fresh after the loop — this is correct whether
+# that embedding was written by this run or an earlier, killed one. PANN is
+# the last embedding written per file (see the embedding block below), so
+# its presence is the single completion sentinel — same choice already made
+# in evaluate_swin_10s.py.
+
+def _write_varlen_stamp(metrics_dir: Path, codec) -> None:
+    """Record which attention mode actually produced these numbers.
+
+    The output directory is named after the checkpoint symlink, which is a naming
+    convention and proves nothing about runtime — the same weights can be evaluated
+    with any ``--varlen`` preset. Rule (CLAUDE.md, VARLEN_SEAMS.md §8.4): a metrics/
+    dir WITHOUT this file is a baseline (single-phase) run. Mirrors the stamp
+    evaluate_swin_10s.py already writes.
+    """
+    vl = resolve(codec.varlen_mode)
+    (metrics_dir / "varlen.json").write_text(json.dumps(
+        {"mode": codec.varlen_mode,
+         "blocks": codec.varlen_blocks,
+         "phases": list(vl.phases) if vl else [],
+         "combine": vl.combine if vl else None}, indent=2) + "\n")
+
+
+def _append_csv(path: Path, fieldnames: list[str], row: dict) -> None:
+    new = not path.exists() or path.stat().st_size == 0
+    with open(path, "a", newline="") as f:
+        w = _csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        if new: w.writeheader()
+        w.writerow(row)
+
+
+def _finalize_csv(parts_dir: Path, metrics_dir: Path, name: str,
+                  fieldnames: list[str], suf: str) -> int:
+    """Dedup-merge one incrementally-appended parts CSV into the final metrics CSV."""
+    src = parts_dir / f"{name}{suf}.csv"
+    if not src.exists():
+        return 0
+    seen: dict[str, dict] = {}
+    with open(src, newline="") as f:
+        for r in _csv.DictReader(f):
+            seen.setdefault(r["file"], dict(r))
+    if not seen:
+        return 0
+    write_csv(metrics_dir / f"{name}{suf}.csv", fieldnames, list(seen.values()))
+    return len(seen)
 
 
 # ── Argument parsing ──────────────────────────────────────────
@@ -252,7 +314,10 @@ def _parse_args() -> argparse.Namespace:
                         "default per-file metrics, computed in-memory on the (ref, recon) pair. "
                         "Opt-in: off by default → old runs unchanged. Writes ms_metrics.csv.")
     p.add_argument("--resume",          action="store_true",
-                   help="Skip checkpoint if metrics/_done already exists.")
+                   help="Skip checkpoint if metrics/_done already exists. In the full "
+                        "metric mode (no --*-only flag) this ALSO skips individual files "
+                        "whose embeddings are already on disk, so a run killed by a wall-time "
+                        "limit can be finished by resubmitting the same command.")
     p.add_argument("--deterministic",   action="store_true",
                    help="Encode with VAE posterior mean μ instead of sampled z. "
                         "Improves SI-SDR/STFT at inference time. Default: False.")
@@ -262,6 +327,11 @@ def _parse_args() -> argparse.Namespace:
                         "Gives ~Nx speedup with N GPUs. All metrics are bit-identical to "
                         "the single-rank run (FAD is merged on rank 0 after a barrier). "
                         "Default: False (backward-compatible).")
+    p.add_argument("--varlen",          default=None,
+                   help="Variable-length seam fix on the collapsed Swin stages: a preset "
+                        "from config/inference/varlen.yaml (tri2, hard2, tri4, ...) or 'off' "
+                        "for the original single-phase attention. Default = the project "
+                        "default in that file. See VARLEN_SEAMS.md.")
     return p.parse_args()
 
 
@@ -334,8 +404,6 @@ def main() -> None:
         err(f"No audio files found in {target_dir}"); return
     ok(f"Files to evaluate: {len(audio_files)}", prefix="EVAL")
 
-    stem_to_file: dict[str, Path] = {f.stem: f for f in audio_files}
-
     if not args.cdpam_only and not args.sdr_only:
         # Load MERT (layer 4, framewise/fadtk-standard) once per rank. CLAP only
         # for the non-FAD metrics → skipped in --fad-only.
@@ -379,7 +447,7 @@ def main() -> None:
             info("[RESUME] already done — skipping.", prefix="EVAL"); continue
 
         try:
-            codec = EuleroEncodeDecode(ckpt_path, device=device)
+            codec = EuleroEncodeDecode(ckpt_path, device=device, varlen=args.varlen)
         except Exception as e:
             err(f"Failed to load {ckpt_path.name}: {e}"); continue
 
@@ -404,13 +472,36 @@ def main() -> None:
            f"downsamples={num_downsamples}", prefix="EVAL")
 
         metrics_dir.mkdir(parents=True, exist_ok=True)
+        suf = f"_rk{local_rank}" if single_ckpt_sharding else ""
+        parts_dir = metrics_dir / "parts"
+        pred_root = parts_dir / "pred"
+        parts_dir.mkdir(parents=True, exist_ok=True)
 
-        # In sharding mode each rank processes a disjoint file slice
-        my_audio_files = (
+        # In sharding mode each rank processes a disjoint file slice. This
+        # (pre-resume-filter) list is this rank's FULL responsibility — kept
+        # separately so the FAD completeness check below always looks at the
+        # whole shard, not just whatever a single resumed link processed.
+        my_full_shard = (
             audio_files[local_rank::world_size] if single_ckpt_sharding else audio_files
         )
+        my_audio_files = my_full_shard
         if single_ckpt_sharding:
             info(f"Rank {local_rank}: {len(my_audio_files)}/{len(audio_files)} files", prefix="EVAL")
+
+        # Per-file resume: skip files whose PANN embedding (the last artifact
+        # written per file, see below) is already on disk from an earlier,
+        # killed run. Only in the full metric mode — the single-metric-only
+        # modes keep their existing whole-checkpoint _done gate.
+        _full_mode = not (args.cdpam_only or args.sdr_only or args.fad_only
+                          or args.fad_gud_only or args.new_metrics_only)
+        if args.resume and _full_mode:
+            _pann_dir = pred_root / PANN_NAME
+            _finished = {f.stem for f in _pann_dir.glob("*.npy")} if _pann_dir.is_dir() else set()
+            if _finished:
+                _before = len(my_audio_files)
+                my_audio_files = [f for f in my_audio_files if f.stem not in _finished]
+                info(f"resume: {_before - len(my_audio_files)} già fatti, "
+                     f"restano {len(my_audio_files)}", prefix="EVAL")
 
         dataset = _AudioDataset(my_audio_files, sr, ch, cache_dir=cache_dir)
         loader  = DataLoader(
@@ -422,19 +513,9 @@ def main() -> None:
             prefetch_factor=2 if args.num_workers > 0 else None,
         )
 
-        spectral_rows:    list[dict]       = []
-        cdpam_rows:       list[dict]       = []
-        clap_music_rows:  list[dict]       = []
-        clap_audio_rows:  list[dict]       = []
-        timing_rows:      list[dict]       = []
-        ms_rows:          list[dict]       = []
-        fad_files:        list[Path]       = []
+        processed = 0
         skipped = 0
         t0 = time.time()
-        
-        parts_dir = metrics_dir / "parts"
-        pred_root = parts_dir / "pred"
-        parts_dir.mkdir(parents=True, exist_ok=True)
 
         with torch.no_grad():
             for wav, stem in tqdm(loader, desc=ckpt_path.stem,
@@ -464,24 +545,20 @@ def main() -> None:
 
                 if (not args.cdpam_only and not args.fad_only and not args.fad_gud_only
                         and not args.new_metrics_only):
-                    timing_rows.append({
-                        "file":      stem,
-                        "infer_sec": infer_sec,
-                        "audio_sec": orig_len / sr,
-                    })
+                    _append_csv(parts_dir / f"timing{suf}.csv",
+                               ["file", "infer_sec", "audio_sec"],
+                               {"file": stem, "infer_sec": infer_sec, "audio_sec": orig_len / sr})
                     sdr_val, sisdr_val = compute_sdr_and_sisdr(wav_ref, pred)
-                    spectral_rows.append({
-                        "file":   stem,
-                        "si_sdr": sisdr_val,
-                        "sdr":    sdr_val,
-                        **spectral_losses(wav_ref, pred),
-                    })
+                    _append_csv(parts_dir / f"spectral{suf}.csv",
+                               ["file", "si_sdr", "sdr", "stft_loss", "mel_loss"],
+                               {"file": stem, "si_sdr": sisdr_val, "sdr": sdr_val,
+                                **spectral_losses(wav_ref, pred)})
                     # Opt-in stereo-imaging metrics (needs true stereo ref+pred).
                     if (args.compute_ms_metrics
                             and wav_ref.shape[0] == 2 and pred.shape[0] == 2):
                         try:
-                            ms_rows.append({"file": stem,
-                                            **_compute_ms_metrics(wav_ref, pred, sr)})
+                            _append_csv(parts_dir / f"ms_metrics{suf}.csv", _MS_COLS,
+                                       {"file": stem, **_compute_ms_metrics(wav_ref, pred, sr)})
                         except Exception as e:
                             warn(f"MS metrics {stem}: {e}", prefix="MS")
 
@@ -492,8 +569,8 @@ def main() -> None:
                         and not args.fad_only and not args.fad_gud_only
                         and not args.new_metrics_only):
                     try:
-                        cdpam_rows.append({"file": stem,
-                                           "cdpam": cdpam_score(wav_ref, pred, sr, device=device)})
+                        _append_csv(parts_dir / f"cdpam{suf}.csv", ["file", "cdpam"],
+                                   {"file": stem, "cdpam": cdpam_score(wav_ref, pred, sr, device=device)})
                     except Exception as e:
                         warn(f"CDPAM error {stem}: {e}", prefix="CDPAM")
 
@@ -513,14 +590,16 @@ def main() -> None:
                             t_cm = load_or_embed(clap_music_ml, embed_clap, wav_ref, sr, device,
                                                  target_cache_path(cache_dir, clap_music_ml.name, stem))
                             p_cm = embed_clap(clap_music_ml, pred, sr, device)
-                            clap_music_rows.append({"file": stem,
-                                                    "cosine": float(cosine_sim(t_cm.mean(0), p_cm.mean(0)))})
+                            _append_csv(parts_dir / f"clap_music{suf}.csv", ["file", "cosine"],
+                                       {"file": stem,
+                                        "cosine": float(cosine_sim(t_cm.mean(0), p_cm.mean(0)))})
 
                             t_ca = load_or_embed(clap_audio_ml, embed_clap, wav_ref, sr, device,
                                                  target_cache_path(cache_dir, clap_audio_ml.name, stem))
                             p_ca = embed_clap(clap_audio_ml, pred, sr, device)
-                            clap_audio_rows.append({"file": stem,
-                                                    "cosine": float(cosine_sim(t_ca.mean(0), p_ca.mean(0)))})
+                            _append_csv(parts_dir / f"clap_audio{suf}.csv", ["file", "cosine"],
+                                       {"file": stem,
+                                        "cosine": float(cosine_sim(t_ca.mean(0), p_ca.mean(0)))})
 
                         # MERT layer-4 framewise: feeds fad_mert (populate target cache +
                         # save pred .npy). Full run + --fad-only (not --new-metrics-only /
@@ -543,42 +622,56 @@ def main() -> None:
                                           target_cache_path(cache_dir, PANN_NAME, stem))
                             p_pann = embed_pann(pred, sr, device)
                             atomic_save_npy(pred_root / PANN_NAME / f"{stem}.npy", p_pann.astype(np.float16))
-
-                        fad_files.append(stem_to_file[stem])
                     except Exception as e:
                         warn(f"Embedding error {stem}: {e}", prefix="EMBED")
 
-                if (len(spectral_rows) + skipped) % 50 == 0:
-                    info(f"{len(spectral_rows)+skipped}/{len(audio_files)} "
+                processed += 1
+                if (processed + skipped) % 50 == 0:
+                    info(f"{processed+skipped}/{len(my_audio_files)} "
                          f"({time.time()-t0:.0f}s)", prefix="EVAL")
 
-        ok(f"Done — processed: {len(spectral_rows)}  skipped: {skipped}", prefix="EVAL")
+        ok(f"Done — processed: {processed}  skipped: {skipped}", prefix="EVAL")
 
-        # ── Write per-file metrics (per-rank suffix in sharding mode) ──────────
-        suf = f"_rk{local_rank}" if single_ckpt_sharding else ""
-        if spectral_rows:
-            write_csv(metrics_dir / f"spectral{suf}.csv",
-                      ["file", "si_sdr", "sdr", "stft_loss", "mel_loss"], spectral_rows)
-            ok(f"spectral{suf}.csv written ({len(spectral_rows)} rows)", prefix="EVAL")
-        if cdpam_rows:
-            write_csv(metrics_dir / f"cdpam{suf}.csv", ["file", "cdpam"], cdpam_rows)
-            ok(f"cdpam{suf}.csv written", prefix="EVAL")
-        if clap_music_rows:
-            write_csv(metrics_dir / f"clap_music{suf}.csv", ["file", "cosine"], clap_music_rows)
-            ok(f"clap_music{suf}.csv written", prefix="EVAL")
-        if clap_audio_rows:
-            write_csv(metrics_dir / f"clap_audio{suf}.csv", ["file", "cosine"], clap_audio_rows)
-            ok(f"clap_audio{suf}.csv written", prefix="EVAL")
-        if timing_rows:
-            write_csv(metrics_dir / f"timing{suf}.csv",
-                      ["file", "infer_sec", "audio_sec"], timing_rows)
-            ok(f"timing{suf}.csv written ({len(timing_rows)} rows)", prefix="EVAL")
-        if ms_rows:
-            write_csv(metrics_dir / f"ms_metrics{suf}.csv", _MS_COLS, ms_rows)
-            ok(f"ms_metrics{suf}.csv written ({len(ms_rows)} rows)", prefix="EVAL")
+        # ── Dedup-merge the incrementally-appended parts into the real metrics
+        # CSVs (per-rank suffix in sharding mode). Safe under resume (a file's
+        # row was appended at most once, since resume skips it once done) and
+        # under reruns of the non-resumable single-metric modes (dedup keeps
+        # the first occurrence, so a rerun's fresh rows don't duplicate).
+        for _name, _cols in (
+            ("spectral", ["file", "si_sdr", "sdr", "stft_loss", "mel_loss"]),
+            ("cdpam", ["file", "cdpam"]),
+            ("clap_music", ["file", "cosine"]),
+            ("clap_audio", ["file", "cosine"]),
+            ("timing", ["file", "infer_sec", "audio_sec"]),
+            ("ms_metrics", _MS_COLS),
+        ):
+            _n = _finalize_csv(parts_dir, metrics_dir, _name, _cols, suf)
+            if _n:
+                ok(f"{_name}{suf}.csv written ({_n} rows)", prefix="EVAL")
+
+        # FAD is a corpus-level Frechet distance, not a per-file metric, so it
+        # can't be resumed the same way as the CSVs above — it can only be
+        # computed once every file's embedding actually exists on disk. Check
+        # fresh (not from what THIS run processed): correct whether an
+        # embedding was written now or by an earlier, killed run, and
+        # naturally excludes any file whose embedding failed this run.
+        def _completed(candidates: list[Path]) -> list[Path]:
+            if args.fad_only:
+                d = pred_root / mert_ml.name
+            elif args.fad_gud_only:
+                d = pred_root / "clap-laion-audio-gud"
+            else:                       # full mode + --new-metrics-only
+                d = pred_root / PANN_NAME
+            have = {p.stem for p in d.glob("*.npy")} if d.is_dir() else set()
+            return [f for f in candidates if f.stem in have]
+
+        fad_files = _completed(my_full_shard) if not (args.cdpam_only or args.sdr_only) else []
 
         if single_ckpt_sharding:
             if fad_files:
+                # This rank's completed files (embedding on disk right now) —
+                # correct regardless of which link, this one or an earlier
+                # killed one, actually finished which file.
                 import json as _json
                 (metrics_dir / f"_shard_rk{local_rank}_files.json").write_text(
                     _json.dumps([str(p) for p in fad_files])
@@ -634,7 +727,9 @@ def main() -> None:
 
                 if (not args.cdpam_only and not args.fad_only and not args.fad_gud_only
                         and not args.new_metrics_only):
+                    _write_varlen_stamp(metrics_dir, codec)
                     (metrics_dir / "_done").touch()
+                    ok(f"_done → {metrics_dir}  (varlen={codec.varlen_mode})", prefix="EVAL")
         else:
             # Normal (non-sharding) path: compute FAD directly, write _done
             if cache_dir and fad_files:
@@ -659,7 +754,9 @@ def main() -> None:
                     _purge_pred_embeddings(pred_root, PANN_NAME)
             if (not args.cdpam_only and not args.fad_only and not args.fad_gud_only
                     and not args.new_metrics_only):
+                _write_varlen_stamp(metrics_dir, codec)
                 (metrics_dir / "_done").touch()
+                ok(f"_done → {metrics_dir}  (varlen={codec.varlen_mode})", prefix="EVAL")
 
         del codec
         torch.cuda.empty_cache()

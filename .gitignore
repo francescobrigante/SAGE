@@ -33,3 +33,6 @@ wandb/
 
 
 *.ckpt
+# monitor state files + stereo ablation data cache
+.mon_*
+evaluation/stereo_diagnosis/ablation/
