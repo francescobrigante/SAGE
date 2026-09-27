@@ -1,6 +1,6 @@
 # =============================================================================
 # tests/test_stereo_coherence_l6.py
-# Unit tests for L6 (StereoCoherenceLoss) — STEREO_COLLAPSE_DIAGNOSIS §11.4.
+# Unit tests for StereoCoherenceLoss (experimental stereo loss, L6).
 #
 # The two tests that justify the term's existence:
 #   * it MOVES when only the Side phase changes, where mrstft_sd is provably

@@ -1,5 +1,5 @@
 """
-Fase 5 (LATENT_ALIGNMENT_PLAN.md §5) SAME-MRSTFT reconstruction-loss tests.
+SAME-MRSTFT reconstruction-loss tests (experimental loss).
 
 Validates the new spectral primitives:
   - adaptive_log_mag: zero on identical input, invariant to a common scaling.

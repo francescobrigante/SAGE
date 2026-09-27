@@ -140,5 +140,6 @@ markers = [
     "slow: tests that run the full 1024x128 encoder/decoder (deselect with '-m not slow')",
     "smoke: fast end-to-end checks of inference, training, fine-tuning and evaluation",
     "weights: needs real pretrained weights or datasets (CLAP, MERT, PANN, SOTA models); opt-in with '-m weights'",
+    "golden_full: the 30 s golden input (~7 GB RAM, several minutes on one thread); opt-in with '-m golden_full'",
 ]
-addopts = "-m 'not weights'"
+addopts = "-m 'not weights and not golden_full'"

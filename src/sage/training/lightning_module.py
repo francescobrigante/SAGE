@@ -39,13 +39,13 @@ from sage.utils.audio import trim_to_shortest
 
 def _save_audio_with_fallback(path: str, wav_chxn: torch.Tensor, sr: int) -> bool:
     """
-    Salva audio tentando nell'ordine:
-      1) torchaudio.save (usa TorchCodec; può fallire per FFmpeg/TorchCodec)
+    Save audio, trying in order:
+      1) torchaudio.save (uses TorchCodec; can fail on FFmpeg/TorchCodec issues)
       2) soundfile (libsndfile)
       3) scipy.io.wavfile.write
-    wav_chxn: (C, N) float32 su CPU o GPU
+    wav_chxn: (C, N) float32 on CPU or GPU
     """
-    # Assicurati di avere (C, N) float32 CPU
+    # (C, N) float32 on the CPU
     wav = wav_chxn.detach().to(torch.float32).cpu().contiguous()
     # 1) torchaudio
     try:
@@ -81,11 +81,11 @@ def _save_audio_with_fallback(path: str, wav_chxn: torch.Tensor, sr: int) -> boo
     
 class SAGELightningModule(pl.LightningModule):
     """
-    Adapter Lightning che delega all'AutoencoderEngine:
-    - nessuna logica di loss qui dentro
-    - configure_optimizers: crea optimizer/scheduler usando utils e i fallback dal JSON
-    - training_step chiama engine.compute() e fa backward/step/logging
-    - validation_step chiama engine.compute_validation()
+    Lightning adapter that delegates to the AutoencoderEngine:
+    - no loss logic in here
+    - configure_optimizers: builds the optimizers and schedulers from the config
+    - training_step calls engine.compute() and does backward/step/logging
+    - validation_step calls engine.compute_validation()
     """
     def __init__(
         self,
@@ -158,7 +158,7 @@ class SAGELightningModule(pl.LightningModule):
         except Exception as e:
             warn(f"Failed to create/apply pre_transform ({type(e).__name__}: {e})")
 
-        # Buffer intermedio per valid
+        # Validation outputs collected over the epoch
         self.validation_step_outputs = []
         # Track separate accumulation windows for gen/disc manual optimization.
         self._accum_steps_gen = 0
@@ -546,10 +546,10 @@ class SAGELightningModule(pl.LightningModule):
 
 class AutoencoderValDemoCallback(pl.Callback):
     """
-    Log demo su validation:
-    - usa il batch di validation (no grad)
-    - decode -> istft con override opzionale dei parametri
-    - opzionale: forzare lunghezza target dei segnali demo
+    Audio demos at validation:
+    - uses the validation batch (no grad)
+    - decode -> iSTFT, with optional parameter overrides
+    - optional: force the target length of the demo signals
     """
     def __init__(
         self,
@@ -587,13 +587,13 @@ class AutoencoderValDemoCallback(pl.Callback):
 
     @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx: int = 0):
-        # logga solo sul primo batch di ogni epoca, con frequenza every_n_epochs
+        # log only on the first batch of every every_n_epochs-th epoch
         epoch = int(trainer.current_epoch)
         is_sanity = getattr(trainer, "sanity_checking", False)
         if batch_idx != 0 or (epoch % self.every_n_epochs) != 0 or (self._last_logged_epoch == epoch and not is_sanity):
             return
-        # non marca l'epoca come "già loggata" se siamo nel sanity-check,
-        # così il logging reale alla fine dell'epoca può ancora avvenire.
+        # the sanity check does not mark the epoch as logged, so the real
+        # validation of that epoch still logs.
         if not is_sanity:
             self._last_logged_epoch = epoch
 
@@ -601,7 +601,7 @@ class AutoencoderValDemoCallback(pl.Callback):
         sp_reals = sp_reals.to(pl_module.device, non_blocking=True)
         reals_wav = reals_wav.to(pl_module.device, non_blocking=True)
 
-        # limita il numero di esempi
+        # cap the number of examples
         if sp_reals.shape[0] > self.max_demos:
             sp_reals = sp_reals[:self.max_demos, ...]
             reals_wav = reals_wav[:self.max_demos, ...]
@@ -656,7 +656,7 @@ class AutoencoderValDemoCallback(pl.Callback):
             encoder_input_istft = rearrange([reference_audio, input_encoder_audio], 'i b d n -> (b i) d n')
             encoder_input_istft = rearrange(encoder_input_istft, 'b d n -> d (b n)')
 
-            # path di salvataggio
+            # output paths
             try:
                 data_dir = os.path.join(
                     trainer.logger.save_dir, logger_project_name(trainer.logger),
@@ -672,10 +672,9 @@ class AutoencoderValDemoCallback(pl.Callback):
                 filename_input_encoder_istft = os.path.join(data_dir, f'{self.save_basename}_input_encoder_istft_ep{epoch:04d}.wav')
                 
 
-            # Salva in float32 per evitare clipping
-            # Pre-normalize per evitare clipping: scala se il picco supera 1.0
+            # Saved as float32; rescaled if the peak exceeds 1.0, to avoid clipping
             eps = 1e-9
-            # assicurati che tutti i tensori stiano sullo stesso device prima di fare torch.stack()
+            # every tensor on the same device before torch.stack()
             device = getattr(pl_module, "device", None) or (reference_audio.device if torch.is_tensor(reference_audio) else torch.device("cpu"))
             peak_real = (reference_audio.abs().max().detach().to(device) if torch.is_tensor(reference_audio) else torch.tensor(0.0, device=device))
             peak_dec = (decoded.abs().max().detach().to(device) if torch.is_tensor(decoded) else torch.tensor(0.0, device=device))
@@ -686,11 +685,11 @@ class AutoencoderValDemoCallback(pl.Callback):
                 reals_fakes = reals_fakes * scale
                 encoder_input_istft = encoder_input_istft * scale
 
-            # Converti a float32 per il salvataggio
+            # float32 for saving
             wav_reals_fakes_f32 = reals_fakes.detach().to(torch.float32).cpu()
             wav_input_encoder_istft_f32 = encoder_input_istft.detach().to(torch.float32).cpu()
 
-            # Prova prima torchaudio (TorchCodec), poi fallback a soundfile/scipy
+            # torchaudio (TorchCodec) first, then soundfile/scipy
             saved_enc = _save_audio_with_fallback(filename_input_encoder_istft, wav_input_encoder_istft_f32, sr)
             saved_rec = _save_audio_with_fallback(filename, wav_reals_fakes_f32, sr)
 

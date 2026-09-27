@@ -20,7 +20,6 @@ import torch
 import torchaudio
 
 from sage import SAGE
-from sage.inference import pad_for_swin
 
 
 def load_audio(path: Path, sample_rate: int, channels: int) -> torch.Tensor:
@@ -58,8 +57,7 @@ def main() -> None:
 
     elif args.command == "encode":
         wav = load_audio(args.input, sr, channels)
-        hop = codec.autoencoder._stft_config.hop_length
-        padded, n = pad_for_swin(wav.unsqueeze(0), hop, len(codec.autoencoder.encoder.depths) - 1)
+        padded, n = codec.pad(wav.unsqueeze(0))
         latent = codec.encode(padded, deterministic=args.deterministic).cpu()
         torch.save({"latent": latent, "num_samples": n, "padded_samples": padded.shape[-1], "sample_rate": sr},
                    args.output)

@@ -366,7 +366,7 @@ class SAGE:
 
         self.varlen_mode = str(load_config().mode) if varlen is None else str(varlen)
         self.varlen_blocks = enable_varlen(self.autoencoder, resolve(self.varlen_mode))
-        ok(f"varlen={self.varlen_mode} su {self.varlen_blocks} blocchi collassati",
+        ok(f"varlen={self.varlen_mode} on {self.varlen_blocks} collapsed blocks",
            prefix="CHECKPOINT")
 
     @staticmethod
@@ -423,11 +423,21 @@ class SAGE:
             debug=debug,
         )
 
+    def pad(self, audio: torch.Tensor) -> tuple[torch.Tensor, int]:
+        """Right-pad a ``(B, C, N)`` waveform to the frame grid that :meth:`encode` needs.
+
+        Returns ``(padded, N)``. Decode with ``decode(z, target_length=padded.shape[-1])``
+        and keep ``[..., :N]`` to get back the input length, as :meth:`reconstruct` does.
+        """
+        hop = self.autoencoder._stft_config.hop_length
+        num_downsamples = len(self.autoencoder.encoder.depths) - 1
+        return pad_for_swin(audio, hop, num_downsamples)
+
     @torch.no_grad()
     def reconstruct(self, audio: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
         """Encode and decode a waveform of any length, exactly as the paper's evaluators do.
 
-        The input is right-padded with :func:`pad_for_swin`, encoded (sampled ``z`` by default,
+        The input is right-padded with :meth:`pad`, encoded (sampled ``z`` by default,
         as in the reported reconstruction metrics; ``deterministic=True`` uses the posterior
         mean), decoded, and trimmed back to the input length.
 
@@ -438,24 +448,10 @@ class SAGE:
         """
         batched = audio.dim() == 3
         x = audio if batched else audio.unsqueeze(0)
-        hop = self.autoencoder._stft_config.hop_length
-        num_downsamples = len(self.autoencoder.encoder.depths) - 1
-        padded, n = pad_for_swin(x, hop, num_downsamples)
+        padded, n = self.pad(x)
         z = self.encode(padded, deterministic=deterministic)
         rec = self.decode(z, target_length=padded.shape[-1])[..., :n]
         return rec if batched else rec[0]
 
     def __repr__(self) -> str:
         return f"SAGE(device={self.device}, sr={self.sample_rate})"
-
-
-class EuleroEncodeDecode(SAGE):
-    """Deprecated name of :class:`SAGE`, kept so pre-release scripts keep working.
-
-    ``EuleroEncodeDecode(path, ...)`` is equivalent to ``SAGE.from_checkpoint(path, ...)``.
-    """
-
-    def __init__(self, *args, **kwargs) -> None:
-        warnings.warn("EuleroEncodeDecode is deprecated; use sage.SAGE.from_checkpoint(...)",
-                      DeprecationWarning, stacklevel=2)
-        super().__init__(*args, **kwargs)

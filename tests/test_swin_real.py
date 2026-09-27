@@ -1,6 +1,5 @@
 # ===============================================================
-# Phase 3 test suite — SAGEEncoder / SAGEDecoder (Exp 0, real-valued).
-# Covers U1–U12 (unit) and I1–I5 (integration) from EXPERIMENTS.md §5.
+# SAGEEncoder / SAGEDecoder (real-valued): unit tests U1–U12 and integration tests I1–I5.
 #
 # Markers
 #   (none)        fast: individual building blocks, small tensors, < 1 s each

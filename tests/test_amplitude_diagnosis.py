@@ -1,5 +1,5 @@
 """
-Diagnostic test: verify that the MRSTFT loss used by C-VAE is scale-invariant
+Diagnostic test: verify that the MRSTFT loss is scale-invariant
 and cannot correct amplitude mismatch.
 
 This test proves that the combination of SpectralConvergence + log-magnitude

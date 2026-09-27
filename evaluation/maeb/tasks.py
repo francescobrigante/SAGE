@@ -29,8 +29,8 @@ MAEB_ORIGINAL_MUSIC = [
     "GTZANGenreClustering",     # genre clustering
     "MusicGenreClustering",     # genre clustering
     "GTZANAudioReranking",      # genre reranking
-    "NSynth",                   # instrument/timbre (note singole)
-    "JamAltArtistA2ARetrieval", # artist A2A retrieval (unica audio-only del core-30)
+    "NSynth",                   # instrument/timbre (single notes)
+    "JamAltArtistA2ARetrieval", # artist A2A retrieval (the only audio-only one of core-30)
 ]
 
 # MoisesDB-local tasks (chunks_30s).

@@ -173,7 +173,7 @@ class FIRFilter(torch.nn.Module):
 class SpectralConvergenceLoss(torch.nn.Module):
     """Spectral convergence ``‖|X|−|Y|‖_F / ‖|Y|‖_F`` with a guarded denominator.
 
-    **L5 (STEREO_COLLAPSE_DIAGNOSIS §11.4).** Under SAO's reversed argument chain
+    **Guarded denominator.** Under SAO's reversed argument chain
     ``y_mag`` is the RECONSTRUCTION, so the denominator vanishes exactly when the
     prediction collapses — the case this term exists to punish. Unguarded that is
     a division by zero (inf/NaN gradients). The floor keeps the penalty steep but
@@ -235,8 +235,8 @@ class STFTLoss(torch.nn.Module):
         perceptual_weighting: bool = False,
         scale_invariance: bool = False,
         eps: float = 1e-8,
-        sc_eps_rel: float = 1e-3,       # L5: floor del denominatore SC, relativo a ‖X‖
-        sc_eps_abs: float = 1e-12,      # L5: floor assoluto
+        sc_eps_rel: float = 1e-3,       # floor of the SC denominator, relative to ‖X‖
+        sc_eps_abs: float = 1e-12,      # absolute floor
         output: str = "loss",
         reduction: str = "mean",
         mag_distance: str = "L1",
@@ -381,7 +381,7 @@ class SumAndDifferenceSTFTLoss(torch.nn.Module):
     parallelogram identity, an L2 on complex STFTs is a fixed multiple of the
     L/R L2, so M/S is a no-op there and the decoder is free to collapse the
     (low-energy) side channel. Replicating SAO's intentionally reversed
-    AuralossLoss chain (``stable_audio_baseline .../losses/losses.py:111``),
+    AuralossLoss chain (stable-audio-tools, ``training/losses/losses.py``),
     the internal STFT losses receive ``input=target, target=pred`` → spectral
     convergence normalizes by the RECONSTRUCTION, ``SC = ‖|X̂|−|X|‖/‖|X̂|‖``:
     a quasi-mono target (S≈0) yields a bounded ≈1 term (no spike, no clamp
@@ -402,9 +402,9 @@ class SumAndDifferenceSTFTLoss(torch.nn.Module):
         perceptual_weighting: bool = True,  # A-weighting FIR pre-filter (SAO default)
         w_ms: float = 1.0,                  # weight of the mid/side branch (SAO: 1.0)
         w_lr: float = 1.0,                  # weight of the left/right branch (SAO: 1.0 → 0.5 each)
-        w_mid: Optional[float] = None,      # L1: overrides the Mid half of the M/S branch
-        w_side: Optional[float] = None,     # L1: overrides the Side half of the M/S branch
-        side_gate_db: Optional[float] = None,   # L2: skip the Side term below this S/M ratio
+        w_mid: Optional[float] = None,      # overrides the Mid half of the M/S branch
+        w_side: Optional[float] = None,     # overrides the Side half of the M/S branch
+        side_gate_db: Optional[float] = None,   # skip the Side term below this S/M ratio
         gate_eps: float = 1e-12,
         **kwargs,
     ):
@@ -423,7 +423,7 @@ class SumAndDifferenceSTFTLoss(torch.nn.Module):
         )
         self.w_ms = w_ms                        # mid/side branch weight (legacy knob)
         self.w_lr = w_lr                        # left/right branch weight
-        # L1 — the M/S branch is `w_ms · ½(mid + side)`, so each half defaults to
+        # Mid/Side weights — the M/S branch is `w_ms · ½(mid + side)`, so each half defaults to
         # `w_ms/2`: leaving w_mid/w_side unset reproduces SAO bit-for-bit, while
         # setting them addresses Mid and Side independently. Side-only is
         # `w_lr=0, w_mid=0, w_side=1` — the only configuration whose gradient on
@@ -431,7 +431,7 @@ class SumAndDifferenceSTFTLoss(torch.nn.Module):
         # the only one that cannot move FAD/CLAP/CDPAM, which see the Mid alone.
         self.w_mid = 0.5 * w_ms if w_mid is None else w_mid
         self.w_side = 0.5 * w_ms if w_side is None else w_side
-        # L2 — a target whose Side sits this far below its Mid carries no stereo
+        # Near-mono gate — a target whose Side sits this far below its Mid carries no stereo
         # information (mono duplicated to 2 channels: 7.0 % of the training
         # corpus exactly, 10.4 % below −40 dB). There the log-magnitude term
         # actively teaches |Ŝ| → 0, i.e. it teaches the collapse. Skip, don't
@@ -461,7 +461,7 @@ class SumAndDifferenceSTFTLoss(torch.nn.Module):
                    m_t: torch.Tensor) -> torch.Tensor:
         """Side MR-STFT, restricted to the items whose target actually has a Side.
 
-        L2: items below ``side_gate_db`` are dropped from the batch rather than
+        Items below ``side_gate_db`` are dropped from the batch rather than
         down-weighted, so the term is the mean over the items that carry stereo
         information — its magnitude stays comparable instead of being diluted by
         the mono ones.

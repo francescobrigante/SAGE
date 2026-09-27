@@ -5,6 +5,7 @@
 # ===============
 import importlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -12,8 +13,11 @@ import pytest
 from sage.compat import LEGACY_TARGETS, upgrade_class_path, upgrade_model_config
 
 REPO = Path(__file__).resolve().parents[1]
-PAPER_CKPT = REPO / "sage_release_context" / "SAGE_FTe992.ckpt"
-STATE_KEYS = REPO / "sage_release_context" / "sage_golden" / "golden_local" / "state_dict_keys.json"
+# The paper's TRAINING checkpoint (optimizer states and loss buffers, for the resume test) and the
+# parameter names of a golden reference; both live outside the repository.
+PAPER_CKPT = Path(os.environ.get("SAGE_TRAIN_CKPT", REPO / "sage_release_context" / "SAGE_FTe992.ckpt"))
+STATE_KEYS = Path(os.environ.get("SAGE_GOLDEN_REF", REPO / "sage_release_context" / "sage_golden" / "golden_local")) \
+    / "state_dict_keys.json"
 
 
 def _resolve(path):

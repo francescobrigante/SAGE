@@ -127,54 +127,54 @@ def make_pad_mask(lengths, xs=None, length_dim=-1, maxlen=None):
 
 
 def to_torch_tensor(x):
-    """Converte in torch.Tensor (reale o complesso) da numpy/torch o da dict {'real','imag'}."""
-    # numpy.ndarray -> torch.Tensor (supporta anche dtype complessi di numpy)
+    """Convert to a (real or complex) torch.Tensor from numpy/torch or from a dict {'real', 'imag'}."""
+    # numpy.ndarray -> torch.Tensor (numpy complex dtypes included)
     if isinstance(x, np.ndarray):
         return torch.from_numpy(x)
 
-    # dict {'real': ..., 'imag': ...} -> tensore complesso nativo
+    # dict {'real': ..., 'imag': ...} -> native complex tensor
     if isinstance(x, dict):
         if "real" not in x or "imag" not in x:
-            raise ValueError("serve un dict con chiavi 'real' e 'imag', ricevuto: {}".format(list(x)))
+            raise ValueError("expected a dict with keys 'real' and 'imag', got: {}".format(list(x)))
         real = to_torch_tensor(x["real"])
         imag = to_torch_tensor(x["imag"])
         if not isinstance(real, torch.Tensor) or not isinstance(imag, torch.Tensor):
-            raise ValueError("valori 'real' e 'imag' non convertibili in torch.Tensor")
+            raise ValueError("'real' and 'imag' cannot be converted to torch.Tensor")
 
-        # se arrivano complessi, usa solo la parte reale
+        # complex inputs: keep their real part
         if real.is_complex():
             real = real.real
         if imag.is_complex():
             imag = imag.real
 
-        # broadcast shape e armonizza dtype
+        # broadcast the shapes and harmonise the dtypes
         real, imag = torch.broadcast_tensors(real, imag)
 
-        # impone float32/float64 perché torch.complex richiede input floating
+        # float32/float64: torch.complex needs floating-point inputs
         def _to_float(t):
             if t.dtype in (torch.float64, torch.double):
                 return t.to(torch.float64)
-            # per qualsiasi altro dtype forza float32
+            # any other dtype becomes float32
             return t.to(torch.float32)
 
         real = _to_float(real)
         imag = _to_float(imag)
 
-        # se uno è float64, porta entrambi a float64 per ottenere complex128
+        # if either is float64, both become float64 (complex128)
         tgt = torch.float64 if (real.dtype is torch.float64 or imag.dtype is torch.float64) else torch.float32
         real = real.to(tgt)
         imag = imag.to(tgt)
 
         return torch.complex(real, imag)
 
-    # torch.Tensor -> restituito così com'è (reale o complesso)
+    # torch.Tensor -> returned as is (real or complex)
     if isinstance(x, torch.Tensor):
         return x
 
-    # tipi non supportati
+    # unsupported types
     raise ValueError(
-        "x deve essere numpy.ndarray, torch.Tensor oppure dict "
-        "{'real': <tensor/ndarray>, 'imag': <tensor/ndarray>}, ma è {}".format(type(x))
+        "x must be a numpy.ndarray, a torch.Tensor or a dict "
+        "{'real': <tensor/ndarray>, 'imag': <tensor/ndarray>}, got {}".format(type(x))
     )
 
 
@@ -275,10 +275,10 @@ def rename_state_dict(
 
 def align_freq_bins(s_hat: torch.Tensor, s_ref: torch.Tensor) -> torch.Tensor:
     """
-    Rende compatibili i tensori spettrali lungo l'asse delle frequenze:
-    - se differenza di 1 bin, aggiunge/toglie l'ultimo bin (Nyquist)
-    - altrimenti solleva errore
-    Supporta tensori complessi o reali; assume F è l'asse -2.
+    Align two spectral tensors along the frequency axis:
+    - one bin apart: add/drop the last (Nyquist) bin
+    - otherwise raise
+    Real or complex tensors; F is axis -2.
     """
     Fh = s_hat.shape[-2]
     Fr = s_ref.shape[-2]
@@ -289,12 +289,12 @@ def align_freq_bins(s_hat: torch.Tensor, s_ref: torch.Tensor) -> torch.Tensor:
             pad_shape = list(s_hat.shape)
             pad_shape[-2] = 1
             pad = torch.zeros(pad_shape, dtype=s_hat.dtype, device=s_hat.device)
-            return torch.cat([s_hat, pad], dim=-2)  # ripristina Nyquist
+            return torch.cat([s_hat, pad], dim=-2)  # restore the Nyquist bin
         else:
-            return s_hat[..., :Fr, :]  # rimuove Nyquist extra
+            return s_hat[..., :Fr, :]  # drop the extra Nyquist bin
     raise ValueError(
         f"Spectrogram freq dim mismatch > 1: pred {Fh} vs target {Fr}. "
-        "Controlla n_fft/hop oppure normalizza l'output del decoder."
+        "Check n_fft/hop or normalise the decoder output."
     )
 
 

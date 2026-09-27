@@ -1,6 +1,6 @@
 # ===============
-# Tests for transformer_sat.ContinuousTransformer + AdaLN global-cond in
-# TransformerBlock (LATENT_ALIGNMENT_PLAN Fase 6 backbone). Verifies backward
+# Tests for sage.nn.transformer.ContinuousTransformer + AdaLN global-cond in
+# TransformerBlock (latent DiT backbone). Verifies backward
 # compatibility (no global_cond → unchanged path), shapes, AdaLN effect, and grads.
 # ===============
 import torch

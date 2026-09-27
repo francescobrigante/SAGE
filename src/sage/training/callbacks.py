@@ -79,7 +79,7 @@ class ModelInfoLogger(pl.Callback):
 
         # Save JSON to disk
         try:
-            # prova a usare la cartella di logging; fallback alla root di lavoro
+            # the logger's folder if any, else the run folder
             base_dir = Path(getattr(trainer.logger, "save_dir", "") or trainer.default_root_dir or ".")
             base_dir.mkdir(parents=True, exist_ok=True)
             out_path = base_dir / self.filename
@@ -89,7 +89,7 @@ class ModelInfoLogger(pl.Callback):
             warn(f"ModelInfoLogger: not able to save JSON ({type(e).__name__}: {e})", prefix="TRAINER")
             out_path = None
 
-        # logga su W&B (se presente)
+        # log to W&B (if used)
         if isinstance(trainer.logger, WandbLogger):
             try:
                 run = trainer.logger.experiment

@@ -804,7 +804,7 @@ class SideComplexMSE(ComplexMSE):
     the existing term *does* contain the Side's phase error. It is not an
     information problem, it is a weighting one: with the Side 12.4 dB below the
     Mid it is **6.0 % of the energy**, hence ~6 % of the gradient, and at ×64
-    compression discarding it is the rate-distortion optimum (§4.2, §5). Adding
+    compression discarding it is the rate-distortion optimum. Adding
     ``λ`` on the Side half turns the total into ``MSE(M) + (1+λ)·MSE(S)``, which
     is *not* a rescaling of the original — it is genuinely new gradient.
 
@@ -812,11 +812,11 @@ class SideComplexMSE(ComplexMSE):
     log-magnitude: rotating ``arg(S)`` by 90° at fixed magnitude moves ``d_width``
     by 4.8e-09 and ``d_pan`` by 0.715. A magnitude loss restores the Side's energy
     with whatever phase is cheapest — measured: every M/S arm fixed the level and
-    left ``d_pan`` pinned at the mono null (§1.2). A complex MSE constrains phase.
+    left ``d_pan`` pinned at the mono null. A complex MSE constrains phase.
 
     **Mid-orthogonal by construction.** The term depends only on the prediction's
     Side, so ∂L/∂L̂ = −∂L/∂R̂ and the projection onto M = L+R cancels exactly —
-    FAD/CLAP/CDPAM measure the Mid alone (§4.4) and cannot be moved.
+    FAD/CLAP/CDPAM measure the Mid alone and cannot be moved.
 
     Args:
         normalize: divide by ``‖S‖²`` per item. Scale-free, so quiet-Side items

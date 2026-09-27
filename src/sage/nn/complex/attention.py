@@ -226,7 +226,7 @@ class CMultiHeadedAttention(nn.Module):
 
 def print_cuda_mem(tag: str = ""):
     if not torch.cuda.is_available():
-        print(f"[{tag}] CUDA non aavailable")
+        print(f"[{tag}] CUDA not available")
         return
     device = torch.device("cuda:0")
     alloc = torch.cuda.memory_allocated(device) / 1024**2
@@ -253,7 +253,7 @@ if __name__ == "__main__":
         n_feat=d_model,
         dropout_rate=dropout,
         is_complex=True,
-        attention_dtype=torch.bfloat16,  # se vuoi testare bf16
+        attention_dtype=torch.bfloat16,  # to test bf16
     ).to(device)
 
     flex_backend = "flex_attention (optimized kernels)" if flex_attention.__module__.startswith(
@@ -268,7 +268,7 @@ if __name__ == "__main__":
     mask = torch.ones(B, 1, L_k, dtype=torch.int32, device=device)
     mask[:, :, -2:] = 0  # mask last two key positions to test padding logic
 
-    # opzionale: pulisci picco precedente
+    # optional: reset the previous peak
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats(device)
 

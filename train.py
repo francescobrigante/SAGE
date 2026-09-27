@@ -50,10 +50,9 @@ from sage.utils.model_info import extract_model_config
 from sage.utils.config_guards import check_cac_consistency
 
 class WandbConfigLogger:
-    """Utility per caricare l'intera cartella di configurazione Hydra su W&B.
-    - Non crea copie locali dei file
-    - Può loggare i contenuti testuali oppure caricare i file come artifact
-    - Di default usa un artifact (più pulito nel pannello W&B)
+    """Uploads the whole Hydra config folder to W&B.
+    - makes no local copies of the files
+    - logs them either as an artifact (default: cleaner in the W&B panel) or as text
     """
     def __init__(self, conf_root: Path, extensions: tuple = (".yaml", ".yml"), use_artifact: bool = True, log_text: bool = False):
         self.conf_root = conf_root
@@ -83,10 +82,10 @@ class WandbConfigLogger:
             return
         data = self.load_contents()
         if not data:
-            warn("Nessun file di configurazione trovato da loggare su W&B.", prefix="TRAINER")
+            warn("No config file found to log to W&B.", prefix="TRAINER")
             return
         rel_paths = list(data.keys())
-        # Aggiorna config con la lista dei file (non con il contenuto completo)
+        # Record the list of files in the run config (not their content)
         try:
             run.config.update({"hydra_conf_files": rel_paths}, allow_val_change=True)
         except Exception:
@@ -94,32 +93,32 @@ class WandbConfigLogger:
         if self.use_artifact:
             try:
                 artifact = wandb.Artifact("hydra-conf", type="config")
-                # Aggiunge i file originali senza copiarli altrove
+                # Add the original files, without copying them
                 for f in self.list_files():
                     artifact.add_file(str(f))
                 run.log_artifact(artifact)
-                ok(f"Caricata cartella conf come artifact W&B ({len(data)} files).", prefix="TRAINER")
+                ok(f"Config folder uploaded as a W&B artifact ({len(data)} files).", prefix="TRAINER")
             except Exception as e:
-                warn(f"Artifact upload fallito ({type(e).__name__}: {e}); provo fallback testuale.", prefix="TRAINER")
+                warn(f"Artifact upload failed ({type(e).__name__}: {e}); logging the configs as text.", prefix="TRAINER")
                 self._fallback_text(run, data)
         elif self.log_text:
             self._fallback_text(run, data)
         else:
-            # Se nessuna modalità è attiva logga solo la lista
+            # Neither mode enabled: log only the number of files
             run.log({"hydra/num_conf_files": len(data)}, commit=True)
-            ok("Loggata lista file di configurazione in W&B.", prefix="TRAINER")
+            ok("Config file list logged to W&B.", prefix="TRAINER")
 
     def _fallback_text(self, run, data: Dict[str, str]):
-        # Log dei contenuti come testo (potrebbe generare molte chiavi)
-        # Per evitare step fantasma usiamo un singolo dict + commit=True
+        # Log the contents as text (can create many keys)
+        # A single dict with commit=True avoids phantom steps
         text_payload = {f"conf_text/{k}": v for k, v in data.items()}
-        # Riduci dimensione se molto grande (evita saturare UI)
+        # Truncate large files (keeps the UI responsive)
         MAX_LEN = 4000
         for k, v in list(text_payload.items()):
             if len(v) > MAX_LEN:
                 text_payload[k] = v[:MAX_LEN] + "\n... [TRUNCATED]"
         run.log(text_payload, commit=True)
-        ok(f"Loggati contenuti YAML (fallback) su W&B ({len(data)} files).", prefix="TRAINER")
+        ok(f"YAML contents logged to W&B as text ({len(data)} files).", prefix="TRAINER")
 
 class TableOnlyModelSummary(pl.Callback):
     """Custom model summary that only prints the parameters table, discarding verbose stats."""
@@ -302,8 +301,8 @@ def main(cfg: DictConfig):
     
     if _is_rank0():
         if global_batch_size % num_devices != 0:
-            warn(f"Global batch size {global_batch_size} non divisibile per {num_devices} device. Batch size per-device arrotondato a {per_device_batch_size}.", prefix="DATA")
-        ok(f"Batch Size -> Globale: {global_batch_size} | Devices: {num_devices} | Per-Device: {per_device_batch_size}", prefix="DATA")
+            warn(f"Global batch size {global_batch_size} is not divisible by {num_devices} devices; per-device batch size rounded to {per_device_batch_size}.", prefix="DATA")
+        ok(f"Batch Size -> Global: {global_batch_size} | Devices: {num_devices} | Per-Device: {per_device_batch_size}", prefix="DATA")
 
     # Multi-corpus: our rotating sampler owns ordering + DDP sharding (read rank/world
     # from SLURM/dist now, since the process group isn't up yet at build time). It is
@@ -480,7 +479,7 @@ def main(cfg: DictConfig):
             except Exception as e:
                 warn(f"Could not persist W&B run_id ({e})", prefix="TRAINER")
         else:
-            # Evita l'inizializzazione di run W&B sugli altri rank, ma mantieni un logger compatibile
+            # No W&B run on the other ranks, but keep a compatible logger
             logger = TensorBoardLogger(save_dir=str(run_dir), name="lightning_logs", version=None)
     else:
         logger = TensorBoardLogger(save_dir=str(run_dir), name="lightning_logs", version=None)

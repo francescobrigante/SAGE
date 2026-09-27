@@ -185,7 +185,7 @@ class ComplexGroupNorm(nn.Module):
         super().__init__()
         assert num_channels > 0
         assert 1 <= num_groups <= num_channels and num_channels % num_groups == 0, \
-            "num_groups deve dividere num_channels"
+            "num_groups must divide num_channels"
         self.C = num_channels
         self.G = num_groups
         self.eps = eps
@@ -227,7 +227,7 @@ class ComplexGroupNorm(nn.Module):
             x = x.unsqueeze(2)
             original_3d = True
         elif x.dim() != 4:
-            raise ValueError(f"Shape non supportata: {x.shape}")
+            raise ValueError(f"Unsupported shape: {x.shape}")
 
         B, C, F, T = x.shape
         G = self.G
@@ -236,7 +236,7 @@ class ComplexGroupNorm(nn.Module):
         xg = x.view(B, G, Cg, F, T)
 
         if self.reduce_spatial:
-            reduce_dims = (2, 3, 4)  # canali gruppo + F + T (F=1 se era 3D)
+            reduce_dims = (2, 3, 4)  # group channels + F + T (F=1 for 3-D inputs)
             N = Cg * F * T
         else:
             reduce_dims = (2,)
@@ -277,7 +277,7 @@ class ComplexGroupNorm(nn.Module):
             )
 
         if original_3d:
-            y = y.squeeze(2)  # ritorna a (B,C,T)
+            y = y.squeeze(2)  # back to (B,C,T)
         return y
 
 class ComplexBatchNorm1d(_ComplexBatchNorm):

@@ -200,7 +200,7 @@ def mel_spectrogram(waveform, power=2.0, sample_rate=44100, db=False, n_fft=2048
         sample_rate=sample_rate, n_fft=n_fft, win_length=win_length, 
         hop_length=hop_length, center=True, pad_mode="reflect", power=power, 
         norm='slaney', n_mels=n_mels, mel_scale="htk")
-    # Assicura che la window/buffer del transform sia sullo stesso device del waveform
+    # the transform's window/buffers on the waveform's device
     mel_spectrogram_op = mel_spectrogram_op.to(waveform.device)
 
     melspec = mel_spectrogram_op(waveform.float())
@@ -224,7 +224,7 @@ def spectrogram_image(
         figsize=(5, 4), # size of plot (if justimage==False)
     ):
     "Modified from PyTorch tutorial https://pytorch.org/tutorials/beginner/audio_feature_extractions_tutorial.html"
-    # Se arriva un tensore su GPU, portalo su CPU per l'uso con NumPy/matplotlib
+    # a GPU tensor goes to the CPU for NumPy/matplotlib
     if isinstance(spec, torch.Tensor):
         spec = spec.detach().to('cpu')
 

@@ -10,14 +10,14 @@ from sage.nn.losses.signal import get_window
 
 
 class StereoCoherenceLoss(torch.nn.Module):
-    r"""**L6** — inter-channel coherence, the differentiable surrogate of ``d_pan``.
+    r"""Inter-channel coherence, the differentiable surrogate of ``d_pan``.
 
     Targets the normalised Mid/Side cross-correlation per TF bin::
 
         γ = 2·M·S* / (|M|² + |S|²)          γ ∈ ℂ,  |γ| ≤ 1
 
     A single complex number that carries both perceptually-validated metrics
-    (STEREO_COLLAPSE_DIAGNOSIS §11.3), verified numerically:
+    verified numerically:
 
     * ``Re(γ) = p``, i.e. **exactly** the pan the metric measures (err 3.6e-07).
     * ``|γ| = 2r/(1+r²)`` with ``r = |S|/|M|`` — monotone in the width.
@@ -45,7 +45,7 @@ class StereoCoherenceLoss(torch.nn.Module):
     ``pred``'s Mid is **detached**, so ∂L/∂M̂ is exactly zero and the gradient on
     L and R is antisymmetric — it cancels bit-for-bit in the M = L+R projection.
     That is what makes the term safe to graft onto a half-trained checkpoint:
-    FAD/CLAP/CDPAM see the Mid alone (§4.4) and cannot be moved by it.
+    FAD/CLAP/CDPAM see the Mid alone and cannot be moved by it.
     """
 
     def __init__(
@@ -55,7 +55,7 @@ class StereoCoherenceLoss(torch.nn.Module):
         win_lengths: List[int] = (2048, 1024, 512),
         window: str = "hann_window",
         detach_mid: bool = True,        # keeps ∂L/∂Mid exactly zero — see class docstring
-        side_gate_db: Optional[float] = None,   # L2: skip items whose target Side is negligible
+        side_gate_db: Optional[float] = None,   # skip items whose target Side is negligible
         eps: float = 1e-12,
         **kwargs,
     ):
@@ -82,7 +82,7 @@ class StereoCoherenceLoss(torch.nn.Module):
         m_t = (target[:, 0] + target[:, 1]) / 2 ** 0.5                 # (B, T)
         s_t = (target[:, 0] - target[:, 1]) / 2 ** 0.5                 # (B, T)
 
-        if self.side_gate_db is not None:                              # L2, item-level
+        if self.side_gate_db is not None:                              # item-level gate
             ratio_db = 10.0 * torch.log10(
                 s_t.square().sum(-1) / m_t.square().sum(-1).clamp_min(self.eps) + self.eps)
             keep = ratio_db >= self.side_gate_db                       # (B,)

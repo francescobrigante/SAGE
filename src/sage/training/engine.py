@@ -36,11 +36,11 @@ def select_training_phase(use_disc: bool, warmup_mode: str, disc_phase: bool, wa
 
 class AutoencoderEngine(nn.Module):
     """
-    - Costruisce discriminator, loss e metriche eval (se richieste)
-    - compute(batch, gen_step) -> dict con phase, loss totali e breakdown, loss_info
-    - compute_validation(batch) -> dict metriche validation (CPU scalari)
-    - configure_optimizers() -> ottimizzatori + scheduler dal config
-    Nessun backward/step/logging qui dentro.
+    - builds the discriminator, the losses and the validation metrics
+    - compute(batch, gen_step) -> dict with the phase, total losses, breakdown and loss_info
+    - compute_validation(batch) -> dict of validation metrics (CPU scalars)
+    - configure_optimizers() -> optimizers and schedulers from the config
+    No backward/step/logging in here.
     """
     def __init__(self, 
                  autoencoder: SAGEAutoencoder,
@@ -91,12 +91,12 @@ class AutoencoderEngine(nn.Module):
         self.force_input_mono = force_input_mono
         self.latent_mask_ratio = latent_mask_ratio
 
-        # Numero di canali del segnale audio (mono/stereo)
+        # Number of audio channels (mono/stereo)
         if audio_channels is None:
             audio_channels = 2  # default conservative
         self.audio_channels = int(audio_channels)
 
-        # usa il loss_config passato dal chiamante
+        # the loss_config given by the caller
         if loss_config is None:
             loss_config = {}
         if not isinstance(loss_config, dict):
@@ -293,7 +293,7 @@ class AutoencoderEngine(nn.Module):
 
             gen_total, gen_breakdown = self.loss_manager.losses_gen(loss_info)
 
-        # Stats per logging
+        # Stats for logging
         data_std = loss_info["encoder_input"].std()
         latent_std = loss_info["latents"].std()
         stats = {"data_std": data_std, "latent_std": latent_std}

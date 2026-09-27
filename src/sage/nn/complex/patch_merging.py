@@ -133,7 +133,7 @@ class ConvPatchDownsampleComplex(nn.Module):
                 **conv_kwargs,
             )
         else:
-            # Variante reale (se i token sono reali)
+            # Real variant (real tokens)
             self.conv = nn.Conv2d(
                 in_channels=dim,
                 out_channels=self.out_dim,
@@ -310,7 +310,7 @@ class ConvPatchUpsampleComplex(nn.Module):
                 **conv_kwargs,
             )
         else:
-            # Variante reale (se i token sono reali)
+            # Real variant (real tokens)
             self.conv = nn.ConvTranspose2d(
                 in_channels=dim,
                 out_channels=self.out_dim,

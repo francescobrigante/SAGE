@@ -11,7 +11,7 @@ def _nbytes(model: nn.Module) -> int:
     return sum(p.nelement() * p.element_size() for p in model.parameters())
 
 def extract_model_config(model: nn.Module) -> dict:
-    """Raccoglie informazioni chiave sulla configurazione del modello per logging."""
+    """Key facts about the model configuration, for logging."""
     try:
         modules = [f"{name}:{m.__class__.__name__}" for name, m in model.named_modules() if name]
     except Exception:
@@ -39,7 +39,7 @@ def extract_model_config(model: nn.Module) -> dict:
         "model_bytes": tot_bytes,
         "num_parameters_total": int(total_params),
         "num_parameters_trainable": int(trainable_params),
-        "modules": modules[:512],  # limita la lunghezza per non esagerare nei log
+        "modules": modules[:512],  # capped, to keep the logs short
         "repr": repr(model),
     }
 
@@ -48,7 +48,7 @@ from rich.console import Console
 from sage.utils.console import warn
 
 def log_compression_stats(wrapper, train_dl, console: Console) -> None:
-    """esegue un dummy pass sul primo batch per loggare dinamicamente la compression rate."""
+    """Run a dummy pass on the first batch to log the measured compression rate."""
     was_training = wrapper.training
     try:
         wrapper.eval()
@@ -95,7 +95,7 @@ def log_compression_stats(wrapper, train_dl, console: Console) -> None:
             console.print("")
 
     except Exception as e:
-        warn(f"Impossibile calcolare latent shape dinamica: {e}", prefix="TRAINER")
+        warn(f"Could not measure the latent shape: {e}", prefix="TRAINER")
     finally:
         if was_training:
             wrapper.train()

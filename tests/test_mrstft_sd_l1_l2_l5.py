@@ -1,8 +1,8 @@
 # =============================================================================
 # tests/test_mrstft_sd_l1_l2_l5.py
-# Unit tests for the three stereo-loss interventions of STEREO_COLLAPSE_DIAGNOSIS
-# §11.4: L1 (separable Mid/Side weights), L2 (near-mono skip gate) and L5
-# (guarded spectral-convergence denominator).
+# Unit tests for the three stereo options of SumAndDifferenceSTFTLoss: separable
+# Mid/Side weights (L1), the near-mono skip gate (L2) and the guarded
+# spectral-convergence denominator (L5).
 #
 # The load-bearing test is L1's: a Side-only configuration must put EXACTLY zero
 # gradient on the Mid. That is what makes the intervention safe to graft onto a

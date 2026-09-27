@@ -59,7 +59,7 @@ _INSTRUMENT_CLASSES = frozenset({
     "guitar",         # 222
     "piano",          # 110
     "percussion",     # 99
-    "other_keys",     # 110 (organ, synth — explicitly approved by user)
+    "other_keys",     # 110 (organ, synth)
 })
 
 

@@ -23,8 +23,14 @@ for p in (REPO, REPO / "src"):
 SR = 44100
 
 # Real paper checkpoint and local golden references (refactor-only; not part of the release).
-PAPER_CKPT = Path(os.environ.get("SAGE_CKPT", REPO / "sage_release_context" / "SAGE_FTe992.ckpt"))
+# The released checkpoint where the README puts it, else the training checkpoint of the development machine.
+PAPER_CKPT = Path(os.environ.get("SAGE_CKPT") or next(
+    (p for p in (REPO / "models" / "SAGE_FTe992.ckpt", REPO / "sage_release_context" / "SAGE_FTe992.ckpt") if p.is_file()),
+    REPO / "models" / "SAGE_FTe992.ckpt"))
 GOLDEN_DIR = Path(os.environ.get("SAGE_GOLDEN_DIR", REPO / "sage_release_context" / "sage_golden"))
+# Reference arrays checked bit for bit (default: generated on the development machine). To check
+# another machine, generate references there with the pre-release code and point SAGE_GOLDEN_REF at them.
+GOLDEN_REF = Path(os.environ.get("SAGE_GOLDEN_REF", GOLDEN_DIR / "golden_local"))
 
 # Tiny SAGE: the paper architecture (patch 64x1, window 4x32, depths 2-6-2, SwiGLU, XSA,
 # res-post norm) with a narrow embedding, so a training step takes about a second on CPU.

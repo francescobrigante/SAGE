@@ -6,7 +6,7 @@
 # TransformerResamplingBlock (strided encoder for discriminators).
 # Stripped from stable-audio-tools: no local cond, no flash-attn, no flex_attention,
 # no varlen — pure SDPA with optional sliding-window mask. AdaLN global-cond kept
-# (DiT timestep conditioning, LATENT_ALIGNMENT_PLAN Fase 6).
+# (DiT timestep conditioning).
 # =============================================================================
 
 import math
@@ -452,7 +452,7 @@ class ContinuousTransformer(nn.Module):
     """Minimal continuous transformer with optional AdaLN timestep/global conditioning.
 
     Reproduces only the subset of stable-audio-tools' ContinuousTransformer needed by
-    the flow-matching LatentDiT (LATENT_ALIGNMENT_PLAN Fase 6): in/out projections, a
+    a flow-matching latent DiT: in/out projections, a
     global-cond AdaLN path, and a stack of TransformerBlocks. Uses SAME's transformer
     primitives (differential attention + QK-norm + RoPE + DyT + GLU-FFN, zero-init
     branches — the TransformerBlock defaults, §2.2). The heavyweight features of the

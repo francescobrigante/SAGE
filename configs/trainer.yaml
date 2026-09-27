@@ -70,8 +70,7 @@ trainer:
   kl_annealing_epochs: 0
   terminate_on_nan: true
   detect_anomaly: false
-  # gradient_clip_val/algorithm rimossi: non supportati con manual optimization
-  # Il gradient clipping viene gestito manualmente in engine.py se necessario
+  # no gradient_clip_val/algorithm: Lightning does not support them with manual optimization
 
 wandb:
   project: sage

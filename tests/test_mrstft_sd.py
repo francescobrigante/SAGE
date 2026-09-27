@@ -1,5 +1,5 @@
 # ===============
-# SAO-faithful stereo M/S reconstruction-loss tests (STEREO_COLLAPSE fix).
+# SAO-faithful stereo M/S reconstruction-loss tests (L_SD).
 # Validates SumAndDifferenceSTFTLoss: numerical parity vs Stable Audio Open's
 # vendored auraloss, the crucial "not a no-op" side-channel sensitivity that a
 # complex-STFT MSE lacks, mono/near-silent safety, and loss_manager wiring.

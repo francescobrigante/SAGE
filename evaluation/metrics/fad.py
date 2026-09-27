@@ -33,12 +33,12 @@ def compute_incremental_stats(files: list[Path]) -> tuple[Optional[np.ndarray], 
         if not f.exists(): continue
         x = np.atleast_2d(np.load(f)).astype(np.float64)
         if len(x) == 0: continue
-        # Un solo vettore non-finito avvelena mu/cov in silenzio (il Side di un
-        # file quasi-mono e' ~0 e la normalizzazione per-input puo' dividere per
-        # ~0). Scarta le righe non finite invece di propagarle.
+        # A single non-finite vector silently poisons mu/cov (the Side of a
+        # near-mono file is ~0 and a per-input normalisation can divide by ~0):
+        # drop non-finite rows instead of propagating them.
         finite = np.isfinite(x).all(axis=1)
         if not finite.all():
-            warn(f"{(~finite).sum()}/{len(x)} embedding non finiti scartati: {f.name}")
+            warn(f"{(~finite).sum()}/{len(x)} non-finite embeddings dropped: {f.name}")
             x = x[finite]
             if len(x) == 0: continue
         
