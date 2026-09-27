@@ -9,6 +9,7 @@
 # =============================================================================
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -28,7 +29,12 @@ from evaluation.maeb.moisesdb_tasks import (
     MOISESDB_SUITE,
     get_moisesdb_tasks,
 )
+from evaluation.maeb import moisesdb_tasks
 from evaluation.maeb.moisesdb_tasks import _chunks_30s_root, _moisesdb_metadata_root
+
+# The entry point sets these from configs/paths; here the same environment variables.
+moisesdb_tasks.MOISESDB_ROOT = os.environ.get("MOISESDB_ROOT")
+moisesdb_tasks.MOISESDB_CHUNKS = os.environ.get("MOISESDB_CHUNKS_ROOT")
 
 
 def _moisesdb_available() -> bool:

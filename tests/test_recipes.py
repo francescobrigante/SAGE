@@ -10,7 +10,7 @@ import pytest
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
-import train  # noqa: F401  (registers the ${config:} / ${mul:} resolvers)
+import train  # noqa: F401  (registers the ${mul:} resolver)
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 

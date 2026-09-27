@@ -106,7 +106,7 @@ def write_music_like_wavs(folder: Path, n: int, seconds: float = 2.0, seed: int 
 def run_training(overrides: list[str], out_dir: Path) -> Path:
     """Compose the Hydra config exactly as `python train.py <overrides>` would, run it, return the newest checkpoint."""
     from hydra import compose, initialize_config_dir
-    import train                                                  # registers the ${config:} / ${mul:} resolvers
+    import train                                                  # registers the ${mul:} resolver
     import sage.training.loss_manager as loss_manager
 
     with initialize_config_dir(config_dir=str(REPO / "configs"), version_base=None):

@@ -7,7 +7,6 @@
 # =============================================================================
 from __future__ import annotations
 
-import os
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -80,7 +79,7 @@ class SAGEAdapter(CodecAdapter):
         from sage.inference import SAGE
 
         if checkpoint is None:
-            raise ValueError("model 'sage' needs a checkpoint (--checkpoint)")
+            raise ValueError("model 'sage' needs a checkpoint")
         self.device = torch.device(device)          # model + I/O device
         self.deterministic = deterministic          # posterior mean instead of sampled z
         self.codec = SAGE.from_checkpoint(checkpoint, device=self.device, varlen=varlen)
@@ -259,13 +258,9 @@ class StableAudioVAEAdapter(CodecAdapter):
                  subfolder: str = "vae", **_: Any):
         from diffusers import AutoencoderOobleck
 
-        # Prefer the local snapshot (downloaded via --local-dir to $FAST, works
-        # offline on compute nodes); fall back to the gated HF repo id online.
-        if model_dir is None:
-            local = os.path.join(os.environ.get("FAST", ""),
-                                 "models", "stable-audio-open-1.0")
-            model_dir = local if os.path.isdir(os.path.join(local, subfolder)) \
-                else "stabilityai/stable-audio-open-1.0"
+        # model_dir: a local snapshot of the HF repo (paths.sao_vae; offline compute nodes).
+        # None = the HF repo itself, which is gated: it needs a Hugging Face token.
+        model_dir = model_dir or "stabilityai/stable-audio-open-1.0"
         self.device = torch.device(device)          # model + I/O device
         self.model = (AutoencoderOobleck
                       .from_pretrained(model_dir, subfolder=subfolder)

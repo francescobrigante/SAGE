@@ -24,9 +24,9 @@ def test_reconstruction_evaluator_end_to_end(tiny_pretrain_ckpt, audio_dir, tmp_
     spectral = []
     for run in ("a", "b"):
         out = tmp_path / run
-        cmd = [sys.executable, "-m", "evaluation.reconstruction", "--model", "sage", "--protocol", "clips",
-               "--checkpoint", str(tiny_pretrain_ckpt), "--data-dir", str(audio_dir),
-               "--output-dir", str(out), "--device", "cpu", "--num-workers", "0", "--sdr-only"]
+        cmd = [sys.executable, "-m", "evaluation.reconstruction", "model=sage", "dataset=musiccaps",
+               f"checkpoint={tiny_pretrain_ckpt}", f"dataset.data_dir={audio_dir}",
+               f"output_dir={out}", "device=cpu", "num_workers=0", "sdr_only=true"]
         res = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=600)
         assert res.returncode == 0, res.stdout[-3000:] + res.stderr[-3000:]
         csvs = list(out.rglob("metrics/*.csv"))

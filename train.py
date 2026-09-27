@@ -36,12 +36,11 @@ from sage.training.initialization import collate_stft
 from sage.utils.reproducibility import configure_reproducibility
 from sage.utils.run_config import _is_rank0, get_rank, get_world_size, get_checkpoint_dir, resolve_run_name
 from sage.utils.console import ok, warn, err
+from sage.constants import DEFAULT_DATALOADER_TIMEOUT
 
 import logging
 logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 
-import config
-OmegaConf.register_new_resolver("config", lambda key: getattr(config, key))
 OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
 from sage.training.callbacks import DatasetEpochSetter, MultiCorpusEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger
@@ -337,7 +336,7 @@ def main(cfg: DictConfig):
         persistent_workers=(dl_cfg.get("persistent_workers", False) if num_workers > 0 else False),
         prefetch_factor=int(dl_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
         collate_fn=collate_stft,
-        timeout=0 if dl_cfg.get("num_workers", 0) == 0 else config.DEFAULT_DATALOADER_TIMEOUT,
+        timeout=0 if dl_cfg.get("num_workers", 0) == 0 else DEFAULT_DATALOADER_TIMEOUT,
     )
 
     eval_dl = None
@@ -461,7 +460,7 @@ def main(cfg: DictConfig):
     if use_wandb:
         if _is_rank0():
             logger = WandbLogger(
-                project=wandb_cfg.get("project", config.DEFAULT_WANDB_PROJECT),
+                project=wandb_cfg.get("project", "sage"),
                 name=run_name,
                 save_dir=str(run_dir),
                 log_model=wandb_cfg.get("log_model", "all"),
@@ -475,7 +474,7 @@ def main(cfg: DictConfig):
             except Exception as e:
                 warn(f"Upload dir conf on W&B failed ({type(e).__name__}: {e})", prefix="TRAINER")
             try:
-                run_id_file = config.PROJECT_ROOT / ".run_ids" / run_name
+                run_id_file = Path(get_original_cwd()) / ".run_ids" / run_name
                 run_id_file.parent.mkdir(parents=True, exist_ok=True)
                 run_id_file.write_text(logger.experiment.id)
             except Exception as e:

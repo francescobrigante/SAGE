@@ -153,6 +153,13 @@ def collect_clip_files(data_dir: Path, max_files: int) -> list[Path]:
     return files[:max_files] if max_files > 0 else files
 
 
+def set_metric_weights(paths) -> None:
+    """Point the FAD-CLAP and FAD-PANN embedders at the checkpoints of configs/paths."""
+    from evaluation.metrics import clap, fad
+    clap.CLAP_FAD_CHECKPOINT = paths.clap_fad
+    fad.PANN_CHECKPOINT = paths.pann
+
+
 def first_item(batch: list):
     """collate_fn of the batch-size-1 loaders. A module-level function, not a lambda, so the
     loader also works with worker processes under the spawn start method (macOS)."""

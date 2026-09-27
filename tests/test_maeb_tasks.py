@@ -46,18 +46,22 @@ def test_ensure_audio_only_raises_on_crossmodal():
         ensure_audio_only_tasks(tasks, source="x", encoder_label="SAGE")
 
 
-def test_select_default_is_the_fma_suite():
-    assert select_task_names(None) == FMA_SUITE
+def test_select_default_is_the_19_paper_tasks():
+    assert select_task_names(None) == FMA_SUITE + MOISESDB_SUITE + MAEB_ORIGINAL_MUSIC
+    assert sorted(select_task_names(None)) == sorted(ALLOWED_TASKS)
 
 
 def test_select_explicit_subset_wins():
-    assert select_task_names(["GTZANGenre"], moisesdb_only=True) == ["GTZANGenre"]
+    assert select_task_names(["GTZANGenre"], suite="moisesdb") == ["GTZANGenre"]
 
 
-def test_select_flags():
-    assert select_task_names(None, maeb_original_music_only=True) == MAEB_ORIGINAL_MUSIC
-    assert select_task_names(None, moisesdb_only=True) == MOISESDB_SUITE
-    assert select_task_names(None, with_moisesdb=True) == FMA_SUITE + MOISESDB_SUITE
+def test_select_suites():
+    assert select_task_names(None, suite="maeb_music") == MAEB_ORIGINAL_MUSIC
+    assert select_task_names(None, suite="moisesdb") == MOISESDB_SUITE
+    assert select_task_names(None, suite="fma") == FMA_SUITE
+    assert select_task_names(None, suite="fma_moisesdb") == FMA_SUITE + MOISESDB_SUITE
+    with pytest.raises(ValueError, match="Unknown suite"):
+        select_task_names(None, suite="all")
 
 
 def test_all_19_paper_tasks_are_allowed():

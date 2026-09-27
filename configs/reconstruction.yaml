@@ -1,0 +1,38 @@
+# =============================================================================
+# evaluation.reconstruction: reconstruction metrics of one codec on one evaluation set (Table 2).
+#
+#   python -m evaluation.reconstruction dataset=fma model=sage
+#   python -m evaluation.reconstruction dataset=musiccaps model=same-s
+#
+# dataset: fma | moisesdb_mix | moisesdb_stems | musiccaps | song_describer (configs/dataset/).
+# Data, weights and output locations come from configs/paths/. Any key below can be
+# set on the command line (`seed=1`, `compute_ms_metrics=true`, `paths.eval_output=...`).
+# =============================================================================
+defaults:
+  - paths: default
+  - dataset: null           # required: dataset=<name> (configs/dataset/)
+  - _self_
+  - override hydra/job_logging: none
+  - override hydra/hydra_logging: none
+
+model: ???                  # sage | same | same-s | sao-vae | codicodec | music2latent | identity (self-test)
+checkpoint: null            # sage only; null = paths.sage_checkpoint
+varlen: null                # sage only: variable-length attention preset (sage/model/swin/varlen.yaml); null = tri2
+deterministic: false        # sage only: decode the posterior mean instead of a sampled z (the paper samples z)
+seed: 0                     # the random parts (SAGE's z, SAME's noise, the CLAP crop of FAD-CLAP), re-seeded
+                            # for every file from this value and the file name
+output_dir: ${paths.eval_output}/recon_${dataset.name}
+name: null                  # output subfolder; null = the checkpoint name for sage, the model otherwise
+device: cuda                # falls back to the CPU without CUDA; under SLURM each task uses GPU SLURM_LOCALID
+num_workers: 4
+max_files: 0                # 0 = all
+skip_cdpam: false
+sdr_only: false             # only SDR / SI-SDR and the STFT and mel distances
+compute_ms_metrics: false   # also the stereo-image metrics (ms_metrics.csv, Table 7)
+resume: false               # skip the run if metrics/_done exists (files already scored are always skipped)
+merge: false                # only merge the per-task outputs into the final CSVs and FADs
+
+hydra:
+  output_subdir: null       # no .hydra/ folder: the run settings are kept in metrics/parts/run.json
+  run:
+    dir: .

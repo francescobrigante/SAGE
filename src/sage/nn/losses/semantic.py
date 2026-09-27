@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -59,7 +61,9 @@ class CLAPTeacher(nn.Module):
         # Initialize the CLAP module (HTSAT base architecture, without feature fusion for the music checkpoint)
         self.clap = laion_clap.CLAP_Module(enable_fusion=False, amodel='HTSAT-base')
         
-        # Load the downloaded checkpoint from $FAST
+        if not model_dir or not Path(model_dir).is_file():
+            raise FileNotFoundError(f"LAION-CLAP teacher checkpoint not found: {model_dir} "
+                                    "(set paths.clap_teacher, env CLAP_TEACHER_CKPT or SAGE_MODELS)")
         self.clap.load_ckpt(model_dir)
         self.clap.requires_grad_(False).eval()
         

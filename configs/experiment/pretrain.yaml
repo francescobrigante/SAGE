@@ -76,6 +76,7 @@ trainer:
         kl: 1.0e-4                    # L_KL
     semantic_distill:                 # L_sem: CLAP clip-level cosine distillation
       teacher_type: clap
+      teacher_checkpoint: ${paths.clap_teacher}   # LAION-CLAP music_audioset_epoch_15_esc_90.14.pt
       weights:
         distill: 1.0
       config:

@@ -1,0 +1,9 @@
+# Evaluation set of evaluation.reconstruction / build_references (training data is the `data` group).
+# Song Describer, 8,364 chunks of 10 s: a flat folder of .wav clips whose references
+# (embeddings/, stats_ours/) are written into it once by evaluation.build_references.
+name: song_describer
+protocol: clips
+data_dir: ${paths.song_describer}
+fma_csv: null
+extensions: null
+cache_dir: null

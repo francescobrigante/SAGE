@@ -3,12 +3,12 @@
 # The paper's tables from the outputs of the evaluation scripts, as markdown:
 #
 #   python -m evaluation.tables \
-#       --recon "FMA test=runs/recon_fma" --recon "MoisesDB mixtures=runs/recon_moisesdb_mix" \
-#       --maeb maeb_results/SAGE_FTe992 --maeb maeb_results/same-s
+#       --recon "FMA test=results/recon_fma" --recon "MoisesDB mixtures=results/recon_moisesdb_mix" \
+#       --maeb results/maeb/SAGE_FTe992 --maeb results/maeb/same-s
 #
 #   --recon LABEL=DIR   one evaluation set; DIR/<model>/metrics/ as written by
 #                       evaluation.reconstruction → Table 2, plus the stereo-image
-#                       metrics when ms_metrics.csv exists (--compute-ms-metrics)
+#                       metrics when ms_metrics.csv exists (compute_ms_metrics=true)
 #   --maeb DIR          the MAEB output of one encoder (evaluation.maeb) → Table 9
 #                       and the block averages of Table 4; a directory named
 #                       "clap" is the oracle row, shown but never bolded

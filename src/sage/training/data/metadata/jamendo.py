@@ -14,14 +14,12 @@ the leakage-free training split. Mirrors the FMA provider contract.
 Usage in config:
     custom_metadata_module: "sage.training.data.metadata.jamendo"
     custom_metadata_kwargs:
-      split_tsv: ${config:JAMENDO_SPLIT_TSV}   # optional, defaults to JAMENDO_SPLIT_TSV
+      split_tsv: ${paths.jamendo_split_tsv}
 """
 
 import os
 from pathlib import Path
 from typing import List, Optional
-
-from config import JAMENDO_SPLIT_TSV
 
 # Column layout of the autotagging TSVs (tab-separated, one header row):
 #   TRACK_ID  ARTIST_ID  ALBUM_ID  PATH  DURATION  TAGS...
@@ -37,14 +35,15 @@ def get_audio_files(
 
     Args:
         audio_dir: Root directory of the Jamendo audio (``XX/ID.mp3`` layout).
-        split_tsv: Path to an autotagging split TSV; defaults to ``JAMENDO_SPLIT_TSV``.
+        split_tsv: Path to an autotagging split TSV (paths.jamendo_split_tsv in the Hydra config).
 
     Returns:
         Sorted list of absolute ``.mp3`` file paths (one per track in the split).
     """
-    tsv_path = split_tsv or JAMENDO_SPLIT_TSV
+    tsv_path = split_tsv
     if tsv_path is None or not os.path.exists(tsv_path):
-        raise FileNotFoundError(f"Jamendo split TSV not found at: {tsv_path}")
+        raise FileNotFoundError(f"Jamendo split TSV not found at: {tsv_path} "
+                                "(set paths.jamendo_split_tsv, env JAMENDO_SPLIT_TSV)")
 
     audio_root = Path(audio_dir)
     files: List[str] = []

@@ -13,7 +13,7 @@ from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 from torch import nn
 
-import train  # noqa: F401  (registers the ${config:} / ${mul:} resolvers)
+import train  # noqa: F401  (registers the ${mul:} resolver)
 import sage.training.loss_manager as lm_mod
 from sage.compat import LEGACY_STATE_KEYS, drop_legacy_state_keys
 from sage.nn.bottleneck import VAEBottleneck

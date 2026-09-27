@@ -1,6 +1,6 @@
 # Trainer + optimization + logging + losses + seed/device
-seed: ${config:DEFAULT_SEED}
-device: ${config:DEFAULT_DEVICE}
+seed: 94
+device: auto              # Lightning accelerator: auto | cuda | mps | cpu
 
 optimizer:
   _target_: torch.optim.AdamW
@@ -74,7 +74,7 @@ trainer:
   # Il gradient clipping viene gestito manualmente in engine.py se necessario
 
 wandb:
-  project: ${config:DEFAULT_WANDB_PROJECT}
+  project: sage
   name: null                # run name; null -> derived from the model and a hash of the loss weights
   use_wandb: true
   log_model: false          # disabled: checkpoints are already saved in runs/checkpoints/ via ModelCheckpoint

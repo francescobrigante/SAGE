@@ -36,3 +36,10 @@ wandb/
 # monitor state files + stereo ablation data cache
 .mon_*
 evaluation/stereo_diagnosis/ablation/
+
+# Machine-specific paths and the default data/output folders of configs/paths/default.yaml
+configs/paths/local.yaml
+/models/
+/results/
+/eval_cache/
+/filelist_cache/

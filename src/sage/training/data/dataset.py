@@ -18,7 +18,7 @@ from sage.training.data.file_scanning import fast_scandir
 from sage.training.data.metadata.providers import load_file_provider_fn
 from sage.training.data.audio_probe import pick_probe_fn
 
-from config import (
+from sage.constants import (
     DEFAULT_SEED,
     DEFAULT_MAX_RETRIES_PER_SAMPLE,
     DEFAULT_MAX_PAD_RATIO,

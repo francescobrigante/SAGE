@@ -9,7 +9,7 @@
 
 Seven tasks evaluated on the MoisesDB v0.1 dataset (240 multi-track songs,
 WAV 44.1 kHz stereo, pre-processed 30-second chunks in
-``$FAST/datasets/moisesdb/chunks_30s/``):
+``chunks_30s/``):
 
 * ``MoisesDBGenreClassification``      — genre classification (≥5 tracks/genre → 6 classes, CV)
 * ``MoisesDBGenreClustering``          — genre clustering
@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import random
 from functools import lru_cache
 from pathlib import Path
@@ -47,7 +46,7 @@ _ARTIST_MIN_TRACKS_RETRIEVAL = 3        # artists with ≥3 tracks for retrieval
 _ARTIST_MIN_TRACKS_CLUSTER = 2          # artists with ≥2 tracks for clustering
 _N_PAIRS = 1000                         # pair classification: 500 pos + 500 neg
 _RERANK_N_POS, _RERANK_N_NEG = 2, 5    # reranking candidates per query
-_SEED = 94                              # config.DEFAULT_SEED
+_SEED = 94                              # sage.constants.DEFAULT_SEED
 _SR = 44100                             # MoisesDB native sample rate
 
 # Instrument classification: only real, populous classes (≥45 samples).
@@ -68,7 +67,9 @@ _INSTRUMENT_CLASSES = frozenset({
 # Path resolution + data loading
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+# Set by evaluation.maeb from configs/paths (paths.moisesdb_root, paths.moisesdb_chunks).
+MOISESDB_ROOT: str | None = None
+MOISESDB_CHUNKS: str | None = None
 
 
 def _moisesdb_metadata_root() -> Path:
@@ -77,54 +78,18 @@ def _moisesdb_metadata_root() -> Path:
     Needed to read ``data.json`` per track for artist/genre/song metadata.
     Audio is loaded from ``chunks_30s/`` instead.
     """
-    import sys
-
-    if str(_REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(_REPO_ROOT))
-    import config
-
-    explicit = os.getenv("MOISESDB_ROOT")
-    if explicit:
-        p = Path(explicit)
-        if p.is_dir():
-            return p
-
-    default = config.FAST_DIR / "datasets" / "moisesdb" / "moisesdb_v0.1"
-    if default.is_dir():
-        return default
-
-    raise FileNotFoundError(
-        "MoisesDB metadata root not found. Set MOISESDB_ROOT env var or ensure "
-        "$FAST/datasets/moisesdb/moisesdb_v0.1 exists."
-    )
+    if MOISESDB_ROOT and Path(MOISESDB_ROOT).is_dir():
+        return Path(MOISESDB_ROOT)
+    raise FileNotFoundError(f"MoisesDB metadata root not found: {MOISESDB_ROOT} "
+                            "(set paths.moisesdb_root, env MOISESDB_ROOT, to moisesdb_v0.1/)")
 
 
 def _chunks_30s_root() -> Path:
-    """Resolve the MoisesDB chunks_30s audio directory.
-
-    Checks (in order): env var ``MOISESDB_CHUNKS_ROOT``, then
-    ``$FAST/datasets/moisesdb/chunks_30s``.
-    """
-    import sys
-
-    if str(_REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(_REPO_ROOT))
-    import config
-
-    explicit = os.getenv("MOISESDB_CHUNKS_ROOT")
-    if explicit:
-        p = Path(explicit)
-        if p.is_dir():
-            return p
-
-    default = config.FAST_DIR / "datasets" / "moisesdb" / "chunks_30s"
-    if default.is_dir():
-        return default
-
-    raise FileNotFoundError(
-        "MoisesDB chunks_30s dir not found. Set MOISESDB_CHUNKS_ROOT env var or "
-        "ensure $FAST/datasets/moisesdb/chunks_30s exists."
-    )
+    """The MoisesDB chunks_30s audio directory (MOISESDB_CHUNKS)."""
+    if MOISESDB_CHUNKS and Path(MOISESDB_CHUNKS).is_dir():
+        return Path(MOISESDB_CHUNKS)
+    raise FileNotFoundError(f"MoisesDB chunks_30s dir not found: {MOISESDB_CHUNKS} "
+                            "(set paths.moisesdb_chunks, env MOISESDB_CHUNKS_ROOT)")
 
 
 @lru_cache(maxsize=1)

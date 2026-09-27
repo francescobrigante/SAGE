@@ -28,8 +28,6 @@ dependencies = [
 # Training: both phases (pretraining with the CLAP teacher, decoder fine-tuning).
 train = [
     "lightning==2.6.0",
-    # TEMPORARY (phase F5 replaces it): the repo-root config.py reads data/model paths from .env.
-    "python-dotenv>=1.0.1",
     "wandb>=0.23.0",
     "descript-audio-codec>=1.0.0",   # `dac` + `audiotools`: DAC sub-discriminators, mel loss
     "laion-clap==1.1.7",             # frozen CLAP teacher (semantic distillation)
@@ -136,7 +134,7 @@ allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Repo root (train.py, config.py), src/ and evaluation/ are importable from every test.
+# Repo root (train.py, the evaluation package) and src/ are importable from every test.
 pythonpath = [".", "src"]
 markers = [
     "slow: tests that run the full 1024x128 encoder/decoder (deselect with '-m not slow')",

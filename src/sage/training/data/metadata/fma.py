@@ -23,7 +23,6 @@ from pathlib import Path
 from functools import lru_cache
 from typing import Optional, List
 
-from config import FMA_METADATA
 
 # FMA subsets are hierarchical: medium includes small, large includes medium+small
 _SUBSET_HIERARCHY: dict[str, list[str]] = {
@@ -57,12 +56,14 @@ def get_audio_files(
         audio_dir: Root directory of FMA audio files
         split: One of "training", "validation", "test"
         subset: One of "small", "medium", "large", or None for all
-        metadata_csv: Path to tracks.csv (uses default if not specified)
+        metadata_csv: Path to tracks.csv (paths.fma_metadata in the Hydra config)
     
     Returns:
         List of absolute file paths
     """
-    csv_path = metadata_csv or FMA_METADATA
+    if not metadata_csv:
+        raise ValueError("FMA metadata_csv is not set: set paths.fma_metadata (env FMA_METADATA) to fma_metadata/tracks.csv")
+    csv_path = metadata_csv
     df = _load_tracks_df(csv_path)
     
     # Filter by split

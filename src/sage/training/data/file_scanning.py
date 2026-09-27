@@ -6,7 +6,7 @@
 
 import os
 from typing import Union, List
-from config import DEFAULT_AUDIO_EXTENSIONS
+from sage.constants import DEFAULT_AUDIO_EXTENSIONS
 
 def fast_scandir(dir: str, ext: list) -> tuple[list[str], list[str]]:
     """

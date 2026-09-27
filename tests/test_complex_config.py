@@ -18,7 +18,7 @@ from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 from pathlib import Path
 
-import train  # noqa: F401  (registers ${mul:} / ${config:} resolvers)
+import train  # noqa: F401  (registers the ${mul:} resolver)
 
 from sage.model.encoder import SAGEEncoder
 from sage.model.decoder import SAGEDecoder

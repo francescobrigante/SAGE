@@ -35,7 +35,7 @@ LOSS_SCHEMA = {
     "mrstft_sd": {"weights": {"mrstft_sd": None}, "config": None},                           # L_SD
     "bottleneck": {"weights": {"kl": None}},                                                 # L_KL
     "semantic_distill": {"weights": {"distill": None}, "config": None,                       # L_sem
-                         "teacher_type": None, "detach_warmup_steps": None},
+                         "teacher_type": None, "teacher_checkpoint": None, "detach_warmup_steps": None},
     "discriminator": {"type": None, "config": None,                                          # L_adv, L_fm
                       "weights": {"adversarial": None, "feature_matching": None}},
     "extra": None,                                                                           # experimental losses
@@ -154,7 +154,6 @@ class LossManager(nn.Module):
         # L_sem: clip-level cosine distillation of the latent onto LAION-CLAP
         sem_cfg = loss_config.get("semantic_distill")
         if sem_cfg and sem_cfg["weights"]["distill"] > 0.0:
-            import config as _root_config
             distill_cfg = dict(sem_cfg.get("config") or {})
             warmup = sem_cfg.get("detach_warmup_steps", 8334)   # generator updates (paper s0)
             latent_dim = int(distill_cfg.pop("latent_dim"))
@@ -163,10 +162,7 @@ class LossManager(nn.Module):
             if teacher_type != "clap":
                 raise ValueError(f"semantic_distill.teacher_type={teacher_type!r}: only 'clap' is supported")
             self.distill_proj = nn.Linear(latent_dim, proj_dim)   # → aux_parameters() → opt_aux
-            self.clap_teacher = CLAPTeacher(
-                str(_root_config.MODELS_DIR / "LAION_CLAP" / "music_audioset_epoch_15_esc_90.14.pt"),
-                src_sr=self.sample_rate
-            )
+            self.clap_teacher = CLAPTeacher(sem_cfg.get("teacher_checkpoint"), src_sr=self.sample_rate)
             gen_loss_modules.append(LatentCosineDistillLoss(      # (B,512) global CLAP embedding
                 self.distill_proj, self.clap_teacher, weight=sem_cfg["weights"]["distill"],
                 detach_warmup_steps=warmup, **distill_cfg))

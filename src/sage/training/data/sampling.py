@@ -35,7 +35,7 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import Sampler
 
-from config import DEFAULT_SEED
+from sage.constants import DEFAULT_SEED
 
 
 def _resolve_ddp(num_replicas: Optional[int], rank: Optional[int]) -> tuple[int, int]:

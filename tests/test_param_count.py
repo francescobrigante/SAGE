@@ -8,7 +8,7 @@ from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 from pathlib import Path
 
-import train  # noqa: F401  (registers the ${mul:} / ${config:} resolvers used by the model config)
+import train  # noqa: F401  (registers the ${mul:} resolver used by the model config)
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 PAPER_PARAMS = 104_629_380

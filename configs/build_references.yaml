@@ -1,0 +1,25 @@
+# =============================================================================
+# evaluation.build_references: reference embeddings and FAD statistics of a clip set,
+# built once per set before `evaluation.reconstruction` on it.
+#
+#   python -m evaluation.build_references dataset=musiccaps
+#
+# dataset: moisesdb_mix | moisesdb_stems | musiccaps | song_describer (configs/dataset/).
+# =============================================================================
+defaults:
+  - paths: default
+  - dataset: null           # required: dataset=<name> (configs/dataset/)
+  - _self_
+  - override hydra/job_logging: none
+  - override hydra/hydra_logging: none
+
+device: cuda
+num_workers: 8
+max_files: 0                # 0 = all
+resume: false               # keep the reference embeddings that already exist
+seed: 0                     # per-file seed of the 10 s crop LAION-CLAP takes of clips longer than 10 s (FAD-CLAP)
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

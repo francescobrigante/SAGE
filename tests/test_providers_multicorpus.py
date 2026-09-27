@@ -16,8 +16,12 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+from omegaconf import OmegaConf
+
 from sage.training.data.metadata import jamendo, m4singer
-import config
+
+# The corpus locations of configs/paths/default.yaml (environment variables).
+PATHS = OmegaConf.to_container(OmegaConf.load(PROJECT_ROOT / "configs" / "paths" / "default.yaml"), resolve=True)
 
 JAMENDO_TRAIN_COUNT = 32_859
 M4SINGER_COUNT = 20_896
@@ -74,15 +78,15 @@ def test_jamendo_missing_tsv_raises(tmp_path):
 
 
 @pytest.mark.skipif(
-    not (config.JAMENDO_SPLIT_TSV and os.path.exists(config.JAMENDO_SPLIT_TSV)),
+    not (PATHS["jamendo_split_tsv"] and os.path.exists(PATHS["jamendo_split_tsv"])),
     reason="real Jamendo split TSV not mounted",
 )
 def test_jamendo_real_corpus_count_and_format():
-    out = jamendo.get_audio_files(config.JAMENDO_AUDIO)
+    out = jamendo.get_audio_files(PATHS["jamendo_audio"], split_tsv=PATHS["jamendo_split_tsv"])
     assert len(out) == JAMENDO_TRAIN_COUNT
     assert out == sorted(out)
     assert all(p.endswith(".mp3") for p in out)
-    assert all(p.startswith(config.JAMENDO_AUDIO) for p in out)
+    assert all(p.startswith(PATHS["jamendo_audio"]) for p in out)
 
 
 # ───────────────────────── M4Singer ─────────────────────────────────────────
@@ -116,11 +120,11 @@ def test_m4singer_honours_filelist(tmp_path):
 
 
 @pytest.mark.skipif(
-    not (config.M4SINGER_AUDIO and os.path.exists(config.M4SINGER_AUDIO)),
+    not (PATHS["m4singer_audio"] and os.path.exists(PATHS["m4singer_audio"])),
     reason="real M4Singer corpus not mounted",
 )
 def test_m4singer_real_corpus_count():
-    out = m4singer.get_audio_files(config.M4SINGER_AUDIO)
+    out = m4singer.get_audio_files(PATHS["m4singer_audio"])
     assert len(out) == M4SINGER_COUNT
     assert out == sorted(out)
     assert all(p.endswith(".wav") for p in out)

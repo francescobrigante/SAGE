@@ -1,0 +1,37 @@
+# =============================================================================
+# evaluation.maeb: semantic probing of a latent on the MAEB tasks (Tables 4 and 9).
+#
+#   python -m evaluation.maeb encoder=sage                  # the paper's 19 tasks
+#   python -m evaluation.maeb encoder=same-s                # a baseline
+#   python -m evaluation.maeb encoder=clap                  # CLAP oracle row
+#
+# Encoders: sage (deterministic latent μ, 64-d), a baseline's deterministic latent
+# at its native width, clap (the frozen distillation teacher: an oracle reference,
+# not invertible). Data and weights come from configs/paths/.
+# =============================================================================
+defaults:
+  - paths: default
+  - _self_
+  - override hydra/job_logging: none
+  - override hydra/hydra_logging: none
+
+encoder: ???                # sage | clap | codicodec | music2latent | sao-vae | same | same-s
+checkpoint: null            # sage: null = paths.sage_checkpoint; clap: null = paths.clap_teacher
+suite: paper                # paper (19) | fma (6) | moisesdb (7) | fma_moisesdb (13) | maeb_music (6, upstream MAEB)
+tasks: null                 # explicit list of task names, overrides suite
+max_files: 0                # per-task sample cap (0 = all)
+output_dir: null            # null = <paths.eval_output>/maeb/<checkpoint name for sage, the encoder otherwise>
+device: cuda                # falls back to the CPU without CUDA
+max_audio_sec: 30.0         # clips are truncated to this length
+overwrite: false            # recompute tasks that already have results
+batch_size: 1               # sage: DataLoader batch size
+standardize_bottleneck: true  # sage: fold the latent frequency axis into channels (64-d) and pool time only
+pooling: mean               # baselines: time pooling (mean | max)
+l2_normalize: true          # clap: L2-normalise the teacher embedding
+
+hydra:
+  job:
+    name: maeb            # the module is evaluation.maeb (__main__)
+  output_subdir: null
+  run:
+    dir: .

@@ -138,7 +138,7 @@ def band_weights(bands: List[Tuple[float, float]], sample_rate: int = 44100, n_f
 # ── Per-file row of the reconstruction evaluator ─────────────────────────────
 
 # Per-file schema. The first five columns are byte-identical to the legacy
-# --compute-ms-metrics schema (old ms_metrics.csv stay readable, and readers that
+# compute_ms_metrics schema (old ms_metrics.csv stay readable, and readers that
 # select columns by name are unaffected). The rest are already computed by
 # stereo_imaging_distance and were previously thrown away.
 MS_COLUMNS = [

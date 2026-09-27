@@ -5,26 +5,24 @@
 # FAD-CLAP and FAD-PANN, plus CDPAM and, on request, the stereo-image metrics
 # of Table 7. SAGE and every baseline go through the same code (codecs.py).
 #
-#   python -m evaluation.reconstruction --model sage --checkpoint SAGE_FTe992.ckpt \
-#       --protocol fma --data-dir <fma_large> --fma-csv <tracks.csv> --cache-dir <cache> --output-dir runs/recon_fma
-#   python -m evaluation.reconstruction --model same-s \
-#       --protocol clips --data-dir <clip set> --output-dir runs/recon_moisesdb
+#   python -m evaluation.reconstruction dataset=fma model=sage
+#   python -m evaluation.reconstruction dataset=musiccaps model=same-s
 #
-# Protocols
+# Settings: configs/reconstruction.yaml, the evaluation sets in configs/dataset/,
+# data and weights in configs/paths/. Protocols (set by the dataset):
 #   fma    FMA test split, full-length tracks. Target embeddings are computed on
-#          the fly and cached in --cache-dir; share the cache across models so
+#          the fly and cached in the dataset's cache_dir, shared across models so
 #          their FADs are measured against the same reference.
 #   clips  a flat folder of 10 s clips (MoisesDB mixtures/stems, MusicCaps, Song
 #          Describer) whose references were built once by evaluation.build_references.
 #
 # Scaling: under SLURM each task (SLURM_PROCID of SLURM_NTASKS) scores
 # files[rank::world] on GPU SLURM_LOCALID and writes per-file rows as it goes;
-# a relaunch resumes, and `--merge` (automatic when there is one task) writes the
-# final CSVs and the FADs. Outputs: <output-dir>/<name>/metrics/*.csv.
+# a relaunch resumes, and `merge=true` (automatic when there is one task) writes the
+# final CSVs and the FADs. Outputs: <output_dir>/<name>/metrics/*.csv.
 # =============================================================================
 from __future__ import annotations
 
-import argparse
 import csv
 import json
 import os
@@ -34,15 +32,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
+import hydra
 import numpy as np
 import torch
+from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from evaluation.codecs import ADAPTERS, build_adapter
 from evaluation.common import (CLAP_AUDIO_NAME, CLAP_GUD_NAME, CLAP_MUSIC_NAME, MERT_NAME, AudioDataset, append_csv,
                                atomic_save_npy, collect_clip_files, collect_fma_files, file_seed, first_item, load_or_embed,
-                               seed_everything, silence_output, target_cache_path, write_csv)
+                               seed_everything, set_metric_weights, silence_output, target_cache_path,
+                               write_csv)
 from evaluation.metrics.clap import cosine_sim, embed_clap, embed_clap_gud
 from evaluation.metrics.fad import (PANN_NAME, compute_fad_from_embeddings, compute_incremental_stats,
                                     embed_mert_framewise, embed_pann, get_pann_model)
@@ -60,7 +61,7 @@ CSV_SCHEMA = {
     "cdpam":      ["file", "cdpam"],
     "clap_music": ["file", "cosine"],
     "clap_audio": ["file", "cosine"],
-    "ms_metrics": MS_COLUMNS,               # only with --compute-ms-metrics
+    "ms_metrics": MS_COLUMNS,               # only with compute_ms_metrics=true
 }
 # FAD embedding → output CSV.
 FAD_CSV = {MERT_NAME: "fad_mert.csv", CLAP_GUD_NAME: "fad_gudgud.csv", PANN_NAME: "fad_pann.csv"}
@@ -81,7 +82,7 @@ _MANIFEST_KEYS = ("model", "checkpoint", "varlen", "deterministic", "protocol", 
                   "max_files", "skip_cdpam", "sdr_only", "compute_ms_metrics", "seed")
 
 
-def _check_manifest(parts: Path, args: argparse.Namespace) -> None:
+def _check_manifest(parts: Path, args: SimpleNamespace) -> None:
     """Write the run settings on the first launch; refuse to resume into a folder made with others."""
     current = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items() if k in _MANIFEST_KEYS}
     path = parts / "run.json"
@@ -90,7 +91,7 @@ def _check_manifest(parts: Path, args: argparse.Namespace) -> None:
         diff = {k: (saved.get(k), current[k]) for k in current if saved.get(k) != current[k]}
         if diff:
             raise SystemExit(f"{path.parent.parent} holds a run with other settings {diff} (saved, requested); "
-                             "use another --output-dir or --name.")
+                             "use another output_dir or name.")
     else:
         path.write_text(json.dumps(current, indent=2) + "\n")
 
@@ -101,48 +102,36 @@ def _load_ref_emb(data_dir: Path, model_name: str, stem: str) -> Optional[np.nda
     return np.load(p).astype(np.float32) if p.exists() else None
 
 
-# ── Arguments ────────────────────────────────────────────────────────────────
+# ── Settings ─────────────────────────────────────────────────────────────────
 
-def _parse_args(argv=None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Reconstruction metrics of a codec on an evaluation set.",
-                                formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument("--model", required=True, choices=sorted(ADAPTERS),
-                   help="the codec to evaluate (identity: pipeline self-test)")
-    p.add_argument("--checkpoint", type=Path, default=None, help="SAGE checkpoint (--model sage)")
-    p.add_argument("--varlen", default=None,
-                   help="SAGE variable-length attention preset (sage/model/swin/varlen.yaml); default tri2")
-    p.add_argument("--deterministic", action="store_true",
-                   help="SAGE: decode the posterior mean instead of a sampled z (the paper samples z)")
-    p.add_argument("--protocol", required=True, choices=["fma", "clips"])
-    p.add_argument("--data-dir", required=True, type=Path,
-                   help="fma: the FMA audio root; clips: the folder of clips with its references")
-    p.add_argument("--fma-csv", default=None, help="fma: tracks.csv of fma_metadata (selects the test split)")
-    p.add_argument("--extensions", default=".wav,.flac,.mp3,.ogg", help="fma: audio file extensions")
-    p.add_argument("--cache-dir", type=Path, default=None,
-                   help="fma: cache of resampled audio and target embeddings, shared by all models (needed for FAD)")
-    p.add_argument("--output-dir", required=True, type=Path)
-    p.add_argument("--name", default=None,
-                   help="Output subfolder; default: the checkpoint name for sage, the model key otherwise")
-    p.add_argument("--device", default="cuda")
-    p.add_argument("--num-workers", type=int, default=4)
-    p.add_argument("--max-files", type=int, default=0, help="0 = all")
-    p.add_argument("--skip-cdpam", action="store_true")
-    p.add_argument("--sdr-only", action="store_true", help="Only SDR / SI-SDR and the STFT and mel distances")
-    p.add_argument("--compute-ms-metrics", action="store_true",
-                   help="Also write the stereo-image metrics (ms_metrics.csv, paper Table 7)")
-    p.add_argument("--seed", type=int, default=0,
-                   help="Seed of the random parts (SAGE's z, SAME's noise, the CLAP crop in FAD-CLAP), re-set "
-                        "for every file from this value and the file name: results do not depend on sharding or resuming")
-    p.add_argument("--resume", action="store_true",
-                   help="Skip the run if metrics/_done exists (files already scored are always skipped)")
-    p.add_argument("--merge", action="store_true",
-                   help="Only merge the per-rank outputs into the final CSVs and FADs (after a multi-task run)")
-    args = p.parse_args(argv)
-    if args.model == "sage" and args.checkpoint is None:
-        p.error("--model sage needs --checkpoint")
-    if args.model != "sage" and (args.checkpoint or args.varlen or args.deterministic):
-        p.error("--checkpoint, --varlen and --deterministic apply to --model sage only")
-    return args
+def _args_from_cfg(cfg: DictConfig) -> SimpleNamespace:
+    """The run settings of configs/reconstruction.yaml, checked, as one flat namespace."""
+    if cfg.get("dataset") is None:
+        raise SystemExit("dataset=<name> is required: fma | moisesdb_mix | moisesdb_stems | musiccaps | song_describer")
+    if cfg.model not in ADAPTERS:
+        raise SystemExit(f"model={cfg.model}: not one of {sorted(ADAPTERS)}")
+    ds = cfg.dataset
+    if not ds.data_dir:
+        raise SystemExit(f"dataset={ds.name}: its data folder is not set (configs/paths, key used by "
+                         f"configs/dataset/{ds.name}.yaml)")
+    if cfg.model == "sage":
+        checkpoint = Path(cfg.checkpoint or cfg.paths.sage_checkpoint)
+        if not checkpoint.is_file():
+            raise SystemExit(f"SAGE checkpoint not found: {checkpoint} (set checkpoint=... or paths.sage_checkpoint)")
+    elif cfg.checkpoint or cfg.varlen or cfg.deterministic:
+        raise SystemExit("checkpoint, varlen and deterministic apply to model=sage only")
+    else:
+        checkpoint = None
+    return SimpleNamespace(
+        model=cfg.model, checkpoint=checkpoint, varlen=cfg.varlen, deterministic=bool(cfg.deterministic),
+        adapter_kwargs={"model_dir": cfg.paths.sao_vae} if cfg.model == "sao-vae" else {},
+        protocol=ds.protocol, data_dir=Path(ds.data_dir), fma_csv=ds.fma_csv,
+        extensions=ds.extensions or ".wav,.flac,.mp3,.ogg",
+        cache_dir=Path(ds.cache_dir) if ds.cache_dir else None,
+        output_dir=Path(cfg.output_dir), name=cfg.name, device=cfg.device, num_workers=int(cfg.num_workers),
+        max_files=int(cfg.max_files), skip_cdpam=bool(cfg.skip_cdpam), sdr_only=bool(cfg.sdr_only),
+        compute_ms_metrics=bool(cfg.compute_ms_metrics), seed=int(cfg.seed), resume=bool(cfg.resume),
+        merge=bool(cfg.merge))
 
 
 # ── Merge: per-rank rows → final CSVs, embeddings → FAD ──────────────────────
@@ -169,7 +158,7 @@ def _fad_from_stats(data_dir: Path, model_name: str, pred_emb_dir: Path, csv_pat
     write_csv(csv_path, ["model", "score"], [{"model": model_name, "score": score}])
 
 
-def _merge(metrics_dir: Path, args: argparse.Namespace) -> None:
+def _merge(metrics_dir: Path, args: SimpleNamespace) -> None:
     parts = metrics_dir / "parts"
     _check_manifest(parts, args)
     n_done = len(_load_done(parts))
@@ -204,8 +193,9 @@ def _merge(metrics_dir: Path, args: argparse.Namespace) -> None:
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
-def main(argv=None) -> None:
-    args = _parse_args(argv)
+def run(cfg: DictConfig) -> None:
+    set_metric_weights(cfg.paths)
+    args = _args_from_cfg(cfg)
     name = args.name or (args.checkpoint.stem if args.model == "sage" else args.model)
     metrics_dir = args.output_dir.expanduser().resolve() / name / "metrics"
     if args.merge:
@@ -232,7 +222,7 @@ def main(argv=None) -> None:
         audio_files = collect_fma_files(data_dir, exts, args.fma_csv, args.max_files)
     else:
         if cache_dir is not None:
-            warn("--cache-dir is ignored by the clips protocol (references live in --data-dir).", prefix="EVAL")
+            warn("cache_dir is ignored by the clips protocol (references live in the data folder).", prefix="EVAL")
             cache_dir = None
         audio_files = collect_clip_files(data_dir, args.max_files)
     if not audio_files:
@@ -249,7 +239,7 @@ def main(argv=None) -> None:
          f"(skip {len(audio_files[rank::world]) - len(my_files)} done)", prefix="EVAL")
 
     adapter = build_adapter(args.model, device=str(device), checkpoint=args.checkpoint,
-                            varlen=args.varlen, deterministic=args.deterministic)
+                            varlen=args.varlen, deterministic=args.deterministic, **args.adapter_kwargs)
     sr, ch = adapter.sample_rate, adapter.audio_channels
     ok(f"Model '{args.model}' ready: sr={sr} ch={ch}", prefix="EVAL")
 
@@ -357,6 +347,11 @@ def main(argv=None) -> None:
         (metrics_dir / "varlen.json").write_text(json.dumps(adapter.provenance(), indent=2) + "\n")
     if world == 1:
         _merge(metrics_dir, args)
+
+
+@hydra.main(config_path="../configs", config_name="reconstruction", version_base="1.3")
+def main(cfg: DictConfig) -> None:
+    run(cfg)
 
 
 if __name__ == "__main__":

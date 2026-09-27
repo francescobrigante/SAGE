@@ -3,6 +3,7 @@
 #   python train.py trainer.epochs=10 data.train_dataloader.batch_size=4
 
 defaults:
+  - paths: default          # machine-specific paths (configs/paths/default.yaml)
   - data: fma               # single-corpus FMA (default). Multi-corpus: data=multicorpus
   - models: swin_real_swiglu_xsa   # SAGE architecture (paper)
   - trainer@trainer
@@ -12,3 +13,5 @@ hydra:
   run:
     dir: runs                               # only 'runs' directory
   output_subdir: null                       # no subdir added
+  job:
+    chdir: false                            # stay in the launch directory: relative paths resolve from it

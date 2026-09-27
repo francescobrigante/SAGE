@@ -5,9 +5,9 @@ fma_subset: medium
 
 train_dataset:
   _target_: sage.training.data.dataset.OnTheFlySTFTDataset
-  audio_dir: ${config:DATA_PATH}
+  audio_dir: ${paths.fma_audio}
   target_frames: 128
-  sample_rate: ${config:DEFAULT_SAMPLE_RATE}
+  sample_rate: 44100
   n_fft: 2048
   hop_length: 512
   win_length: 2048
@@ -23,11 +23,11 @@ train_dataset:
   custom_metadata_kwargs:
     split: training
     subset: ${data.fma_subset}
-    metadata_csv: ${config:FMA_METADATA}
+    metadata_csv: ${paths.fma_metadata}
 
 train_dataloader:
-  batch_size: ${config:DEFAULT_BATCH_SIZE}
-  num_workers: ${config:DEFAULT_NUM_WORKERS}
+  batch_size: 16
+  num_workers: 8
   prefetch_factor: 4
   pin_memory: true
   persistent_workers: true
@@ -36,9 +36,9 @@ train_dataloader:
 
 eval_dataset:
   _target_: sage.training.data.dataset.OnTheFlySTFTDataset
-  audio_dir: ${config:DATA_PATH}
+  audio_dir: ${paths.fma_audio}
   target_frames: 128
-  sample_rate: ${config:DEFAULT_SAMPLE_RATE}
+  sample_rate: 44100
   n_fft: 2048
   hop_length: 512
   win_length: 2048
@@ -54,11 +54,11 @@ eval_dataset:
   custom_metadata_kwargs:
     split: validation
     subset: ${data.fma_subset}
-    metadata_csv: ${config:FMA_METADATA}
+    metadata_csv: ${paths.fma_metadata}
 
 eval_dataloader:
-  batch_size: ${config:DEFAULT_BATCH_SIZE}
-  num_workers: ${config:DEFAULT_NUM_WORKERS}
+  batch_size: 16
+  num_workers: 8
   prefetch_factor: 4
   pin_memory: true
   persistent_workers: true
@@ -70,7 +70,7 @@ eval_dataloader:
 # stereo=true, cac=true  -> audio_channels=2, model_channels=4
 # stereo=false, cac=false -> audio_channels=1, model_channels=1
 # stereo=false, cac=true  -> audio_channels=1, model_channels=2
-audio_channels: ${config:DEFAULT_AUDIO_CHANNELS}
+audio_channels: 2
 model_channels: 4
 
 demo:
@@ -78,7 +78,7 @@ demo:
   max_demos: 10
   target_seconds: 2
   istft_params:
-    sample_rate: ${config:DEFAULT_SAMPLE_RATE}
+    sample_rate: 44100
     fft_size: 2048
     hop_length: 512
     win_length: 2048

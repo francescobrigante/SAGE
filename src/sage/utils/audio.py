@@ -8,7 +8,7 @@ import signal
 import torch
 from einops import rearrange
 import torch.nn.functional as F
-from config import DEFAULT_SILENCE_THRESHOLD, DEFAULT_AUDIO_LOAD_TIMEOUT
+from sage.constants import DEFAULT_SILENCE_THRESHOLD, DEFAULT_AUDIO_LOAD_TIMEOUT
 import torchaudio
 
 def _torchaudio_load_safe(path: str, frame_offset: int = 0, num_frames: int = -1) -> tuple:

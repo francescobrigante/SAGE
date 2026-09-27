@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 # =============================================================================
-# Semantic probing of a latent on the MAEB suite (paper Section 4):
+# Semantic probing of a latent on the MAEB tasks (paper Section 4, Tables 4 and 9):
 #
-#   python -m evaluation.maeb --encoder sage --checkpoint SAGE_FTe992.ckpt --with-moisesdb
-#   python -m evaluation.maeb --encoder sage --checkpoint SAGE_FTe992.ckpt --maeb-original-music-only
-#   python -m evaluation.maeb --encoder same-s --with-moisesdb
-#   python -m evaluation.maeb --encoder clap --checkpoint music_audioset_epoch_15_esc_90.14.pt
+#   python -m evaluation.maeb encoder=sage                  # the paper's 19 tasks
+#   python -m evaluation.maeb encoder=same-s                # a baseline
+#   python -m evaluation.maeb encoder=clap                  # CLAP oracle row
 #
-# Suites: the 6 FMA tasks (default), + the 7 MoisesDB tasks (--with-moisesdb),
-# or the 6 upstream MAEB music tasks (--maeb-original-music-only); runs into
-# the same --output-dir merge, so the paper's 19 tasks are the first two calls.
+# Settings: configs/maeb.yaml (suite, pooling, ...); data and weights: configs/paths/.
 # Encoders:
 #   sage     deterministic latent μ (C × F_lat = 64-d, time-pooled)
 #   <codec>  a baseline's deterministic latent at its native width (SAME: 256-d,
@@ -19,14 +16,16 @@
 # =============================================================================
 from __future__ import annotations
 
-import argparse
 import logging
 from pathlib import Path
 
 from evaluation.maeb import compatibility  # noqa: F401  (must precede mteb / datasets)
 
+import hydra  # noqa: E402
 import torch  # noqa: E402
+from omegaconf import DictConfig  # noqa: E402
 
+from evaluation.maeb import fma_tasks, moisesdb_tasks  # noqa: E402
 from evaluation.maeb import tasks as maeb_tasks  # noqa: E402
 from evaluation.maeb.runner import run_maeb  # noqa: E402
 
@@ -35,41 +34,27 @@ log = logging.getLogger(__name__)
 BASELINES = ("codicodec", "music2latent", "sao-vae", "same", "same-s")
 
 
-def parse_args(argv=None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Run the MAEB suite with one encoder.",
-                                formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument("--encoder", required=True, choices=("sage", "clap") + BASELINES)
-    p.add_argument("--checkpoint", default=None,
-                   help="sage: the SAGE checkpoint; clap: the LAION-CLAP teacher checkpoint")
-    p.add_argument("--tasks", nargs="*", default=None,
-                   help=f"Explicit task subset (overrides the suite flags). Allowed: {maeb_tasks.ALLOWED_TASKS}")
-    grp = p.add_mutually_exclusive_group()
-    grp.add_argument("--maeb-original-music-only", action="store_true",
-                     help=f"Only the upstream MAEB music tasks: {maeb_tasks.MAEB_ORIGINAL_MUSIC}")
-    grp.add_argument("--moisesdb-only", action="store_true", help="Only the MoisesDB tasks")
-    p.add_argument("--with-moisesdb", action="store_true", help="Add the 7 MoisesDB tasks to the FMA suite")
-    p.add_argument("--max-files", type=int, default=0, help="Per-task sample cap (0 = all)")
-    p.add_argument("--output-dir", default=None, help="Default: maeb_results/<encoder or checkpoint name>")
-    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    p.add_argument("--max-audio-sec", type=float, default=30.0, help="Clips are truncated to this length")
-    p.add_argument("--overwrite", action="store_true", help="Recompute tasks that already have results")
-    p.add_argument("--batch-size", type=int, default=1, help="sage: DataLoader batch size")
-    p.add_argument("--standardize-bottleneck", action=argparse.BooleanOptionalAction, default=True,
-                   help="sage: fold the latent frequency axis into channels (64-d) and pool time only")
-    p.add_argument("--pooling", choices=["mean", "max"], default="mean", help="baselines: time pooling")
-    p.add_argument("--no-l2-normalize", action="store_true", help="clap: keep the raw teacher embedding")
-    args = p.parse_args(argv)
-    if args.encoder in ("sage", "clap") and not args.checkpoint:
-        p.error(f"--encoder {args.encoder} needs --checkpoint")
-    return args
+def _args_from_cfg(cfg: DictConfig):
+    """The settings of configs/maeb.yaml, checked; the checkpoint defaults to paths.*."""
+    from types import SimpleNamespace
+    if cfg.encoder not in ("sage", "clap") + BASELINES:
+        raise SystemExit(f"encoder={cfg.encoder}: not one of {('sage', 'clap') + BASELINES}")
+    checkpoint = cfg.checkpoint or {"sage": cfg.paths.sage_checkpoint, "clap": cfg.paths.clap_teacher}.get(cfg.encoder)
+    if cfg.encoder in BASELINES and cfg.checkpoint:
+        raise SystemExit(f"checkpoint applies to encoder=sage or clap only, not {cfg.encoder}")
+    if checkpoint and not Path(checkpoint).is_file():
+        raise SystemExit(f"Checkpoint not found: {checkpoint} (set checkpoint=... or configs/paths)")
+    device = cfg.device if cfg.device == "cpu" or torch.cuda.is_available() else "cpu"
+    return SimpleNamespace(encoder=cfg.encoder, checkpoint=str(checkpoint) if checkpoint else None, device=device,
+                           max_audio_sec=float(cfg.max_audio_sec), standardize_bottleneck=bool(cfg.standardize_bottleneck),
+                           pooling=cfg.pooling, no_l2_normalize=not cfg.l2_normalize,
+                           adapter_kwargs={"model_dir": cfg.paths.sao_vae} if cfg.encoder == "sao-vae" else {})
 
 
-def _build_encoder(args: argparse.Namespace):
+def _build_encoder(args):
     """(MTEB encoder, summary fields) for the requested encoder."""
     if args.encoder == "sage":
         from evaluation.maeb.sage_encoder import SAGELatentEncoder, build_sage_model_meta
-        if not Path(args.checkpoint).exists():
-            raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
         model = SAGELatentEncoder(model_name=str(args.checkpoint), device=args.device,
                                   max_audio_length_seconds=args.max_audio_sec,
                                   standardize_bottleneck=args.standardize_bottleneck)
@@ -93,30 +78,37 @@ def _build_encoder(args: argparse.Namespace):
                                    "the oracle is an optimistic upper bound."]}
     from evaluation.maeb.sota_encoder import SOTACodecEncoder, build_model_meta
     model = SOTACodecEncoder(model_name=args.encoder, device=args.device,
-                             max_audio_length_seconds=args.max_audio_sec, pooling=args.pooling)
+                             max_audio_length_seconds=args.max_audio_sec, pooling=args.pooling,
+                             adapter_kwargs=args.adapter_kwargs)
     model.mteb_model_meta = build_model_meta(args.encoder, model)
     return model, {"model": args.encoder, "embed_dim": model.embed_dim, "pooling": args.pooling}
 
 
-def main(argv=None) -> None:
+def run(cfg: DictConfig) -> None:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
                         datefmt="%Y-%m-%d %H:%M:%S")
-    args = parse_args(argv)
+    args = _args_from_cfg(cfg)
+    fma_tasks.FMA_METADATA, fma_tasks.FMA_AUDIO = cfg.paths.fma_metadata, cfg.paths.fma_audio
+    moisesdb_tasks.MOISESDB_ROOT, moisesdb_tasks.MOISESDB_CHUNKS = cfg.paths.moisesdb_root, cfg.paths.moisesdb_chunks
     name = Path(args.checkpoint).stem if args.encoder == "sage" else args.encoder
-    output_dir = Path(args.output_dir) if args.output_dir else Path("maeb_results") / name
+    output_dir = Path(cfg.output_dir) if cfg.output_dir else Path(cfg.paths.eval_output) / "maeb" / name
 
-    names = maeb_tasks.select_task_names(args.tasks, maeb_original_music_only=args.maeb_original_music_only,
-                                         with_moisesdb=args.with_moisesdb, moisesdb_only=args.moisesdb_only)
+    names = maeb_tasks.select_task_names(list(cfg.tasks) if cfg.tasks else None, suite=cfg.suite)
     tasks = maeb_tasks.get_tasks_by_name(names, encoder_label=f"MAEB encoder '{args.encoder}'",
-                                         max_files=args.max_files)
+                                         max_files=int(cfg.max_files))
     if not tasks:
-        raise ValueError("No tasks resolved. Check --tasks.")
-    log.info("MAEB tasks: %s (max_files=%d)", [t.metadata.name for t in tasks], args.max_files)
+        raise ValueError("No tasks resolved. Check tasks=.")
+    log.info("MAEB tasks: %s (max_files=%d)", [t.metadata.name for t in tasks], cfg.max_files)
 
     model, summary = _build_encoder(args)
-    batch_size = args.batch_size if args.encoder == "sage" else 1
-    run_maeb(model, tasks, output_dir, encode_kwargs={"batch_size": batch_size}, overwrite=args.overwrite,
-             summary_extra={**summary, "max_files": args.max_files})
+    batch_size = int(cfg.batch_size) if args.encoder == "sage" else 1
+    run_maeb(model, tasks, output_dir, encode_kwargs={"batch_size": batch_size}, overwrite=bool(cfg.overwrite),
+             summary_extra={**summary, "max_files": int(cfg.max_files)})
+
+
+@hydra.main(config_path="../../configs", config_name="maeb", version_base="1.3")
+def main(cfg: DictConfig) -> None:
+    run(cfg)
 
 
 if __name__ == "__main__":

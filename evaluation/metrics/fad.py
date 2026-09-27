@@ -3,7 +3,6 @@
 # CLAP ("GUD", see metrics/clap.py) and PANN Cnn14; incremental mean/covariance
 # over per-file embeddings, and the FAD of a prediction set against targets.
 # =============================================================================
-import os
 import numpy as np
 import torch
 import torchaudio
@@ -21,7 +20,8 @@ PANN_NAME = "pann-cnn14-16k"
 # ≳5k samples @16k or the last conv collapses to size 0. Real clips are ≥10 s; this
 # guard only protects against pathologically short inputs (pad to 1 s @16k).
 _PANN_MIN_SAMPLES = 16000
-_PANN_CKPT_DEFAULT = "/leonardo_scratch/fast/IscrC_AHNetBio/models/PANN/Cnn14_16k_mAP=0.438.pth"
+# Cnn14_16k_mAP=0.438.pth (paths.pann, set by the entry points; https://zenodo.org/record/3987831)
+PANN_CHECKPOINT: Optional[str] = None
 
 def compute_incremental_stats(files: list[Path]) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """Compute mean and covariance incrementally from cached embedding .npy files to avoid OOM."""
@@ -104,15 +104,18 @@ def get_pann_model(device):
     """PANN Cnn14_16k whole-file embedder — singleton, mirrors get_gud_model.
 
     Uses the Cnn14_16k bundled in the installed ``frechet_audio_distance`` package
-    (2048-dim, 16 kHz). The checkpoint (``Cnn14_16k_mAP=0.438.pth``) must be
-    pre-downloaded — compute nodes are offline; path is overridable via $PANN_CKPT.
+    (2048-dim, 16 kHz). The checkpoint (``Cnn14_16k_mAP=0.438.pth``) is read from
+    PANN_CHECKPOINT (paths.pann): it is not downloaded, compute nodes are often offline.
     """
     global _pann_model
     if _pann_model is None:
         from frechet_audio_distance.models.pann import Cnn14_16k
         m = Cnn14_16k(sample_rate=16000, window_size=512, hop_size=160,
                       mel_bins=64, fmin=50, fmax=8000, classes_num=527)
-        ckpt_path = Path(os.environ.get("PANN_CKPT", _PANN_CKPT_DEFAULT))
+        if not PANN_CHECKPOINT or not Path(PANN_CHECKPOINT).is_file():
+            raise FileNotFoundError(f"PANN checkpoint not found: {PANN_CHECKPOINT} (set paths.pann, env PANN_CKPT or "
+                                    "SAGE_MODELS; download: https://zenodo.org/record/3987831)")
+        ckpt_path = Path(PANN_CHECKPOINT)
         # weights_only=False: the Cnn14 ckpt pickles numpy arrays; torch>=2.6 defaults
         # weights_only=True and rejects them. The file is a trusted Zenodo download.
         checkpoint = torch.load(str(ckpt_path), map_location=device, weights_only=False)

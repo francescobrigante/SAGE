@@ -665,9 +665,11 @@ class AutoencoderValDemoCallback(pl.Callback):
                 filename = os.path.join(data_dir, f'{self.save_basename}_ep{epoch:04d}.wav')
                 filename_input_encoder_istft = os.path.join(data_dir, f'{self.save_basename}_input_encoder_istft_ep{epoch:04d}.wav')
 
-            except Exception:
-                filename = f'{self.save_basename}_ep{epoch:04d}.wav'
-                filename_input_encoder_istft = f'{self.save_basename}_input_encoder_istft_ep{epoch:04d}.wav'
+            except Exception:                                   # no logger: the run folder
+                data_dir = os.path.join(trainer.default_root_dir, "media")
+                os.makedirs(data_dir, exist_ok=True)
+                filename = os.path.join(data_dir, f'{self.save_basename}_ep{epoch:04d}.wav')
+                filename_input_encoder_istft = os.path.join(data_dir, f'{self.save_basename}_input_encoder_istft_ep{epoch:04d}.wav')
                 
 
             # Salva in float32 per evitare clipping
