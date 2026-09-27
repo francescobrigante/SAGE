@@ -33,7 +33,7 @@ scheduler:
   inv_gamma: 200000       # SAO params: LR ~93% at 32k steps, ~70% at 200k steps
   power: 0.5
   warmup: 0.999           # exponential warmup, 90% peak reached at ~2400 steps
-  interval: step          # Lightning calls scheduler.step() every batch
+  interval: step          # stepped by the module once per generator update (gen_step)
   # --- CosineLRWithWarmup (step-based, matches Swin Transformer paper) ---
   # _target_: sage.nn.schedulers.CosineLRWithWarmup
   # total_steps: 32000      # epochs * steps_per_epoch (80 * 400 for FMA-small batch=16)
@@ -97,7 +97,8 @@ eval_loss_config:
 # Generator loss, paper eq. 2. Defaults = the reconstruction and KL weights of the
 # pretraining (Table 6); the recipes in configs/experiment/ add L_sem and the
 # discriminator (L_adv, L_fm) and set every weight explicitly. A term with weight 0
-# is not built. Other losses: `extra` (see sage/nn/losses/experimental/__init__.py).
+# is not built, except KL (kept for the checkpoint layout); unknown keys are an error.
+# Other losses: `extra` (see sage/nn/losses/experimental/__init__.py).
 loss_config:
   spectral:                 # L_STFT: squared error on the power-compressed complex STFT
     stft_mse:

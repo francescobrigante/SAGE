@@ -138,3 +138,24 @@ def test_gate_in_generator_updates_matches_the_paper_run():
         global_step += 2                                # opt_gen + opt_aux
         gen_step += 1
     assert old_open is not None and old_open == new_open
+
+
+# ── B8: the derived run name stays short ─────────────────────────────────────
+
+@pytest.mark.parametrize("experiment", ["pretrain", "decoder_ft"])
+def test_derived_run_name_is_short_and_uses_the_model_choice(experiment):
+    """Without trainer.wandb.name the run name is derived from the config. It used to spell
+    every loss weight and exceed the 255-character file-name limit (bug B8)."""
+    from hydra.core.hydra_config import HydraConfig
+    from sage.utils.run_config import resolve_run_name
+
+    with initialize_config_dir(config_dir=str(CONFIG_DIR), version_base=None):
+        cfg = compose(config_name="main", overrides=[f"+experiment={experiment}", "trainer.wandb.name=null"],
+                      return_hydra_config=True)
+    HydraConfig.instance().set_config(cfg)
+    try:
+        name, again = resolve_run_name(cfg), resolve_run_name(cfg)
+    finally:
+        HydraConfig.instance().cfg = None
+    assert name.startswith("swin_real_swiglu_xsa-") and len(name) < 100
+    assert name == again                                          # deterministic: hash of the loss weights

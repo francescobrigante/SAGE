@@ -28,8 +28,10 @@ def test_pretrain_writes_a_loadable_checkpoint(tiny_pretrain_ckpt):
     assert any(k.startswith("engine.loss_manager.discriminator.") for k in keys)
     assert any("distill_proj" in k for k in keys)
     assert all(torch.isfinite(v).all() for v in ema.values() if v.is_floating_point())
-    # 2 batches under the G/D alternation = 1 generator update; the generator LR schedule agrees
+    # 2 batches under the G/D alternation = 1 generator update; the generator LR schedule agrees,
+    # while Lightning's global_step counts every optimizer step (generator + CLAP head + disc)
     assert ck["gen_step"] == 1 and ck["lr_schedulers"][0]["last_epoch"] == 1
+    assert ck["global_step"] == 3
 
 
 FINETUNE = [

@@ -65,8 +65,9 @@ def _extract_loss_weights(loss_config: Mapping) -> list[tuple[str, float]]:
                         name = f"{prefix}.{w_key}" if prefix else str(w_key)
                         weights.append((name, float(w_val)))
             elif key == "extra" and isinstance(value, (list, tuple)):     # experimental losses
-                for entry in value:
-                    weights.append((f"extra.{entry['name']}", float(entry["weight"])))
+                for entry in value:                                      # validated later by LossManager
+                    if isinstance(entry, Mapping) and isinstance(entry.get("weight"), (int, float)):
+                        weights.append((f"extra.{entry.get('name')}", float(entry["weight"])))
             elif isinstance(value, Mapping):
                 next_prefix = f"{prefix}.{key}" if prefix else str(key)
                 visit(value, next_prefix)

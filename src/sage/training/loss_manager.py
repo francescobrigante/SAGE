@@ -26,49 +26,60 @@ from sage.nn.losses.semantic import CLAPTeacher, LatentCosineDistillLoss
 from sage.nn.losses.spectral import ComplexMSE
 from sage.utils.console import ok
 
-# Top-level keys of loss_config, one per term of eq. 2 (plus the extra list).
-PAPER_TERMS = {
-    "spectral": "L_STFT",
-    "mrmel": "L_mel",
-    "mrstft_sd": "L_SD",
-    "bottleneck": "L_KL",
-    "semantic_distill": "L_sem",
-    "discriminator": "L_adv, L_fm",
+# Keys accepted in loss_config, one block per term of eq. 2 (plus the extra list).
+# None = any value (e.g. constructor kwargs, validated by the loss class itself).
+LOSS_SCHEMA = {
+    "spectral": {"stft_mse": {"config": None}, "weights": {"stft_mse": None}},               # L_STFT
+    "mrmel": {"weights": {"mrmel": None},                                                    # L_mel
+              "config": {"n_mels": None, "window_lengths": None, "pow": None, "log_weight": None, "mag_weight": None}},
+    "mrstft_sd": {"weights": {"mrstft_sd": None}, "config": None},                           # L_SD
+    "bottleneck": {"weights": {"kl": None}},                                                 # L_KL
+    "semantic_distill": {"weights": {"distill": None}, "config": None,                       # L_sem
+                         "teacher_type": None, "detach_warmup_steps": None},
+    "discriminator": {"type": None, "config": None,                                          # L_adv, L_fm
+                      "weights": {"adversarial": None, "feature_matching": None}},
+    "extra": None,                                                                           # experimental losses
 }
 _EXTRA_KEYS = {"name", "weight", "loss", "input_key", "target_key", "decay"}
 
 
+def _unknown_keys(cfg, schema, path=""):
+    if schema is None or not isinstance(cfg, dict):
+        return []
+    unknown = []
+    for key, value in cfg.items():
+        where = f"{path}.{key}" if path else str(key)
+        unknown += [where] if key not in schema else _unknown_keys(value, schema[key], where)
+    return unknown
+
+
 def _check_loss_config(loss_config: dict) -> None:
-    """Reject keys that the manager would otherwise ignore silently (e.g. the
-    pre-release `mrstft_same` or `spectral.mrstft` blocks)."""
-    unknown = set(loss_config) - set(PAPER_TERMS) - {"extra"}
-    spectral = loss_config.get("spectral") or {}
-    unknown |= {f"spectral.{k}" for k in set(spectral) - {"stft_mse", "weights"}}
-    unknown |= {f"spectral.weights.{k}" for k in set(spectral.get("weights") or {}) - {"stft_mse"}}
+    """Reject every key the manager would otherwise ignore silently: typos, and the
+    pre-release blocks and options (e.g. `mrstft_same`, `spectral.mrstft`, `decay`)."""
+    unknown = _unknown_keys(loss_config, LOSS_SCHEMA)
     if unknown:
         raise ValueError(
             f"loss_config: unknown entries {sorted(unknown)}. Only the terms of the paper are "
-            f"built from their own block ({', '.join(PAPER_TERMS)}); add other losses through "
-            "loss_config.extra (see sage.nn.losses.experimental).")
+            f"built from their own block ({', '.join(k for k in LOSS_SCHEMA if k != 'extra')}); add other "
+            "losses through loss_config.extra (see sage.nn.losses.experimental).")
 
 
 def create_loss_modules_from_bottleneck(bottleneck, loss_config):
-    losses = []
-    if isinstance(bottleneck, VAEBottleneck):
-        try:
-            kl_weight = loss_config['bottleneck']['weights']['kl']
-        except (KeyError, TypeError):
-            kl_weight = 1e-6
-
-        kl_loss = ValueLoss(key='kl', weight=kl_weight, name='kl_loss')
-        losses.append(kl_loss)
-    return losses
+    """The KL term of a VAE bottleneck. It is built even at weight 0 (decoder fine-tuning):
+    the paper checkpoint has it in its loss layout (losses_gen.losses.5.weight)."""
+    if not isinstance(bottleneck, VAEBottleneck):
+        return []
+    kl_weight = ((loss_config.get("bottleneck") or {}).get("weights") or {}).get("kl")
+    if kl_weight is None:
+        raise ValueError("loss_config.bottleneck.weights.kl is required with a VAE bottleneck (0 disables it)")
+    return [ValueLoss(key='kl', weight=kl_weight, name='kl_loss')]
 
 
 class LossManager(nn.Module):
     """Generator losses, discriminator losses and evaluation metrics of a training run.
 
-    A term is built only when its weight is > 0. The order of the generator terms is
+    A term is built only when its weight is > 0 (except KL, see
+    create_loss_modules_from_bottleneck). The order of the generator terms is
     fixed (adv, fm, STFT, mel, SD, sem, KL, then the extra losses) because their weights
     are saved in the checkpoint by position (``losses_gen.losses.<i>.weight``).
     """
@@ -126,7 +137,7 @@ class LossManager(nn.Module):
                 log_weight=mel_cfg["log_weight"],
                 mag_weight=mel_cfg["mag_weight"],
             )
-            gen_loss_modules.append(LossWithTarget(
+            gen_loss_modules.append(LossWithTarget(       # (reals, decoded): order of the paper code, kept
                 self.mrmel, input_key="reals", target_key="decoded",
                 name="mrmel_loss", weight=loss_config["mrmel"]["weights"]["mrmel"]))
 

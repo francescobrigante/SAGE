@@ -26,6 +26,7 @@ from sage.utils.run_config import build_run_name
 REPO = Path(__file__).resolve().parents[1]
 PAPER_KEYS = json.loads((REPO / "tests" / "data" / "paper_ckpt_loss_manager_keys.json").read_text())["keys"]
 PREFIX = "engine.loss_manager."
+KL = {"bottleneck": {"weights": {"kl": 1e-4}}}
 
 
 class _StubAE(nn.Module):
@@ -106,7 +107,7 @@ def test_trainer_defaults_build_the_reconstruction_terms():
 
 
 def test_zero_weight_terms_are_not_built():
-    lm = _manager({"spectral": {"weights": {"stft_mse": 0.0}}, "mrstft_sd": {"weights": {"mrstft_sd": 0.0}}})
+    lm = _manager({"spectral": {"weights": {"stft_mse": 0.0}}, "mrstft_sd": {"weights": {"mrstft_sd": 0.0}}, **KL})
     assert [m.name for m in lm.losses_gen.losses] == ["kl_loss"]
     assert lm.stft_mse is None and lm.mrstft_sd is None
 
@@ -116,10 +117,20 @@ def test_zero_weight_terms_are_not_built():
     {"hubert": {"weights": {"hubert": 0.0}}},
     {"spectral": {"mrstft": {"config": {}}, "weights": {"stft_mse": 1.0}}},  # pre-release spectral variant
     {"spectral": {"weights": {"stft_mse": 1.0, "stft_consistency": 0.0}}},
+    {"mrstft_sd": {"weights": {"mrstft_sd": 1.0}, "decay": 0.5}},           # pre-release per-term decay
+    {"bottleneck": {"weights": {"KL": 0.1}}},                                # typo
+    {"semantic_distill": {"weights": {"distill": 1.0}, "detach_warmup_step": 10}},
+    {"mrmel": {"weights": {"mrmel": 0.5}, "config": {"n_mel": [128]}}},
+    {"discriminator": {"type": "wavtokenizer", "config": {}, "weights": {"adversarial": 0.1, "fm": 0.2}}},
 ])
-def test_pre_release_loss_blocks_are_rejected(loss_config):
+def test_unknown_loss_keys_are_rejected(loss_config):
     with pytest.raises(ValueError, match="loss_config.extra"):
         _manager(loss_config)
+
+
+def test_kl_weight_is_required_with_a_vae_bottleneck():
+    with pytest.raises(ValueError, match="bottleneck.weights.kl"):
+        _manager({"spectral": {"weights": {"stft_mse": 1.0}}})
 
 
 # ── experimental losses through `extra` ──────────────────────────────────────
@@ -170,7 +181,7 @@ def test_every_experimental_loss_has_an_extra_case():
 
 @pytest.mark.parametrize("name", sorted(EXTRA))
 def test_extra_loss_is_built_after_the_paper_terms_and_trains(name):
-    lm = _manager({"spectral": {"weights": {"stft_mse": 1.0}}, "extra": [_entry(name)]})
+    lm = _manager({"spectral": {"weights": {"stft_mse": 1.0}}, "extra": [_entry(name)], **KL})
     assert [m.name for m in lm.losses_gen.losses] == ["pwc_mse_loss", "kl_loss", name]
     extra = lm.losses_gen.losses[-1]
     assert float(extra.weight) == 0.5
@@ -186,7 +197,7 @@ def test_extra_loss_is_built_after_the_paper_terms_and_trains(name):
 def test_hubert_extra_loss():
     entry = {"name": "hubert", "weight": 1.0, "input_key": "decoded", "target_key": "reals",
              "loss": {"_target_": EXP + "HubertLoss", "model_name": "HUBERT_LARGE"}}
-    lm = _manager({"extra": [entry]})
+    lm = _manager({"extra": [entry], **KL})
     info = _loss_info(T=16000)
     _, breakdown = lm.losses_gen(info)
     assert torch.isfinite(breakdown["hubert"])
@@ -211,7 +222,7 @@ def test_extra_from_the_command_line():
 
 
 def test_extra_with_zero_weight_is_not_built():
-    lm = _manager({"extra": [_entry("time_l1", weight=0.0)]})
+    lm = _manager({"extra": [_entry("time_l1", weight=0.0)], **KL})
     assert [m.name for m in lm.losses_gen.losses] == ["kl_loss"]
 
 
@@ -224,7 +235,7 @@ def test_extra_with_zero_weight_is_not_built():
 ])
 def test_bad_extra_entries_are_rejected(entry, match):
     with pytest.raises(ValueError, match=match):
-        _manager({"extra": [entry]})
+        _manager({"extra": [entry], **KL})
 
 
 def test_run_name_hash_includes_extra_weights():
@@ -271,3 +282,48 @@ def test_filter_leaves_current_checkpoints_alone():
     state = {PREFIX + k: v for k, v in _manager(*_configs("+experiment=decoder_ft")).state_dict().items()}
     before = set(state)
     assert drop_legacy_state_keys(state) == [] and set(state) == before
+
+
+# ── frozen reference: the paper loss must not drift in later refactors ───────
+# tests/data/loss_manager_reference.json was written by _reference_record() on the code of
+# Phase 3, whose loss manager is bit-identical to the pre-release one (same state, losses
+# and gradients for both recipes). Tolerance covers BLAS/FFT differences across machines.
+
+REFERENCE = REPO / "tests" / "data" / "loss_manager_reference.json"
+
+
+def _reference_record(experiment):
+    torch.manual_seed(94)                                    # trainer seed: discriminator + CLAP head init
+    lm = _manager(*_configs(f"+experiment={experiment}"))
+    record = {}
+    for gen_step in (0, 10_000):                             # semantic gate closed / open
+        info = _loss_info()
+        info["gen_step"] = gen_step
+        total, breakdown = lm.losses_gen(info)
+        total.backward()
+        record[str(gen_step)] = {
+            "total": total.item(),
+            **{k: v.item() for k, v in breakdown.items()},
+            **{f"grad_norm_{k}": info[k].grad.norm().item() for k in ("decoded", "sp_decoded", "latents")
+               if info[k].grad is not None},
+        }
+    info = _loss_info()
+    torch.manual_seed(0)
+    loss_dis, loss_adv, feat_match = lm.discriminator.loss(reals=info["reals"], fakes=info["decoded"].detach())
+    record["disc"] = {"loss_dis": loss_dis.item(), "loss_adv": loss_adv.item(), "feature_matching": feat_match.item()}
+    record["disc_param_sum"] = sum(p.double().sum().item() for p in lm.discriminator.parameters())
+    return record
+
+
+@pytest.mark.parametrize("experiment", ["pretrain", "decoder_ft"])
+def test_paper_loss_matches_the_frozen_reference(experiment):
+    ref = json.loads(REFERENCE.read_text())[experiment]
+    got = _reference_record(experiment)
+    assert got.keys() == ref.keys()
+    for section, values in ref.items():
+        if isinstance(values, dict):
+            assert got[section].keys() == values.keys(), section
+            for k, v in values.items():
+                assert got[section][k] == pytest.approx(v, rel=1e-5, abs=1e-8), f"{section}.{k}"
+        else:
+            assert got[section] == pytest.approx(values, rel=1e-6), section

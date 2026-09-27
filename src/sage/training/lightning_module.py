@@ -216,9 +216,13 @@ class SAGELightningModule(pl.LightningModule):
             self.gen_step = int(checkpoint["gen_step"])
         elif checkpoint.get("lr_schedulers"):
             self.gen_step = int(checkpoint["lr_schedulers"][0].get("last_epoch", 0))
+        else:
+            warn("checkpoint has neither gen_step nor LR scheduler state: gen_step restarts at 0", prefix="RESUME")
         # Keys of pre-release checkpoints owned by no current module (sage/compat.py);
         # removed before Lightning's strict load_state_dict.
-        drop_legacy_state_keys(checkpoint.get("state_dict", {}))
+        removed = drop_legacy_state_keys(checkpoint.get("state_dict", {}))
+        if removed:
+            ok(f"dropped pre-release training-state keys: {removed}", prefix="RESUME")
         # EMACallback injects ema_autoencoder.* into state_dict at save time.
         # Strip those keys here (before PL calls load_state_dict with strict=True)
         # and stash them so EMACallback.on_load_checkpoint can recover them.

@@ -119,7 +119,7 @@ class AutoencoderEngine(nn.Module):
         return self.teacher_model.encode(encoder_input, return_info=False)
 
     def compute(self, batch: Tuple[torch.Tensor, torch.Tensor], gen_step: int,
-                disc_phase: Optional[bool] = None) -> Dict[str, Any]:
+                disc_phase: bool) -> Dict[str, Any]:
         """Compute forward and loss breakdown for a training batch.
 
         The method orchestrates the end-to-end path ``spectrogram -> encoder ->
@@ -174,8 +174,6 @@ class AutoencoderEngine(nn.Module):
 
         # Resolve the phase up-front: gen losses only on gen steps, disc loss only on
         # disc steps, and the generator forward under no_grad on disc steps.
-        if disc_phase is None:
-            disc_phase = (gen_step % 2 == 1)
         phase = select_training_phase(self.use_disc, self.warmup_mode, bool(disc_phase), warmed_up)
         disc_step = (phase == "disc")
 
