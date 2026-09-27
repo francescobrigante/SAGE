@@ -8,7 +8,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from conftest import RUN, SMOKE_DISC, TINY_MODEL, _data_overrides, run_training
+from conftest import PRETRAIN, RUN, SMOKE_DISC, TINY_MODEL, _data_overrides, run_training
+
+PRETRAIN_RESUME = [o for o in PRETRAIN if not o.startswith("trainer.wandb.name=")] + ["trainer.wandb.name=smoke_resume"]
 
 pytestmark = pytest.mark.smoke
 
@@ -53,3 +55,18 @@ def test_decoder_finetune_freezes_the_encoder(tiny_pretrain_ckpt, audio_dir, tmp
     assert any(k.startswith("decoder.postnet.") for k in live), "post-net missing"
     dec = [k for k in src if k.startswith("decoder.") and k in live]
     assert any(not torch.equal(src[k], live[k]) for k in dec), "decoder did not train"
+
+
+def test_relaunching_a_run_resumes_it_in_its_folder(audio_dir, tmp_path):
+    # A SLURM requeue or a resubmission relaunches the same run name: it continues the newest
+    # checkpoint in the same runs/<name>/<date>/ (and the same W&B run), as the paper's scripts did.
+    base = PRETRAIN_RESUME + TINY_MODEL + SMOKE_DISC + _data_overrides(audio_dir)
+    first = torch.load(run_training(base + RUN, tmp_path), map_location="cpu", weights_only=False)
+    two_epochs = run_training(base + [o for o in RUN if not o.startswith("trainer.trainer.epochs=")]
+                              + ["trainer.trainer.epochs=2"], tmp_path)   # overwrites last.ckpt
+    second = torch.load(two_epochs, map_location="cpu", weights_only=False)
+    assert (first["epoch"], second["epoch"]) == (0, 1)
+    assert second["global_step"] == 2 * first["global_step"] > 0
+    assert len(list((tmp_path / "runs" / "smoke_resume").iterdir())) == 1          # one folder per run
+    run_training(base + RUN + ["auto_resume=false"], tmp_path)                        # starts over
+    assert len(list((tmp_path / "runs" / "smoke_resume").iterdir())) == 2

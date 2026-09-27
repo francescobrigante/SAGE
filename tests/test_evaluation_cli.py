@@ -242,6 +242,35 @@ def test_resuming_with_other_settings_is_refused(clips, tmp_path, monkeypatch):
         _run(base + ["seed=1"], monkeypatch)
 
 
+def test_ranks_starting_together_wait_for_the_manifest_of_rank_0(tmp_path):
+    # The tasks of a sharded run start at once: a rank other than 0 must neither write the
+    # manifest nor read it half-written (a race that killed a rank of a 4-GPU run).
+    import threading
+    import time
+    from types import SimpleNamespace
+    args = SimpleNamespace(model="identity", seed=0, max_files=0)
+    errors = []
+    def rank(r):
+        try:
+            reconstruction._check_manifest(tmp_path, args, rank=r, timeout=10)
+        except BaseException as e:                                  # SystemExit included
+            errors.append(e)
+    others = [threading.Thread(target=rank, args=(r,)) for r in (1, 2, 3)]
+    for t in others:
+        t.start()
+    time.sleep(0.5)
+    assert not (tmp_path / "run.json").exists()                      # nobody but rank 0 writes it
+    rank(0)
+    for t in others:
+        t.join()
+    assert errors == [] and json.loads((tmp_path / "run.json").read_text())["seed"] == 0
+    assert list(tmp_path.glob("*.tmp")) == []
+    with pytest.raises(SystemExit, match="other settings"):
+        reconstruction._check_manifest(tmp_path, SimpleNamespace(model="identity", seed=1, max_files=0), rank=2)
+    with pytest.raises(SystemExit, match="not written by rank 0"):
+        reconstruction._check_manifest(tmp_path / "nothing", args, rank=1, timeout=0)
+
+
 def test_a_file_whose_embedding_fails_is_retried(clips, tmp_path, monkeypatch, noisy):
     _fake_embedders(monkeypatch)
     real = reconstruction.embed_pann

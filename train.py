@@ -44,6 +44,7 @@ logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
 from sage.training.callbacks import DatasetEpochSetter, MultiCorpusEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger
+from sage.training.resume import find_resume_checkpoint, read_run_id, resume_run_dir
 from sage.training.data.dataset import MultiCorpusDataset
 from sage.training.data.sampling import MultiCorpusRotatingSampler
 from sage.utils.model_info import extract_model_config
@@ -93,9 +94,10 @@ class WandbConfigLogger:
         if self.use_artifact:
             try:
                 artifact = wandb.Artifact("hydra-conf", type="config")
-                # Add the original files, without copying them
+                # Add the original files, without copying them; named by their path under
+                # configs/ (data/fma.yaml and dataset/fma.yaml share a basename)
                 for f in self.list_files():
-                    artifact.add_file(str(f))
+                    artifact.add_file(str(f), name=f.relative_to(self.conf_root).as_posix())
                 run.log_artifact(artifact)
                 ok(f"Config folder uploaded as a W&B artifact ({len(data)} files).", prefix="TRAINER")
             except Exception as e:
@@ -243,8 +245,19 @@ def main(cfg: DictConfig):
         
     ok(f"Resolved run name: {run_name}", prefix="MODEL")
     
-    # 2) Create unique, nested run directory
-    run_dir = Path(get_original_cwd()) / "runs" / run_name / now
+    # 2) Resume: an explicit +ckpt_path, else (auto_resume) the newest checkpoint of this run
+    #    name, e.g. after a SLURM requeue. A resumed run continues in its own folder.
+    run_root = Path(get_original_cwd()) / "runs" / run_name
+    ckpt_path = OmegaConf.select(cfg, "ckpt_path", default=None)
+    if not ckpt_path and bool(OmegaConf.select(cfg, "auto_resume", default=True)):
+        found = find_resume_checkpoint(run_root)
+        if found is not None:
+            ckpt_path = str(found)
+            ok(f"auto_resume: continuing {found} (auto_resume=false or another trainer.wandb.name "
+               "starts over)", prefix="TRAINER")
+
+    # 3) Run directory: the resumed run's, or a new dated one
+    run_dir = resume_run_dir(run_root, ckpt_path) or run_root / now
     run_dir.mkdir(parents=True, exist_ok=True)
     
     ckpt_dir = run_dir / "checkpoints"
@@ -458,6 +471,10 @@ def main(cfg: DictConfig):
     logger = None
     if use_wandb:
         if _is_rank0():
+            # A resumed run keeps logging to the W&B run of its first launch
+            run_id = read_run_id(Path(get_original_cwd()) / ".run_ids", run_name) if ckpt_path else None
+            if run_id:
+                ok(f"W&B: continuing run {run_id}", prefix="TRAINER")
             logger = WandbLogger(
                 project=wandb_cfg.get("project", "sage"),
                 name=run_name,
@@ -465,6 +482,7 @@ def main(cfg: DictConfig):
                 log_model=wandb_cfg.get("log_model", "all"),
                 config=OmegaConf.to_container(cfg, resolve=True),
                 settings=wandb.Settings(_service_wait=7),
+                **({"id": run_id, "resume": "allow"} if run_id else {}),
             )
             try:
                 run = logger.experiment
@@ -561,7 +579,6 @@ def main(cfg: DictConfig):
     if is_bf16 and has_complex_params:
         warn("bf16 + complex detected: convolutions will use torch.complex64 (complex-bfloat16 not supported).", prefix="TRAINER")
 
-    ckpt_path = OmegaConf.select(cfg, "ckpt_path", default=None)
     init_from = OmegaConf.select(cfg, "init_from", default=None)
     init_from_ema = bool(OmegaConf.select(cfg, "init_from_ema", default=True))
     init_from_disc = bool(OmegaConf.select(cfg, "init_from_disc", default=False))

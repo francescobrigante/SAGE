@@ -9,8 +9,11 @@
 #
 # Arguments after the recipe are Hydra overrides. Activate the environment
 # (`uv sync --extra train`, then `source .venv/bin/activate`) before sbatch; the
-# job inherits it. On a time limit Lightning saves and the job is requeued; to
-# resume by hand set RESUME_CKPT=<checkpoint> and resubmit.
+# job inherits it. On a time limit Lightning saves and the job is requeued; the
+# relaunch continues that checkpoint and the same W&B run (so does resubmitting the
+# same run name); RESUME_CKPT=<checkpoint> resumes a given one. Multi-node on
+# InfiniBand: if NCCL fails with "Could not find NET with id 0", export
+# NCCL_NET_GDR_LEVEL=LOC before sbatch.
 # =============================================================================
 #SBATCH --job-name=sage-train
 #SBATCH --nodes=4

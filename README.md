@@ -24,6 +24,17 @@ uv sync --all-extras                      # + baselines of the paper (SAME, SAO 
 
 `pip install .` (or `pip install ".[train,eval]"`) works too, without the lock file.
 
+Optional, Linux with an NVIDIA GPU: fused CUDA kernels for the Swin window shift/partition
+(NVIDIA, see Acknowledgements). They give the same outputs and speed up training and
+inference, and are used automatically on GPU once importable. Building them needs the CUDA
+toolkit of the PyTorch wheels (`nvcc`, `CUDA_HOME`) and gcc ≥ 9:
+
+```bash
+cd src/sage/model/swin/cuda_kernels
+python setup.py build_ext --inplace            # with the environment active; writes swin_window_process*.so
+export PYTHONPATH=$PWD:$PYTHONPATH              # make it importable (`uv sync` leaves it in place)
+```
+
 ## Checkpoint
 
 | File | Size | SHA-256 |
@@ -99,8 +110,13 @@ python train.py +experiment=decoder_ft +init_from=<phase-1 checkpoint> trainer.t
 
 The batch size is global, so the recipes run unchanged on fewer GPUs. Runs are written
 to `runs/<name>/<date>/`; logging goes to Weights & Biases (`trainer.wandb.use_wandb=false`
-for TensorBoard only). For SLURM clusters, `scripts/slurm/train.sbatch <recipe>` runs a
-recipe with requeueing. Losses outside the paper are available for experiments in
+for TensorBoard only). Launching a run name again (after a crash, a SLURM requeue or a
+resubmission) continues its newest checkpoint in its own folder and its W&B run;
+`+ckpt_path=<file>` resumes a given checkpoint, `auto_resume=false` or a new
+`trainer.wandb.name` starts over. For SLURM clusters, `scripts/slurm/train.sbatch <recipe>`
+runs a recipe with requeueing. On multi-node InfiniBand clusters where NCCL stops at the
+first collective with `Could not find NET with id 0` (NCCL 2.26 of the PyTorch wheels, seen
+with GPUDirect RDMA), `export NCCL_NET_GDR_LEVEL=LOC` before `sbatch` fixes it. Losses outside the paper are available for experiments in
 `sage/nn/losses/experimental/` (see its `__init__`).
 
 ## Evaluation
@@ -114,7 +130,10 @@ python -m evaluation.tables --recon "FMA test=results/recon_fma" --maeb results/
 ```
 
 Evaluation sets: `fma`, `moisesdb_mix`, `moisesdb_stems`, `musiccaps`, `song_describer`
-(`configs/dataset/`). [docs/paper_runs.md](docs/paper_runs.md) lists every result of the
+(`configs/dataset/`). `build_references` writes the reference embeddings and statistics
+into the set's own folder (`embeddings/`, `stats_ours/`), where `reconstruction` reads
+them: it overwrites references already there, so use a copy of the folder (symlinks to the
+audio suffice) to keep existing ones. [docs/paper_runs.md](docs/paper_runs.md) lists every result of the
 paper with the command that reproduces it, how the random parts of the evaluation are
 seeded, and what this repository does not reproduce. `scripts/slurm/eval.sbatch` runs any
 of these commands on SLURM, sharding the reconstruction metrics over GPUs.

@@ -82,18 +82,28 @@ _MANIFEST_KEYS = ("model", "checkpoint", "varlen", "deterministic", "protocol", 
                   "max_files", "skip_cdpam", "sdr_only", "compute_ms_metrics", "seed")
 
 
-def _check_manifest(parts: Path, args: SimpleNamespace) -> None:
-    """Write the run settings on the first launch; refuse to resume into a folder made with others."""
+def _check_manifest(parts: Path, args: SimpleNamespace, rank: int = 0, timeout: float = 600.0) -> None:
+    """Write the run settings on the first launch; refuse to resume into a folder made with others.
+
+    Every task of a sharded run starts at once: only rank 0 writes the manifest, atomically
+    (the other ranks never see a half-written file), and the others wait for it."""
     current = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items() if k in _MANIFEST_KEYS}
     path = parts / "run.json"
-    if path.exists():
-        saved = json.loads(path.read_text())
-        diff = {k: (saved.get(k), current[k]) for k in current if saved.get(k) != current[k]}
-        if diff:
-            raise SystemExit(f"{path.parent.parent} holds a run with other settings {diff} (saved, requested); "
-                             "use another output_dir or name.")
-    else:
-        path.write_text(json.dumps(current, indent=2) + "\n")
+    if rank == 0 and not path.exists():
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(current, indent=2) + "\n")
+        os.replace(tmp, path)
+        return
+    deadline = time.monotonic() + timeout
+    while not path.exists():
+        if time.monotonic() > deadline:
+            raise SystemExit(f"{path} was not written by rank 0 within {timeout:.0f} s")
+        time.sleep(1.0)
+    saved = json.loads(path.read_text())
+    diff = {k: (saved.get(k), current[k]) for k in current if saved.get(k) != current[k]}
+    if diff:
+        raise SystemExit(f"{path.parent.parent} holds a run with other settings {diff} (saved, requested); "
+                         "use another output_dir or name.")
 
 
 def _load_ref_emb(data_dir: Path, model_name: str, stem: str) -> Optional[np.ndarray]:
@@ -231,7 +241,7 @@ def run(cfg: DictConfig) -> None:
     parts_dir = metrics_dir / "parts"
     pred_root = parts_dir / "pred"
     parts_dir.mkdir(parents=True, exist_ok=True)
-    _check_manifest(parts_dir, args)
+    _check_manifest(parts_dir, args, rank)
     done = _load_done(parts_dir)
     my_files = [f for f in audio_files[rank::world] if f.stem not in done]
     done_file = parts_dir / f"done.{rank}.txt"

@@ -287,7 +287,7 @@ def test_filter_leaves_current_checkpoints_alone():
 # ── frozen reference: the paper loss must not drift in later refactors ───────
 # tests/data/loss_manager_reference.json was written by _reference_record() on the code of
 # Phase 3, whose loss manager is bit-identical to the pre-release one (same state, losses
-# and gradients for both recipes). Tolerance covers BLAS/FFT differences across machines.
+# and gradients for both recipes). Tolerances cover BLAS/FFT differences across machines.
 
 REFERENCE = REPO / "tests" / "data" / "loss_manager_reference.json"
 
@@ -324,6 +324,9 @@ def test_paper_loss_matches_the_frozen_reference(experiment):
         if isinstance(values, dict):
             assert got[section].keys() == values.keys(), section
             for k, v in values.items():
-                assert got[section][k] == pytest.approx(v, rel=1e-5, abs=1e-8), f"{section}.{k}"
+                # gradient norms move more than the losses across CPUs (2.6e-4 rel on x86 vs the
+                # reference written on arm64, losses within 1e-7)
+                rel = 1e-3 if k.startswith("grad_norm_") else 1e-5
+                assert got[section][k] == pytest.approx(v, rel=rel, abs=1e-8), f"{section}.{k}"
         else:
             assert got[section] == pytest.approx(values, rel=1e-6), section

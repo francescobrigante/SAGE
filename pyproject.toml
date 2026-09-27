@@ -56,9 +56,12 @@ eval = [
     "cdpam==0.0.6",
     "resampy==0.4.3",
     "pandas>=2.2",
-    "scikit-learn>=1.4",
-    "mteb>=2.0",
-    "datasets>=3.0",
+    # MAEB (Tables 4, 9): the paper's versions. scikit-learn 1.9 draws other CV folds / k-means
+    # inits (clustering and classification scores move by up to 0.014); datasets 4+ decodes audio
+    # only through torchcodec, and the six upstream MAEB tasks then fail.
+    "scikit-learn==1.8.0",
+    "mteb==2.12.10",                 # the paper's MAEB env had 2.12.30 (same scores), which needs transformers>=4.40
+    "datasets==3.6.0",               # brings fsspec 2025.3.0, dill 0.3.8, multiprocess 0.70.16
     # evaluation.tables prints plain markdown: no plotting dependency
 ]
 # Baselines: the released SOTA autoencoders of Tables 2 and 4 (Music2Latent, CoDiCodec,

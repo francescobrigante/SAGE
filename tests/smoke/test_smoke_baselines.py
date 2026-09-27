@@ -38,8 +38,11 @@ def test_channel_axis_normalisation(layout):
 @pytest.mark.weights
 @pytest.mark.parametrize("name", BASELINES)
 def test_adapter_round_trip_with_real_weights(name):
+    import os
     from evaluation.codecs import build_adapter
-    ad = build_adapter(name, device="cpu")
+    # sao-vae: a local snapshot when paths.sao_vae is set (as the evaluation does), else the gated HF repo
+    kwargs = {"model_dir": os.environ.get("SAO_VAE_DIR") or None} if name == "sao-vae" else {}
+    ad = build_adapter(name, device="cpu", **kwargs)
     wav = 0.1 * torch.randn(2, 44100 * 2)
     rec = ad.reconstruct(wav)
     assert rec.shape[0] == 2 and torch.isfinite(rec).all()

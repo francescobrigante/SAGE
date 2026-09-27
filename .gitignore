@@ -27,6 +27,7 @@ configs/paths/local.yaml
 
 # Build of the optional fused CUDA kernels
 src/sage/model/swin/cuda_kernels/build/
+src/sage/model/swin/cuda_kernels/*.so
 src/sage/model/swin/cuda_kernels/dist/
 
 # Local working notes

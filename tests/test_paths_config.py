@@ -15,6 +15,14 @@ import train  # noqa: F401  (registers the ${mul:} resolver)
 
 REPO = Path(__file__).resolve().parents[1]
 CONFIGS = REPO / "configs"
+PATH_VARIABLES = sorted(set(re.findall(r"\$\{oc\.env:(\w+)", (CONFIGS / "paths" / "default.yaml").read_text())))
+
+
+@pytest.fixture(autouse=True)
+def _machine_without_paths(monkeypatch):
+    """The expectations below assume no path variable is set: a configured machine exports them."""
+    for name in PATH_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
 
 
 def _compose(config_name, overrides=()):
