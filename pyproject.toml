@@ -61,7 +61,7 @@ eval = [
     "scikit-learn>=1.4",
     "mteb>=2.0",
     "datasets>=3.0",
-    # umap-learn, matplotlib: already in [train] (Fig. 6 UMAP, plots)
+    # evaluation.tables prints plain markdown: no plotting dependency
 ]
 # Baselines: the released SOTA autoencoders of Tables 2 and 4 (Music2Latent, CoDiCodec,
 # Stable Audio Open VAE, SAME). Weights are downloaded by each package on first use.
@@ -137,7 +137,7 @@ allow-direct-references = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Repo root (train.py, config.py), src/ and evaluation/ are importable from every test.
-pythonpath = [".", "src", "evaluation"]
+pythonpath = [".", "src"]
 markers = [
     "slow: tests that run the full 1024x128 encoder/decoder (deselect with '-m not slow')",
     "smoke: fast end-to-end checks of inference, training, fine-tuning and evaluation",

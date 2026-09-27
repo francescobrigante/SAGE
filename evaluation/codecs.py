@@ -1,10 +1,9 @@
 # =============================================================================
-# evaluation/sota_models/adapters.py
-# Uniform codec adapters for SOTA baselines (music2latent, codicodec, SAME).
-# Each adapter exposes the same interface so evaluate_sota.py can score any model
-# with the identical metric pipeline (losses / CLAP / FAD) used for Swin & SAO.
-# Model packages are imported lazily inside each adapter, so importing this
-# module needs no model package installed (only the one being evaluated).
+# One interface over every codec of the paper's comparison: SAGE and the
+# baselines (SAME-L/S, Stable Audio Open VAE, CoDiCodec, Music2Latent). The
+# reconstruction evaluator scores all of them with the same code, which is what
+# makes the rows of Table 2 comparable. Model packages are imported lazily, so
+# only the package of the model being evaluated needs to be installed.
 # =============================================================================
 from __future__ import annotations
 
@@ -63,14 +62,46 @@ class CodecAdapter(ABC):
     def encode_latent(self, wav: torch.Tensor) -> torch.Tensor:
         """Return the deterministic latent [D, T_lat] for MAEB probing.
 
-        Optional — only needed for the semantic-latent track (M5). Default
-        raises so reconstruction-only adapters (e.g. SAME) can skip it.
+        Only needed for MAEB probing (maeb/sota_encoder.py); adapters without a
+        latent to probe (e.g. identity) leave the default, which raises.
         """
         raise NotImplementedError(f"{type(self).__name__} has no encode_latent.")
 
 
 # ===========================================================================
-# Identity — pipeline self-test (M0). reconstruct() returns the input unchanged
+# SAGE — through its inference API, exactly as the paper evaluated it: the
+# waveform is right-padded so the STFT frame count is a multiple of
+# 2**num_downsamples, z is SAMPLED from the posterior (deterministic=False; the
+# posterior mean with deterministic=True), decoded and trimmed back.
+# ===========================================================================
+class SAGEAdapter(CodecAdapter):
+    def __init__(self, device: str = "cuda", checkpoint: str | None = None,
+                 varlen: str | None = None, deterministic: bool = False, **_: Any):
+        from sage.inference import SAGE
+
+        if checkpoint is None:
+            raise ValueError("model 'sage' needs a checkpoint (--checkpoint)")
+        self.device = torch.device(device)          # model + I/O device
+        self.deterministic = deterministic          # posterior mean instead of sampled z
+        self.codec = SAGE.from_checkpoint(checkpoint, device=self.device, varlen=varlen)
+        self.sample_rate = self.codec.sample_rate or 44100
+        self.audio_channels = self.codec.audio_channels or 2
+
+    @torch.no_grad()
+    def reconstruct(self, wav: torch.Tensor) -> torch.Tensor:
+        rec = self.codec.reconstruct(wav.to(self.device), deterministic=self.deterministic)  # [C, T]
+        return rec.cpu().float()
+
+    def provenance(self) -> dict:
+        """The variable-length attention mode that produced the numbers (metrics/varlen.json)."""
+        from sage.model.swin.varlen import resolve
+        vl = resolve(self.codec.varlen_mode)
+        return {"mode": self.codec.varlen_mode, "blocks": self.codec.varlen_blocks,
+                "phases": list(vl.phases) if vl else [], "combine": vl.combine if vl else None}
+
+
+# ===========================================================================
+# Identity — pipeline self-test. reconstruct() returns the input unchanged
 # so the scorer must report ~perfect metrics (SI-SDR huge, STFT~0, CLAP~1, FAD~0).
 # ===========================================================================
 class IdentityAdapter(CodecAdapter):
@@ -205,7 +236,7 @@ class SAMEAdapter(CodecAdapter):
 # ===========================================================================
 # SAME-S — the 108M distilled sibling of SAME-L (stabilityai/SAME-S): same
 # latent (256-d, x4096 temporal), chunked attention (chunk 32 + midpoint shift).
-# Parameter-matched counterpart of SAGE (97M). Key "same" stays = SAME-L so all
+# Parameter-matched counterpart of SAGE (104.6M). Key "same" stays = SAME-L so all
 # existing runs/<...>/same/ results keep their meaning.
 # ===========================================================================
 class SAMESAdapter(SAMEAdapter):
@@ -264,7 +295,8 @@ class StableAudioVAEAdapter(CodecAdapter):
 # ===========================================================================
 # Factory
 # ===========================================================================
-_ADAPTERS = {
+ADAPTERS = {
+    "sage":         SAGEAdapter,
     "identity":     IdentityAdapter,
     "codicodec":    CodicodecAdapter,
     "music2latent": Music2LatentAdapter,
@@ -275,6 +307,6 @@ _ADAPTERS = {
 
 
 def build_adapter(name: str, device: str = "cuda", **kwargs: Any) -> CodecAdapter:
-    if name not in _ADAPTERS:
-        raise ValueError(f"Unknown model '{name}'. Available: {sorted(_ADAPTERS)}")
-    return _ADAPTERS[name](device=device, **kwargs)
+    if name not in ADAPTERS:
+        raise ValueError(f"Unknown model '{name}'. Available: {sorted(ADAPTERS)}")
+    return ADAPTERS[name](device=device, **kwargs)

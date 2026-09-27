@@ -3,13 +3,11 @@
 # Unit tests for evaluation/maeb/tasks.py — audio-only filtering, task selection
 # and the 19-task suite of the paper. Uses lightweight fake tasks (no mteb import needed).
 # =============================================================================
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from maeb.tasks import (  # noqa: E402
+from evaluation.maeb.tasks import (  # noqa: E402
     ALLOWED_TASKS,
     FMA_SUITE,
     MAEB_ORIGINAL_MUSIC,
@@ -45,7 +43,7 @@ def test_ensure_audio_only_passes_through():
 def test_ensure_audio_only_raises_on_crossmodal():
     tasks = [_task("A", ["audio"]), _task("B", ["audio", "text"])]
     with pytest.raises(ValueError, match="audio-only"):
-        ensure_audio_only_tasks(tasks, source="x", encoder_label="SwinEncoder")
+        ensure_audio_only_tasks(tasks, source="x", encoder_label="SAGE")
 
 
 def test_select_default_is_the_fma_suite():

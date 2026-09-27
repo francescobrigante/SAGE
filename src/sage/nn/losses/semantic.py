@@ -20,7 +20,7 @@ def standardize_bottleneck(latents: torch.Tensor) -> torch.Tensor:
     """Fold the latent frequency axis into channels → flat ``(B, D, T)``.
 
     This is the tensor operation behind the MAEB ``standardize_bottleneck`` flag
-    (``evaluation/maeb/swin_encoder.py``): a parameter-free, information-preserving
+    (``evaluation/maeb/sage_encoder.py``): a parameter-free, information-preserving
     relabeling that lets latent-alignment losses operate on a Swin latent the same
     way SAO's 1-D latent is consumed. Real and complex agnostic.
 

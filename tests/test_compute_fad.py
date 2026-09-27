@@ -1,20 +1,23 @@
-# ===============================================================
-# test_compute_fad.py — Unit tests for FAD computation logic.
-# Tests compute_stats (μ, Σ), calc_frechet_distance math, cache
-# path resolution, and CSV output — using synthetic embeddings,
-# no real audio model weights required.
-# ===============================================================
-import sys
+# ===============
+# FAD computation: incremental mean / covariance over per-file embeddings
+# (evaluation/metrics/fad.py), the Fréchet distance itself (fadtk), and the FAD
+# of a prediction set against the cached targets, as the evaluator runs it.
+# ===============
 import csv
-import pytest
-import numpy as np
 from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-from compute_fad import compute_stats
-from fadtk.fad import calc_frechet_distance
+from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import numpy as np
+import pytest
+from fadtk.fad import calc_frechet_distance
+
+from evaluation.metrics.fad import compute_fad_from_embeddings, compute_incremental_stats
+
+
+def compute_stats(fad, files, cache_dir, subfolder):
+    """Stats of the cached embeddings of `files`, laid out as the evaluator's cache."""
+    return compute_incremental_stats([cache_dir / fad.ml.name / subfolder / f"{f.stem}.npy" for f in files])
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -209,3 +212,35 @@ def test_fad_csv_output(tmp_path):
     assert len(rows) == 1
     assert rows[0]["model"] == "mert"
     assert float(rows[0]["score"]) == pytest.approx(fad_score)
+
+
+# ── T5: FAD of a prediction set against the cached targets ───────────────────
+
+def test_compute_fad_from_embeddings_matches_manual(tmp_path):
+    rng = np.random.RandomState(3)
+    stems = [f"t{i}" for i in range(6)]
+    targets, _ = _create_cached_embeddings(tmp_path, "m", "target", stems, rng, n_chunks=4)
+    pred_dir = tmp_path / "pred"
+    pred_dir.mkdir()
+    for stem in stems:
+        np.save(pred_dir / f"{stem}.npy", rng.randn(4, D).astype(np.float32) + 0.5)
+    preds = sorted(pred_dir.glob("*.npy"))
+    score = compute_fad_from_embeddings(SimpleNamespace(name="m"), [Path(p.stem) for p in preds], preds,
+                                        tmp_path, tmp_path / "fad.csv", "m")
+    mu_t, cov_t = compute_stats(_make_fad_mock("m"), targets, tmp_path, "target")
+    mu_p, cov_p = compute_incremental_stats(preds)
+    assert score == pytest.approx(calc_frechet_distance(mu_t, cov_t, mu_p, cov_p))
+    row = next(csv.DictReader(open(tmp_path / "fad.csv")))
+    assert row["model"] == "m" and float(row["score"]) == pytest.approx(score)
+
+
+def test_incremental_stats_match_numpy_and_drop_non_finite(tmp_path):
+    rng = np.random.RandomState(5)
+    a, b = rng.randn(7, D), rng.randn(5, D)
+    b[2, 0] = np.nan                                         # a non-finite row is dropped, not propagated
+    np.save(tmp_path / "a.npy", a)
+    np.save(tmp_path / "b.npy", b)
+    mu, cov = compute_incremental_stats([tmp_path / "a.npy", tmp_path / "b.npy"])
+    x = np.concatenate([a, np.delete(b, 2, axis=0)])
+    np.testing.assert_allclose(mu, x.mean(0), atol=1e-12)
+    np.testing.assert_allclose(cov, np.cov(x, rowvar=False), atol=1e-10)

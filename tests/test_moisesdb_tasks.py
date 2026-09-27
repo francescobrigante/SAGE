@@ -14,10 +14,9 @@ from pathlib import Path
 
 import pytest
 
-# Ensure project root and evaluation/ are on path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
-from maeb.moisesdb_tasks import (
+from evaluation.maeb.moisesdb_tasks import (
     _load_chunks_df,
     _load_track_metadata,
     _get_mixtures,
@@ -29,7 +28,7 @@ from maeb.moisesdb_tasks import (
     MOISESDB_SUITE,
     get_moisesdb_tasks,
 )
-from maeb.moisesdb_tasks import _chunks_30s_root, _moisesdb_metadata_root
+from evaluation.maeb.moisesdb_tasks import _chunks_30s_root, _moisesdb_metadata_root
 
 
 def _moisesdb_available() -> bool:

@@ -1,6 +1,6 @@
 # ===============================================================
 # test_compute_cdpam.py — Unit tests for CDPAM evaluation fixes.
-# Tests amplitude scaling, sample-rate conversion and losses.cdpam_score
+# Tests amplitude scaling, sample-rate conversion and metrics.signal.cdpam_score
 # WITHOUT loading the real CDPAM model (mocked).
 # ===============================================================
 import pytest
@@ -9,7 +9,7 @@ import torch
 import torchaudio
 from unittest.mock import MagicMock
 
-# Constants mirroring evaluation/losses.py::cdpam_score
+# Constants mirroring evaluation/metrics/signal.py::cdpam_score
 INPUT_SR    = 44100
 CDPAM_SR    = 22050
 CDPAM_SCALE = 32768.0
@@ -73,12 +73,12 @@ def test_batchnorm_collapses_without_int16_scaling():
     )
 
 
-# ── T4: evaluation/losses.cdpam_score end to end (mocked CDPAM) ──────────────
+# ── T4: cdpam_score end to end (mocked CDPAM) ─────────────────────────────────
 
 def test_cdpam_score_feeds_mono_22k_int16_scale(monkeypatch):
     """cdpam_score resamples to CDPAM_SR, downmixes to mid, scales by CDPAM_SCALE, trims to the
     shorter signal and returns the model's scalar. Uses a mocked CDPAM: no weights are loaded."""
-    import losses
+    from evaluation.metrics import signal as losses
     mock = MagicMock()
     mock.forward.return_value = torch.tensor(0.35)
     monkeypatch.setattr(losses, "_cdpam_model", mock)

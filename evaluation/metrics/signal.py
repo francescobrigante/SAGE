@@ -1,21 +1,13 @@
 # =============================================================================
-# evaluation/losses.py
-# Per-file audio reconstruction metrics: SI-SDR, multi-resolution STFT loss,
-# and CDPAM perceptual similarity. All functions operate on [C, T] tensors.
+# Per-file reconstruction metrics: SDR / SI-SDR, multi-resolution STFT and mel
+# distances, and CDPAM perceptual similarity. All functions take [C, T] tensors.
 # =============================================================================
-
 from __future__ import annotations
-
-import sys
-from pathlib import Path
 
 import torch
 import torchaudio
 
-# evaluation/ sul path: `downmix` vive in utils.py ed e' condiviso da tutti
-# gli embedder, così il selettore Mid/Side esiste in UN posto solo.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from utils import downmix, CHANNEL_MID
+from evaluation.common import downmix, CHANNEL_MID
 
 def compute_sdr_and_sisdr(target: torch.Tensor, pred: torch.Tensor, eps: float = 1e-8) -> tuple[float, float]:
     """Compute both standard scale-dependent SDR and scale-invariant SDR (SI-SDR)
@@ -52,7 +44,7 @@ def si_sdr(target: torch.Tensor, pred: torch.Tensor) -> float:
     """Scale-invariant SDR (dB) from [C, T] tensors on any device.
 
     Operates on the full, already-stitched audio. The 'chunking' detail
-    belongs in the evaluation pipeline (evaluate_swin.py), not here.
+    belongs in the evaluation pipeline (evaluation/reconstruction.py), not here.
     """
     t = target.flatten().float()
     p = pred.flatten().float()

@@ -1,24 +1,19 @@
+# =============================================================================
+# Fréchet audio distances: framewise MERT (layer 4, fadtk pipeline), whole-file
+# CLAP ("GUD", see metrics/clap.py) and PANN Cnn14; incremental mean/covariance
+# over per-file embeddings, and the FAD of a prediction set against targets.
+# =============================================================================
 import os
-import sys
 import numpy as np
 import torch
 import torchaudio
-import torch.nn.functional as F
 from pathlib import Path
 from typing import Optional
 
-# Add project root
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-# evaluation/ sul path: `downmix` vive in utils.py ed e' condiviso da tutti
-# gli embedder, così il selettore Mid/Side esiste in UN posto solo.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from utils import downmix, CHANNEL_MID
-
+from evaluation.common import downmix, CHANNEL_MID
 from sage.utils.console import ok, warn
 
-from fadtk.fad import get_cache_embedding_path, calc_frechet_distance
-from fadtk.model_loader import CLAPLaionModel, MERTModel
+from fadtk.fad import calc_frechet_distance
 
 # PANN (Cnn14_16k) FAD embedder: shared name used as cache subdir + FAD label everywhere.
 PANN_NAME = "pann-cnn14-16k"
@@ -62,49 +57,6 @@ def compute_incremental_stats(files: list[Path]) -> tuple[Optional[np.ndarray], 
     mu = sum_x / n
     cov = (sum_sq_x / (n - 1)) - np.outer(mu, mu) * (n / (n - 1))
     return mu, cov
-
-
-def compute_stats(fad, files: list[Path], cache_dir: Path = None, subfolder: str = None):
-    """Compute mean and covariance from cached embedding .npy files."""
-    model_name = fad.ml.name
-    paths = []
-    
-    for f in files:
-        if not cache_dir:
-            cp = get_cache_embedding_path(model_name, f)
-        else:
-            if subfolder:
-                cp = cache_dir / model_name / subfolder / f"{f.stem}.npy"
-            else:
-                cp = cache_dir / model_name / f"{f.stem}.npy"
-        paths.append(cp)
-    
-    return compute_incremental_stats(paths)
-
-
-def embed_mert(model, wav: torch.Tensor, src_sr: int, device,
-               channel: str = CHANNEL_MID) -> np.ndarray:
-    """In-memory MERT embedding from a [C, T] waveform tensor.
-
-    Returns (N_chunks, D) float16 array.
-    Imported by evaluate_sao.py / evaluate_swin.py for the in-memory pipeline.
-    """
-    msr = 24000
-    if src_sr != msr:
-        wav = torchaudio.functional.resample(wav.cpu(), src_sr, msr)
-    wav_m = downmix(wav, channel)  # (T,)
-
-    cl, hl = 5 * msr, msr
-    chunks = [
-        F.pad(wav_m[s: s + cl], (0, max(0, cl - wav_m[s: s + cl].shape[0]))).cpu().numpy()
-        for s in range(0, wav_m.shape[0], hl)
-    ] or [np.zeros(cl, dtype=np.float32)]
-
-    inputs = model.processor(chunks, sampling_rate=msr, return_tensors="pt", padding=True).to(device)
-    with torch.no_grad():
-        out = model.model(**inputs, output_hidden_states=True)
-    layer = getattr(model, "layer", 12)
-    return out.hidden_states[layer].mean(1).cpu().numpy().astype(np.float16)
 
 
 _FADTK_RESAMPLERS: dict[int, "torchaudio.transforms.Resample"] = {}

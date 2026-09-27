@@ -110,7 +110,7 @@ def pad_for_swin(wav: torch.Tensor, hop_length: int, num_downsamples: int) -> tu
 
     The Swin encoder halves the time axis ``num_downsamples`` times, so the frame count
     ``N // hop + 1`` must divide evenly. This is the padding used by the paper's evaluators
-    (``evaluation/evaluate_swin_*.py::_pad_for_swin``). Returns ``(padded, original_length)``.
+    (``evaluation/codecs.py::SAGEAdapter``, via :meth:`SAGE.reconstruct`). Returns ``(padded, original_length)``.
     """
     orig = wav.shape[-1]
     mult = 2 ** num_downsamples

@@ -5,18 +5,11 @@
 # ===============
 from __future__ import annotations
 
-import sys
-
 import numpy as np
 import pytest
 import torch
 
-from conftest import REPO
-
 pytestmark = pytest.mark.smoke
-for p in (REPO / "evaluation", REPO / "evaluation" / "sota_models"):
-    if str(p) not in sys.path:
-        sys.path.insert(0, str(p))
 
 BASELINES = ["codicodec", "music2latent", "sao-vae", "same", "same-s"]
 
@@ -28,14 +21,14 @@ def test_baseline_packages_import():
 
 
 def test_every_paper_baseline_has_an_adapter():
-    import adapters
-    for name in BASELINES:
-        assert name in adapters._ADAPTERS, name
+    from evaluation import codecs
+    for name in BASELINES + ["sage"]:
+        assert name in codecs.ADAPTERS, name
 
 
 @pytest.mark.parametrize("layout", ["CT", "TC", "BCT"])
 def test_channel_axis_normalisation(layout):
-    from adapters import _to_channel_time
+    from evaluation.codecs import _to_channel_time
     x = np.random.default_rng(0).normal(size=(2, 1000)).astype(np.float32)
     arr = {"CT": x, "TC": x.T, "BCT": x[None]}[layout]
     out = _to_channel_time(arr, audio_channels=2)
@@ -45,8 +38,8 @@ def test_channel_axis_normalisation(layout):
 @pytest.mark.weights
 @pytest.mark.parametrize("name", BASELINES)
 def test_adapter_round_trip_with_real_weights(name):
-    import adapters
-    ad = adapters.build_adapter(name, device="cpu")
+    from evaluation.codecs import build_adapter
+    ad = build_adapter(name, device="cpu")
     wav = 0.1 * torch.randn(2, 44100 * 2)
     rec = ad.reconstruct(wav)
     assert rec.shape[0] == 2 and torch.isfinite(rec).all()

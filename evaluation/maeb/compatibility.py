@@ -1,34 +1,14 @@
 #!/usr/bin/env python3
 # =============================================================================
-# evaluation/maeb/compatibility.py
-# Environment shims that MUST run before the heavy imports (mteb / datasets /
-# stable_audio_tools). Importing this module performs the import-time side
-# effects (HF cache routing + datasets 'List' alias); the rest are functions
-# the encoder calls before importing stable_audio_tools.
+# Shims for the MAEB stack (mteb / datasets) that MUST run before those
+# packages are imported: importing this module registers the datasets 'List'
+# alias and the offline config-name fix; patch_num_proc is applied per task.
 # =============================================================================
 from __future__ import annotations
 
 import inspect
 import os
-import sys
-import types
-from pathlib import Path
 from typing import Any
-
-
-def route_hf_cache() -> str | None:
-    """Point HF_DATASETS_CACHE at $FAST/hf_cache/datasets (fallback $WORK).
-
-    Must run before `datasets` is imported so the cache path is honored.
-    Returns the resolved cache path, or None if neither $FAST nor $WORK is set.
-    """
-    cache = os.path.expandvars("$FAST/hf_cache/datasets")
-    if cache == "$FAST/hf_cache/datasets":               # $FAST unset (local dev)
-        cache = os.path.expandvars("$WORK/hf_cache/datasets")
-    if cache == "$WORK/hf_cache/datasets":               # neither var resolved
-        return None
-    os.environ.setdefault("HF_DATASETS_CACHE", cache)
-    return cache
 
 
 def register_datasets_list_alias() -> None:
@@ -111,43 +91,6 @@ def patch_num_proc(task: Any) -> None:
         task.dataset_transform = lambda *a, num_proc=None, **k: orig()
 
 
-# Heavy / unavailable optional deps of stable_audio_tools that the SAO-ACE
-# autoencoder does NOT need for encoding — stubbed so `import` does not fail.
-_STABLE_AUDIO_STUBS = (
-    "k_diffusion", "laion_clap", "prefigure", "wandb", "gradio",
-    "v_diffusion_pytorch", "local_attention", "vector_quantize_pytorch",
-    "webdataset", "pytorch_lightning",
-)
-
-
-def stub_stable_audio_deps(names: tuple[str, ...] = _STABLE_AUDIO_STUBS) -> None:
-    """Insert dummy modules so heavy optional stable_audio_tools deps import cleanly."""
-    for name in names:
-        if name not in sys.modules:
-            mod = types.ModuleType(name)
-            mod.__spec__ = None  # type: ignore[attr-defined]
-            sys.modules[name] = mod
-
-
-def add_stable_audio_to_path(repo_root: Path) -> None:
-    """Put the vendored stable_audio_baseline on sys.path so stable_audio_tools imports."""
-    vendored = repo_root / "stable_audio_baseline"
-    if vendored.is_dir() and str(vendored) not in sys.path:
-        sys.path.insert(0, str(vendored))
-
-
-def add_src_to_path(repo_root: Path) -> None:
-    """Put src/ on sys.path so the sage package is importable in maeb_dl.
-
-    Called only by swin_encoder.py at module load time (NOT at compatibility
-    import time, so SAO jobs are unaffected).
-    """
-    src = repo_root / "src"
-    if src.is_dir() and str(src) not in sys.path:
-        sys.path.insert(0, str(src))
-
-
-# --- import-time side effects: cache routing MUST precede the datasets import ---
-route_hf_cache()
+# --- import-time side effects (must precede the mteb / datasets imports) ---
 register_datasets_list_alias()
 patch_retrieval_config_names()

@@ -12,7 +12,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# FMA-local music-semantic suite (defined in fma_tasks.py). Default per ogni eval.
+# FMA-local music-semantic suite (defined in fma_tasks.py), the default suite.
 FMA_SUITE = [
     "FMAGenreClassification",
     "FMAGenreClustering",
@@ -21,12 +21,12 @@ FMA_SUITE = [
     "FMAGenreAudioReranking",
     "FMAArtistPairClassification",
 ]
-# Suite MAEB musicale upstream sui dataset ORIGINARI (hub, già in cache su
-# $FAST). Solo task musicali audio-only (no speech, no cross-modal audio-text).
-# NON nel default: si attiva via `--maeb-original-music-only` (pass separato che
-# si fonde nel summary.json esistente, merge non-distruttivo).
+# Upstream MAEB music tasks on their original datasets (from the HuggingFace hub):
+# audio-only music tasks (no speech, no cross-modal audio-text). Not in the default
+# suite: `--maeb-original-music-only` runs them as a separate pass that merges into
+# the existing summary.json.
 MAEB_ORIGINAL_MUSIC = [
-    "GTZANGenre",               # genre classification (canonica)
+    "GTZANGenre",               # genre classification
     "GTZANGenreClustering",     # genre clustering
     "MusicGenreClustering",     # genre clustering
     "GTZANAudioReranking",      # genre reranking

@@ -145,7 +145,7 @@ def test_l6_gradient_is_finite_through_a_collapsed_side():
 
 def test_l6_tracks_d_pan_direction():
     """Sanity against the metric it is a surrogate for: worse d_pan ⇒ larger L6."""
-    from stereo_diagnosis.ms_eval import ms_metrics_row
+    from evaluation.metrics.stereo import ms_metrics_row
 
     mid, side = _signals(batch=1)
     target = _ms_to_lr(mid, side)

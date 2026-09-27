@@ -9,7 +9,7 @@ import math
 import pytest
 import torch
 
-from stereo_diagnosis.stereo_imaging import align, band_weights, estimate_delay, stereo_imaging_distance
+from evaluation.metrics.stereo import align, band_weights, estimate_delay, stereo_imaging_distance
 
 SR = 44100
 T = SR * 3

@@ -8,7 +8,7 @@ import pytest
 import numpy as np
 import torch
 
-from compute_clap_score import cosine_sim
+from evaluation.metrics.clap import cosine_sim
 
 
 # ── T1: cosine_sim correctness ────────────────────────────────────────────────
@@ -74,7 +74,7 @@ class _MockCLAP:
 
 def test_embed_clap_windows_and_dtype():
     pytest.importorskip("laion_clap")
-    from compute_clap_score import embed_clap
+    from evaluation.metrics.clap import embed_clap
     ml = _MockCLAP()
     wav = 0.1 * torch.randn(2, 12 * ml.sr)                    # 12 s stereo at the model rate
     emb = embed_clap(ml, wav, ml.sr, "cpu")
@@ -85,7 +85,7 @@ def test_embed_clap_windows_and_dtype():
 # ── T3: cache + paper scoring (cosine of the window-averaged embeddings) ─────
 
 def test_load_or_embed_computes_once_then_reads_cache(tmp_path):
-    from utils import load_or_embed, target_cache_path
+    from evaluation.common import load_or_embed, target_cache_path
     calls = []
 
     def embed_fn(ml, wav, sr, device):
@@ -110,7 +110,7 @@ def test_clap_score_is_cosine_of_window_means():
 # ── T4: CSV output ────────────────────────────────────────────────────────────
 
 def test_write_csv_round_trip_ignores_extra_keys(tmp_path):
-    from utils import write_csv
+    from evaluation.common import write_csv
     rows = [{"file": "a.wav", "cosine": 0.85, "debug": "x"}, {"file": "b.wav", "cosine": 0.91}]
     path = tmp_path / "sub" / "clap_music.csv"
     write_csv(path, ["file", "cosine"], rows)

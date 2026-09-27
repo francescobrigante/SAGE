@@ -1,8 +1,8 @@
 # ===============================================================
 # test_compute_spectral.py — Tests of the per-file reconstruction metrics of
-# the paper evaluators (evaluation/losses.py: SDR/SI-SDR, multi-resolution
-# STFT and mel L1) and of the helpers around them (evaluation/utils.py:
-# batch_align, write_csv, atomic_save_npy). Synthetic signals, no checkpoints.
+# the paper evaluator (evaluation/metrics/signal.py: SDR/SI-SDR, multi-resolution
+# STFT and mel L1) and of the helpers around them (evaluation/common.py:
+# write_csv, atomic_save_npy). Synthetic signals, no checkpoints.
 # ===============================================================
 import csv
 
@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 import torch
 
-from losses import compute_sdr_and_sisdr, si_sdr, spectral_losses, stft_loss
-from utils import atomic_save_npy, batch_align, write_csv
+from evaluation.common import atomic_save_npy, write_csv
+from evaluation.metrics.signal import compute_sdr_and_sisdr, si_sdr, spectral_losses, stft_loss
 
 SR = 44100
 
@@ -25,11 +25,10 @@ def _sine_wav(duration: float = 1.0, freq: float = 440.0, sr: int = SR) -> torch
 
 
 def _compute_pair(target: torch.Tensor, pred: torch.Tensor):
-    """batch_align → min-trim → metrics on a single [C, T] pair. Returns (stft, sisdr)."""
+    """Min-trim → metrics on a single [C, T] pair, as the evaluator does. Returns (stft, sisdr)."""
     T = min(target.shape[-1], pred.shape[-1])
-    t_al, p_al, _ = batch_align(target[None, :, :T], pred[None, :, :T], sr=SR)
-    stft = spectral_losses(t_al[0], p_al[0], sample_rate=SR)["stft_loss"]
-    _, sisdr = compute_sdr_and_sisdr(t_al[0], p_al[0])
+    stft = spectral_losses(target[..., :T], pred[..., :T], sample_rate=SR)["stft_loss"]
+    _, sisdr = compute_sdr_and_sisdr(target[..., :T], pred[..., :T])
     return stft, sisdr
 
 
@@ -113,31 +112,6 @@ def test_per_file_csv_correct_columns_and_ordering(tmp_path):
         assert float(back[stem]["si_sdr"]) > 30.0 and float(back[stem]["stft_loss"]) < 0.05
     for stem in ("noisy_001", "noisy_002"):
         assert float(back[stem]["si_sdr"]) < 20.0
-
-
-# ── T5: batch_align correctness ───────────────────────────────────────────────
-
-def test_batch_align_self_lag_zero():
-    wav = _sine_wav(duration=2.0)
-    t = wav.unsqueeze(0).to(torch.float64)
-    _, _, lags = batch_align(t, t.clone(), sr=SR)
-    assert int(lags[0].item()) == 0
-
-
-def test_batch_align_recovers_known_lag():
-    delay_samples = 512
-    wav = _sine_wav(duration=2.0, freq=440.0)
-    delayed = torch.cat([torch.zeros(1, delay_samples), wav[..., :-delay_samples]], dim=-1)
-    _, _, lags = batch_align(wav.unsqueeze(0), delayed.unsqueeze(0), sr=SR)
-    assert abs(int(lags[0].item())) == delay_samples
-
-
-def test_batch_align_after_lag_signals_align():
-    delay_samples = 256
-    wav = _sine_wav(duration=2.0, freq=660.0)
-    delayed = torch.cat([torch.zeros(1, delay_samples), wav[..., :-delay_samples]], dim=-1)
-    t_al, p_al, _ = batch_align(wav.unsqueeze(0), delayed.unsqueeze(0), sr=SR)
-    assert si_sdr(t_al[0], p_al[0]) > 20.0
 
 
 # ── T6: min-trim handles length mismatch ──────────────────────────────────────

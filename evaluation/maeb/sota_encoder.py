@@ -19,13 +19,8 @@ from tqdm.auto import tqdm
 
 from .audio_prep import AudioDecodeError, prepare_audio
 
-# sota_models/ holds the CodecAdapter factory (lazy model imports).
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-import sys
-_SOTA_DIR = _REPO_ROOT / "evaluation" / "sota_models"
-if str(_SOTA_DIR) not in sys.path:
-    sys.path.insert(0, str(_SOTA_DIR))
-from adapters import build_adapter  # noqa: E402
+# evaluation/codecs.py holds the CodecAdapter factory (lazy model imports).
+from evaluation.codecs import build_adapter
 
 from mteb.models.abs_encoder import AbsEncoder  # noqa: E402
 from mteb.models.model_meta import ModelMeta  # noqa: E402

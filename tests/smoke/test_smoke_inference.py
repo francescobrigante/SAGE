@@ -21,7 +21,7 @@ needs_golden = pytest.mark.skipif(not GOLDEN_LOCAL.is_dir(), reason=f"golden ref
 
 
 def _pad_for_swin(wav: torch.Tensor, hop: int, n_down: int) -> tuple[torch.Tensor, int]:
-    """Same padding as evaluation/evaluate_swin_10s.py::_pad_for_swin (frozen in make_golden.py)."""
+    """The padding of the paper evaluators (frozen in make_golden.py; sage.inference.pad_for_swin)."""
     orig = wav.shape[-1]
     mult = 2 ** n_down
     frames = orig // hop + 1

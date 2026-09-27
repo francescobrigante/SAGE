@@ -56,7 +56,7 @@ def prepare_audio(
 
     Handles: array -> tensor, (samples, channels) -> (channels, samples) transpose
     heuristic, mono unsqueeze, resample to ``target_sr``, channel normalization to
-    exactly ``channels`` (the bug the monolith missed), and optional length clip.
+    exactly ``channels``, and optional length clip.
 
     Args:
         audio_item:  MAEB dict — decoded ("array"+"sampling_rate") or undecoded

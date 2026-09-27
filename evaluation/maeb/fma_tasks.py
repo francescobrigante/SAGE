@@ -19,7 +19,7 @@ Six tasks evaluated entirely on the FMA *large test set* (11 263 clips, 30 s,
 
 Paths come from ``config.py`` (``FMA_METADATA`` → tracks.csv) with the audio
 directory derived as ``<fma>/fma_large`` (override via env ``FMA_LARGE_DIR``).
-A per-task ``max_files`` cap mirrors ``evaluate_swin_varT.collect_fma_files``:
+A per-task ``max_files`` cap mirrors ``evaluation.common.collect_fma_files``:
 each task uses ``min(task_samples, max_files)`` (``0`` = all), sampled
 deterministically while preserving label / qrel structure.
 """

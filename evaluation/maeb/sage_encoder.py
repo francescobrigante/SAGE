@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# evaluation/maeb/swin_encoder.py
-# MTEB-compatible encoder for Swin C-VAE checkpoints (complex and real).
+# MTEB-compatible encoder of SAGE latents for the MAEB probes.
 # Single forward pass per clip (variable-T padded), frame-masked mean pool.
 # Embedding = deterministic VAE mean μ; complex models: Re+Im concatenated.
 # =============================================================================
@@ -9,21 +8,14 @@ from __future__ import annotations
 
 import logging
 import math
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
-# Path inject MUST happen before sage import so maeb_dl can find src/.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_REPO_ROOT))  # put evaluation/ on path for compatibility
-from maeb import compatibility                              # noqa: E402
-compatibility.add_src_to_path(_REPO_ROOT)          # inject src/ into sys.path
-
-from sage.inference import SAGE  # noqa: E402
+from . import compatibility  # noqa: F401  (must precede mteb / datasets)
+from sage.inference import SAGE, pad_for_swin  # noqa: E402
 
 import torchaudio                                          # noqa: E402
 from tqdm.auto import tqdm                                 # noqa: E402
@@ -44,41 +36,14 @@ _SWIN_SR = 44100
 _SWIN_CH = 2
 
 
-# ---------------------------------------------------------------------------
-# Padding helper (identical to evaluate_swin_varT.py)
-# ---------------------------------------------------------------------------
-
-def _pad_for_swin(
-    wav: torch.Tensor,
-    hop: int,
-    num_downsamples: int,
-) -> tuple[torch.Tensor, int]:
-    """Pad waveform so STFT frame count is a multiple of 2^num_downsamples.
-
-    Args:
-        wav:             (C, T) float32 waveform.
-        hop:             STFT hop length in samples.
-        num_downsamples: Number of temporal downsampling stages in the encoder.
-
-    Returns:
-        (wav_padded, orig_samples): padded waveform and original sample count.
-    """
-    orig = wav.shape[-1]
-    w_mul = 2 ** num_downsamples
-    W = (orig // hop) + 1                            # current STFT frame count
-    pad_w = (w_mul - W % w_mul) % w_mul              # extra frames needed
-    target = max(orig, (W + pad_w - 1) * hop)
-    if target > orig:
-        wav = F.pad(wav, (0, target - orig))
-    return wav, orig
 
 
 # ===========================================================================
 # MTEB encoder wrapper
 # ===========================================================================
 
-class SwinEncoder(AbsEncoder):
-    """MTEB-compatible wrapper for Swin C-VAE checkpoints.
+class SAGELatentEncoder(AbsEncoder):
+    """MTEB-compatible wrapper for SAGE checkpoints.
 
     Encodes each audio clip with a single variable-T forward pass (padded to
     the next 2^num_downsamples STFT-frame boundary), then mean-pools the VAE
@@ -141,7 +106,7 @@ class SwinEncoder(AbsEncoder):
         self._cache: dict[str, torch.Tensor] = {}
 
         log.info(
-            "SwinEncoder: is_complex=%s  hop=%d  num_downsamples=%d  "
+            "SAGELatentEncoder: is_complex=%s  hop=%d  num_downsamples=%d  "
             "p2p=%d  standardize=%s  f_lat=%s  embed_dim=%d  device=%s",
             self.is_complex, self.hop, self.num_downsamples,
             self.parameters_to_predict, self.standardize_bottleneck,
@@ -166,7 +131,7 @@ class SwinEncoder(AbsEncoder):
         """
         n = self.hop * (2 ** self.num_downsamples) * 8            # safe >1-window length
         wav = torch.zeros(self.audio_channels, n)
-        wav_padded, _ = _pad_for_swin(wav, self.hop, self.num_downsamples)
+        wav_padded, _ = pad_for_swin(wav, self.hop, self.num_downsamples)
         spec = self.autoencoder.stft(wav_padded.unsqueeze(0).to(self.device))   # (1,2,F,T)
         if not self.is_complex:
             spec = self.autoencoder._pack_complex(spec)                          # (1,4,F,T)
@@ -188,7 +153,7 @@ class SwinEncoder(AbsEncoder):
         Returns:
             Float32 tensor of shape (embed_dim,).
         """
-        wav_padded, orig_samples = _pad_for_swin(wav, self.hop, self.num_downsamples)
+        wav_padded, orig_samples = pad_for_swin(wav, self.hop, self.num_downsamples)
 
         # Single forward pass
         spec = self.autoencoder.stft(wav_padded.unsqueeze(0).to(self.device))  # (1,2,F,T)
@@ -293,7 +258,7 @@ class SwinEncoder(AbsEncoder):
     ) -> "Array":
         if any(m != "audio" for m in task_metadata.modalities):
             raise ValueError(
-                f"SwinEncoder is audio-only, but task '{task_metadata.name}' "
+                f"SAGELatentEncoder is audio-only, but task '{task_metadata.name}' "
                 f"requires modalities {task_metadata.modalities}."
             )
         if "audio" not in inputs.dataset.features:
@@ -308,14 +273,14 @@ class SwinEncoder(AbsEncoder):
 # ModelMeta builder
 # ===========================================================================
 
-def build_swin_model_meta(ckpt_path: str, encoder: SwinEncoder) -> ModelMeta:
-    """Build MTEB ModelMeta for a Swin C-VAE checkpoint."""
-    model_type = "cvae-cplx" if encoder.is_complex else "cvae-real"
+def build_sage_model_meta(ckpt_path: str, encoder: SAGELatentEncoder) -> ModelMeta:
+    """Build MTEB ModelMeta for a SAGE checkpoint."""
+    model_type = "sage-complex" if encoder.is_complex else "sage"
     # Standardized runs get a distinct name so their results never collide with
     # the default (freq+time pooled) run of the same checkpoint.
     suffix = "__std" if encoder.standardize_bottleneck else ""
     return ModelMeta(
-        loader=lambda model_name, revision, **kw: SwinEncoder(
+        loader=lambda model_name, revision, **kw: SAGELatentEncoder(
             model_name=model_name, revision=revision, **kw
         ),
         name=f"{model_type}/{Path(ckpt_path).stem.replace(' ', '_')}{suffix}",

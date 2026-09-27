@@ -1,15 +1,12 @@
-import sys
+# =============================================================================
+# CLAP embeddings: windowed LAION-CLAP (fadtk "audio" / "music" checkpoints) for
+# the per-file CLAP cosine, and whole-file CLAP at 48 kHz ("GUD", as in the
+# frechet_audio_distance package) for FAD-CLAP.
+# =============================================================================
 import torch
 import numpy as np
-from pathlib import Path
 
-# Add project root
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-# evaluation/ sul path: `downmix` vive in utils.py ed e' condiviso da tutti
-# gli embedder, così il selettore Mid/Side esiste in UN posto solo.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from utils import downmix, CHANNEL_MID
+from evaluation.common import downmix, CHANNEL_MID
 
 import torchaudio
 
@@ -29,7 +26,6 @@ def embed_clap(model, wav: torch.Tensor, src_sr: int, device,
     """In-memory CLAP embedding from a [C, T] waveform tensor.
 
     Returns (N_chunks, D) float16 array.
-    Imported by evaluate_sao.py / evaluate_swin.py for the in-memory pipeline.
     """
     from laion_clap.training.data import int16_to_float32, float32_to_int16
 

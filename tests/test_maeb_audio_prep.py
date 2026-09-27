@@ -3,13 +3,11 @@
 # Unit tests for evaluation/maeb/audio_prep.py — channel normalization (the bug
 # the SAO monolith missed), shape heuristics, resampling, and frame math.
 # =============================================================================
-import sys
-from pathlib import Path
 
 import pytest
 import torch
 
-from maeb.audio_prep import prepare_audio, valid_latent_frames  # noqa: E402
+from evaluation.maeb.audio_prep import prepare_audio, valid_latent_frames  # noqa: E402
 
 _SR = 44100
 
