@@ -32,6 +32,7 @@ from sage.utils.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 from sage.training.engine import AutoencoderEngine  
 from sage.model.autoencoder import SAGEAutoencoder
 from sage.inference import encode_audio as inference_encode_audio, decode_audio as inference_decode_audio
+from sage.compat import drop_legacy_state_keys
 from sage.utils.console import ok, warn
 from sage.training.loggers import log_metric, log_histogram, log_point_cloud, log_image, log_audio, logger_project_name
 from sage.utils.audio import trim_to_shortest
@@ -163,6 +164,10 @@ class SAGELightningModule(pl.LightningModule):
         self._accum_steps_gen = 0
         self._accum_steps_disc = 0
         self._disc_phase = True   # per-batch G/D toggle; starts True so 1st batch flips to gen
+        # Generator updates done so far: the single step unit of the recipes (LR schedule,
+        # semantic gate, discriminator warm-up). Lightning's global_step counts every
+        # optimizer.step() (generator + projection head + discriminator), so it is not used.
+        self.gen_step = 0
         # Accumulate metrics to log once per optimizer step.
         self._log_accum_gen: Dict[str, float] = {}
         self._log_accum_disc: Dict[str, float] = {}
@@ -202,8 +207,18 @@ class SAGELightningModule(pl.LightningModule):
             inference_cfg["train_stft_params"] = deepcopy(self.stft_params)
 
         checkpoint["inference_config"] = {k: v for k, v in inference_cfg.items() if v is not None}
+        checkpoint["gen_step"] = int(self.gen_step)
 
     def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+        # Pre-release checkpoints have no "gen_step": the generator LR scheduler (first in the
+        # list) steps once per generator update, so its last_epoch is the same count.
+        if "gen_step" in checkpoint:
+            self.gen_step = int(checkpoint["gen_step"])
+        elif checkpoint.get("lr_schedulers"):
+            self.gen_step = int(checkpoint["lr_schedulers"][0].get("last_epoch", 0))
+        # Keys of pre-release checkpoints owned by no current module (sage/compat.py);
+        # removed before Lightning's strict load_state_dict.
+        drop_legacy_state_keys(checkpoint.get("state_dict", {}))
         # EMACallback injects ema_autoencoder.* into state_dict at save time.
         # Strip those keys here (before PL calls load_state_dict with strict=True)
         # and stash them so EMACallback.on_load_checkpoint can recover them.
@@ -377,8 +392,7 @@ class SAGELightningModule(pl.LightningModule):
         # where opt_gen actually steps. Reset here; set True after opt_gen.step()
         # below. EMACallback reads this flag (SAO updates EMA only on gen steps).
         self._ema_update_this_batch = False
-        out = self.engine.compute(batch, global_step=int(self.global_step),
-                                  disc_phase=self._disc_phase)
+        out = self.engine.compute(batch, gen_step=self.gen_step, disc_phase=self._disc_phase)
         phase = out["phase"]
         loss_info = out["loss_info"]
         stats = out["stats"]
@@ -456,6 +470,7 @@ class SAGELightningModule(pl.LightningModule):
                 if self.clip_grad_norm > 0.0:
                     torch.nn.utils.clip_grad_norm_(self.autoencoder.parameters(), self.clip_grad_norm)
                 opt_gen.step()
+                self.gen_step += 1
                 # Generator weights just changed → EMA may advance this batch.
                 self._ema_update_this_batch = True
                 if opt_aux is not None:

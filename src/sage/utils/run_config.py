@@ -5,6 +5,7 @@
 
 from pathlib import Path
 from typing import Mapping, Optional
+import hashlib
 import os
 import re
 
@@ -63,6 +64,9 @@ def _extract_loss_weights(loss_config: Mapping) -> list[tuple[str, float]]:
                     if isinstance(w_val, (int, float)):
                         name = f"{prefix}.{w_key}" if prefix else str(w_key)
                         weights.append((name, float(w_val)))
+            elif key == "extra" and isinstance(value, (list, tuple)):     # experimental losses
+                for entry in value:
+                    weights.append((f"extra.{entry['name']}", float(entry["weight"])))
             elif isinstance(value, Mapping):
                 next_prefix = f"{prefix}.{key}" if prefix else str(key)
                 visit(value, next_prefix)
@@ -72,18 +76,18 @@ def _extract_loss_weights(loss_config: Mapping) -> list[tuple[str, float]]:
 
 
 def build_run_name(model_name: str, loss_config: Optional[Mapping] = None) -> str:
-    """Build a deterministic run name from the model name and loss weights."""
-    model_part = _sanitize_token(model_name)
-    if not loss_config:
-        return model_part
+    """Short, deterministic run name: the model name plus an 8-hex hash of the loss weights.
 
-    weights = _extract_loss_weights(loss_config)
+    Used only when ``trainer.wandb.name`` is not set (the paper recipes set it). The hash
+    keeps different loss mixes apart without spelling every weight into the directory
+    name, which used to exceed the 255-character file-name limit (bug B8).
+    """
+    model_part = _sanitize_token(model_name)
+    weights = sorted(_extract_loss_weights(loss_config)) if loss_config else []
     if not weights:
         return model_part
-
-    weights = sorted(weights, key=lambda item: item[0])
-    weight_tokens = [f"{_sanitize_token(name)}{value:g}" for name, value in weights]
-    return "-".join([model_part] + weight_tokens)
+    digest = hashlib.sha1(";".join(f"{k}={v:g}" for k, v in weights).encode()).hexdigest()[:8]
+    return f"{model_part}-{digest}"
 
 
 def resolve_run_name(cfg) -> str:
@@ -92,7 +96,7 @@ def resolve_run_name(cfg) -> str:
 
     model_name = None
     try:
-        model_name = HydraConfig.get().runtime.choices.get("model")
+        model_name = HydraConfig.get().runtime.choices.get("models")
     except Exception:
         model_name = None
 

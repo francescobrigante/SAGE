@@ -5,13 +5,12 @@ Validates the new spectral primitives:
   - adaptive_log_mag: zero on identical input, invariant to a common scaling.
   - MRSTFTSame: scalar/finite output, exactly zero on identical waveforms (all three
     sub-terms vanish), nonzero on differing waveforms, mono + stereo (mid/side) paths,
-    and that it registers under loss_manager's `mrstft_same` block.
+    and that it can be added to a run through loss_config.extra.
 """
-import sys
 
 import torch
 
-from sage.nn.losses.spectral import adaptive_log_mag, MRSTFTSame
+from sage.nn.losses.experimental import adaptive_log_mag, MRSTFTSame
 
 
 def test_adaptive_log_mag_zero_on_identical():
@@ -70,20 +69,20 @@ def test_mrstft_same_backprop():
 
 
 def test_mrstft_same_registers_in_loss_manager():
-    # The `mrstft_same` block builds an MRSTFTSame and appends a LossWithTarget.
+    # Not a paper term: it enters a run through loss_config.extra.
     from sage.training.loss_manager import LossManager
 
     class _DummyAE(torch.nn.Module):
         bottleneck = None
-        has_pre_transform = False
-        pre_transform = None
 
     lm = LossManager(
         autoencoder=_DummyAE(),
         sample_rate=44100,
-        loss_config={"mrstft_same": {"weights": {"mrstft_same": 1.0},
-                                     "config": {"fft_sizes": [256, 512]}}},
+        loss_config={"extra": [{"name": "mrstft_same_loss", "weight": 1.0, "input_key": "decoded",
+                                "target_key": "reals",
+                                "loss": {"_target_": "sage.nn.losses.experimental.MRSTFTSame",
+                                         "fft_sizes": [256, 512]}}]},
     )
-    assert isinstance(lm.mrstft_same, MRSTFTSame)
     names = [getattr(m, "name", "") for m in lm.losses_gen.losses]
-    assert "mrstft_same_loss" in names
+    assert names == ["mrstft_same_loss"]
+    assert isinstance(lm.losses_gen.losses[0].loss_module, MRSTFTSame)

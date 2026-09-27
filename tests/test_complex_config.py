@@ -25,7 +25,7 @@ from sage.model.decoder import SAGEDecoder
 from sage.nn.complex.bottleneck import ComplexVAEBottleneck
 from sage.model.autoencoder import SAGEAutoencoder
 
-CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 
 
 # ---------------------------------------------------------------------------

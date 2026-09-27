@@ -30,7 +30,7 @@ class _StubTeacher(nn.Module):
 def _info(z, feature_shape=(4, 32), reals=None, step=10**9):
     if reals is None:
         reals = torch.randn(z.shape[0], 2, 8192)
-    return {"latents": z, "reals": reals, "feature_shape": feature_shape, "global_step": step}
+    return {"latents": z, "reals": reals, "feature_shape": feature_shape, "gen_step": step}
 
 
 # ---------------------------------------------------------------------------

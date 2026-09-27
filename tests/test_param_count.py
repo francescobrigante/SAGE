@@ -1,5 +1,5 @@
 # ===============
-# The SAGE architecture config (config/models/swin_real_swiglu_xsa.yaml) builds the model of the
+# The SAGE architecture config (configs/models/swin_real_swiglu_xsa.yaml) builds the model of the
 # paper: 104,629,380 trainable parameters (Table 6), plus the 10,820 of the zero-initialised
 # post-net that decoder fine-tuning adds (use_postnet=true, the released e992 checkpoint).
 # ===============
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import train  # noqa: F401  (registers the ${mul:} / ${config:} resolvers used by the model config)
 
-CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 PAPER_PARAMS = 104_629_380
 POSTNET_PARAMS = 10_820
 

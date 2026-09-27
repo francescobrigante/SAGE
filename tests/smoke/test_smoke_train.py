@@ -28,36 +28,14 @@ def test_pretrain_writes_a_loadable_checkpoint(tiny_pretrain_ckpt):
     assert any(k.startswith("engine.loss_manager.discriminator.") for k in keys)
     assert any("distill_proj" in k for k in keys)
     assert all(torch.isfinite(v).all() for v in ema.values() if v.is_floating_point())
+    # 2 batches under the G/D alternation = 1 generator update; the generator LR schedule agrees
+    assert ck["gen_step"] == 1 and ck["lr_schedulers"][0]["last_epoch"] == 1
 
 
 FINETUNE = [
-    "models=swin_real_swiglu_xsa",
+    "+experiment=decoder_ft",                 # paper decoder fine-tuning recipe (Table 6)
     "data=fma",
-    "models.model.decoder.use_postnet=true",
-    "+init_from_ema=true",
-    "+init_from_disc=false",
-    "trainer.trainer.freeze_encoder=true",
-    "trainer.trainer.warmup_steps=0",
-    "trainer.loss_config.bottleneck.weights.kl=0.0",
-    "trainer.loss_config.spectral.weights.stft_mse=1.0",
-    "trainer.loss_config.spectral.weights.mrstft=0.0",
-    "trainer.loss_config.mrmel.weights.mrmel=0.5",
-    "trainer.loss_config.mrstft_sd.weights.mrstft_sd=1.0",
-    "++trainer.loss_config.discriminator.config.fold_lrms=true",
-    "trainer.optimizer.lr=1e-4",
-    "trainer.scheduler.inv_gamma=200000",
-    "++trainer.disc_optimizer._target_=torch.optim.AdamW",
-    "++trainer.disc_optimizer.lr=2e-4",
-    "++trainer.disc_optimizer.betas=[0.8,0.99]",
-    "++trainer.disc_optimizer.weight_decay=1e-3",
-    "++trainer.loss_config.discriminator.type=wavtokenizer",
-    "++trainer.loss_config.discriminator.config.loss_type=rpgan",
-    "++trainer.loss_config.discriminator.config.preprocess=true",
-    "++trainer.loss_config.discriminator.weights.adversarial=0.1",
-    "++trainer.loss_config.discriminator.weights.feature_matching=0.2",
-    "trainer.trainer.precision=32",
-    "++trainer.trainer.ema_decay=0.9998",
-    "trainer.wandb.name=smoke_decoder_ft",   # the auto-generated run name exceeds 255 chars (bug B8)
+    "trainer.wandb.name=smoke_decoder_ft",
 ]
 
 

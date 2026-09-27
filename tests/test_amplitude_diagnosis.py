@@ -9,7 +9,7 @@ global scaling: SC(ax, y) = SC(x, y) and log_mag(ax, y) = log_mag(x, y) + const.
 import torch
 import sys
 
-from sage.nn.losses.spectral import MultiResolutionSpectrogramLoss
+from sage.nn.losses.experimental import MultiResolutionSpectrogramLoss
 
 
 def test_mrstft_scale_invariance():

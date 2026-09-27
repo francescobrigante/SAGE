@@ -16,7 +16,7 @@ from sage.utils.config_guards import check_cac_consistency
 
 # ── Hotspot A: clip_grad_norm value ──────────────────────────────────────────
 
-TRAINER_YAML = Path(__file__).parent.parent / "config" / "trainer.yaml"
+TRAINER_YAML = Path(__file__).parent.parent / "configs" / "trainer.yaml"
 
 
 class TestClipGradNorm:
@@ -85,8 +85,8 @@ class TestCacConsistencyGuard:
 
     @pytest.mark.parametrize("name", ["fma", "multicorpus"])
     def test_data_yaml_has_cac_field(self, name):
-        """config/data/<name>.yaml must have an explicit cac field in train/eval datasets."""
-        with open(Path(__file__).parent.parent / "config" / "data" / f"{name}.yaml") as f:
+        """configs/data/<name>.yaml must have an explicit cac field in train/eval datasets."""
+        with open(Path(__file__).parent.parent / "configs" / "data" / f"{name}.yaml") as f:
             cfg = yaml.safe_load(f)
         assert "cac" in cfg["train_dataset"], (
             "data.yaml train_dataset is missing the cac key — required for guard to work."

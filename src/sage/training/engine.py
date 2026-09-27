@@ -37,7 +37,7 @@ def select_training_phase(use_disc: bool, warmup_mode: str, disc_phase: bool, wa
 class AutoencoderEngine(nn.Module):
     """
     - Costruisce discriminator, loss e metriche eval (se richieste)
-    - compute(batch, global_step) -> dict con phase, loss totali e breakdown, loss_info
+    - compute(batch, gen_step) -> dict con phase, loss totali e breakdown, loss_info
     - compute_validation(batch) -> dict metriche validation (CPU scalari)
     - configure_optimizers() -> ottimizzatori + scheduler dal config
     Nessun backward/step/logging qui dentro.
@@ -118,7 +118,7 @@ class AutoencoderEngine(nn.Module):
             return None
         return self.teacher_model.encode(encoder_input, return_info=False)
 
-    def compute(self, batch: Tuple[torch.Tensor, torch.Tensor], global_step: int,
+    def compute(self, batch: Tuple[torch.Tensor, torch.Tensor], gen_step: int,
                 disc_phase: Optional[bool] = None) -> Dict[str, Any]:
         """Compute forward and loss breakdown for a training batch.
 
@@ -142,8 +142,10 @@ class AutoencoderEngine(nn.Module):
         Args:
                 batch: Tuple ``(sp_reals, orig_waveforms)`` containing the reference
                         spectrograms and waveforms produced by the dataset.
-                global_step: Current optimization step, used to control warm-up and
-                        adversarial phase alternation.
+                gen_step: Number of generator updates done so far. Every step-based knob
+                        (``warmup_steps``, the semantic ``detach_warmup_steps``) and the LR
+                        schedule count generator updates, one every two batches under the
+                        G/D alternation.
 
         Returns:
                 Dict[str, Any]: A payload that includes the selected training phase,
@@ -166,14 +168,14 @@ class AutoencoderEngine(nn.Module):
         # we store transformed target and original waveforms
         loss_info["encoder_input"] = spectral_target
         loss_info["reals"] = orig_waveforms
-        loss_info["global_step"] = global_step  # consumed by latent-alignment losses for detached-warmup
+        loss_info["gen_step"] = gen_step  # read by the semantic distillation for its detached warm-up
 
-        warmed_up = (global_step >= self.warmup_steps)
+        warmed_up = (gen_step >= self.warmup_steps)
 
         # Resolve the phase up-front: gen losses only on gen steps, disc loss only on
         # disc steps, and the generator forward under no_grad on disc steps.
         if disc_phase is None:
-            disc_phase = (global_step % 2 == 1)
+            disc_phase = (gen_step % 2 == 1)
         phase = select_training_phase(self.use_disc, self.warmup_mode, bool(disc_phase), warmed_up)
         disc_step = (phase == "disc")
 

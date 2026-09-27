@@ -1,0 +1,98 @@
+# @package _global_
+# =============================================================================
+# SAGE — phase 1: pretraining (paper Section 2.3, Table 6).
+#
+#   python train.py +experiment=pretrain trainer.trainer.num_gpus=4 ++trainer.trainer.num_nodes=4
+#
+# Trains the full system from scratch on the multi-corpus dataset: reconstruction
+# (L_STFT, L_mel, L_SD), KL, CLAP semantic distillation under the detached warm-up,
+# and the WavTokenizer discriminator (RpGAN) on L, R, M, S. Every value below is the
+# one used for the released checkpoint; tests/test_recipes.py checks them against
+# Table 6. The batch size is GLOBAL: it is split over all devices (paper: 16 A100,
+# 4 nodes x 4, 8 segments per GPU), so the recipe runs unchanged on other hardware.
+# =============================================================================
+defaults:
+  - override /models: swin_real_swiglu_xsa
+  - override /data: multicorpus
+
+data:
+  train_dataloader:
+    batch_size: 128                   # global batch (Table 6)
+  eval_dataloader:
+    batch_size: 128
+
+trainer:
+  wandb:
+    name: sage_pretrain
+  trainer:
+    epochs: 500                       # 956 batches/epoch -> ~478k batches, ~239k generator updates
+    save_every_n_epochs: 20
+    check_val_every_n_epoch: 1
+    strategy: ddp_find_unused_parameters_true
+    precision: "32"
+    compile: false
+
+  # ── Generator: AdamW + inverse-square-root schedule (trainer.yaml) ─────────
+  # lr 1e-3, betas (0.9, 0.98), wd 1e-4 on matrices only; InverseLR with
+  # gamma = 2e5 and power 1/2, exponential warm-up (90% of peak at ~2.4k updates).
+  # The schedule advances once per generator update.
+  optimizer:
+    lr: 1e-3
+  scheduler:
+    inv_gamma: 200000
+
+  # ── Discriminator ──────────────────────────────────────────────────────────
+  disc_optimizer:
+    _target_: torch.optim.AdamW
+    lr: 2e-4
+    betas: [0.8, 0.99]
+    weight_decay: 1e-3
+
+  # ── Projection head of the semantic distillation (Linear 64 -> 512) ────────
+  aux_optimizer:
+    _target_: torch.optim.AdamW
+    lr: 1e-5                          # slow head: the encoder, not the head, must carry the alignment
+    betas: [0.9, 0.98]
+    weight_decay: 1e-4
+  aux_scheduler:
+    _target_: torch.optim.lr_scheduler.ConstantLR
+    factor: 1.0
+    total_iters: 1
+    interval: step
+
+  # ── Loss, equation 2: (STFT, mel, SD, KL, sem, adv, fm) = (1, 0.5, 1, 1e-4, 1, 0.1, 0.2)
+  loss_config:
+    spectral:
+      weights:
+        stft_mse: 1.0                 # L_STFT: squared error on the power-compressed complex STFT
+    mrmel:
+      weights:
+        mrmel: 0.5                    # L_mel
+    mrstft_sd:
+      weights:
+        mrstft_sd: 1.0                # L_SD: sum-and-difference MR-STFT (M, S, L, R), A-weighted
+    bottleneck:
+      weights:
+        kl: 1.0e-4                    # L_KL
+    semantic_distill:                 # L_sem: CLAP clip-level cosine distillation
+      teacher_type: clap
+      weights:
+        distill: 1.0
+      config:
+        proj_dim: 512                 # LAION-CLAP embedding size
+        latent_dim: 64                # C_z x F_lat = 16 x 4
+      # Semantic gate s0, in generator updates: the latent enters L_sem detached for the
+      # first 8,334 updates (= 25,000 optimizer steps of the paper run, which counted the
+      # generator, projection-head and discriminator steps together; Table 6: ~8.3k).
+      detach_warmup_steps: 8334
+    discriminator:                    # WavTokenizer composite discriminator, RpGAN
+      type: wavtokenizer
+      config:
+        loss_type: rpgan
+        periods: [2, 3, 5, 7, 11]
+        fft_sizes: [2048, 1024, 512]
+        preprocess: true
+        fold_lrms: true               # L, R, M, S folded into the batch
+      weights:
+        adversarial: 0.1              # L_adv
+        feature_matching: 0.2         # L_fm

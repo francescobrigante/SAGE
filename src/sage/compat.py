@@ -43,3 +43,20 @@ def upgrade_model_config(cfg: Any) -> Any:
     if isinstance(cfg, list):
         return [upgrade_model_config(v) for v in cfg]
     return cfg
+
+
+# Training-state keys of pre-release checkpoints that no current module owns. Only a
+# full resume (`ckpt_path=`) reads them; inference and `+init_from` load the autoencoder
+# alone. The paper checkpoint holds the Hann window of a pre-release loss that was
+# instantiated at weight 0 (STFT consistency, now in sage.nn.losses.experimental).
+LEGACY_STATE_KEYS: tuple[str, ...] = (
+    "engine.loss_manager.consistency_loss._window",
+)
+
+
+def drop_legacy_state_keys(state_dict: dict) -> list[str]:
+    """Remove LEGACY_STATE_KEYS from a Lightning state_dict in place; return the removed keys."""
+    removed = [k for k in LEGACY_STATE_KEYS if k in state_dict]
+    for k in removed:
+        del state_dict[k]
+    return removed

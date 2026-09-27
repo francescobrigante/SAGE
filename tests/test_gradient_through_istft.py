@@ -11,7 +11,7 @@ in the iSTFT chain.
 import torch
 import sys
 
-from sage.nn.losses.spectral import MultiResolutionSpectrogramLoss
+from sage.nn.losses.experimental import MultiResolutionSpectrogramLoss
 from sage.model.autoencoder import SAGEAutoencoder
 import torch.nn as nn
 

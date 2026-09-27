@@ -16,7 +16,7 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).parent.resolve()
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
 RUNS_DIR = PROJECT_ROOT / "runs"
-CONFIG_DIR = PROJECT_ROOT / "config"
+CONFIG_DIR = PROJECT_ROOT / "configs"
 
 # Default configuration constants
 DEFAULT_SAMPLE_RATE = 44100

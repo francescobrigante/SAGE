@@ -16,10 +16,8 @@ import math
 import pytest
 import torch
 
-from sage.nn.losses.signal import (
-    StereoCoherenceLoss,
-    SumAndDifferenceSTFTLoss,
-)
+from sage.nn.losses.experimental import StereoCoherenceLoss
+from sage.nn.losses.signal import SumAndDifferenceSTFTLoss
 
 SR, T = 44100, 16384
 RES = dict(fft_sizes=[1024], hop_sizes=[256], win_lengths=[1024])

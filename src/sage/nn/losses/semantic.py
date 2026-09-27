@@ -106,7 +106,7 @@ class LatentCosineDistillLoss(LossModule):
 
     def __init__(self, distill_proj: nn.Module, teacher: nn.Module,
                  name: str = "distill_loss", weight: float = 1.0,
-                 detach_warmup_steps: int = 25000):
+                 detach_warmup_steps: int = 8334):
         super().__init__(name=name, weight=weight)
         self.distill_proj = distill_proj      # Linear(latent_dim, proj_dim); shared with LossManager → opt_aux
         self.teacher = teacher                # frozen teacher (no grad via @torch.no_grad() + requires_grad=False)
@@ -114,7 +114,7 @@ class LatentCosineDistillLoss(LossModule):
 
     def forward(self, info: dict) -> torch.Tensor:
         z = info["latents"]                                           # (B, C, L)  L = F_lat·T_lat
-        if info.get("global_step", 0) < self.detach_warmup_steps:
+        if info.get("gen_step", 0) < self.detach_warmup_steps:
             z = z.detach()                                            # train projector only; gate encoder grad
         F_lat, T_lat = info["feature_shape"]                          # (freq, time) latent grid
         B, C, _ = z.shape

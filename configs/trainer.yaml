@@ -1,0 +1,130 @@
+# Trainer + optimization + logging + losses + seed/device
+seed: ${config:DEFAULT_SEED}
+device: ${config:DEFAULT_DEVICE}
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 1e-3
+  weight_decay: 1e-4
+  betas: [0.9, 0.98]
+  weight_decay_exclude_1d: true  # exclude bias + LayerNorm from weight decay
+
+# disc_optimizer: separate AdamW for discriminator (overrides `optimizer` fields for disc only).
+# If omitted, disc uses the same spec as the generator.
+# SAO uses: lr=3e-4, betas=[0.8,0.99], weight_decay=1e-3  (disc_lr = 2× gen_lr in SAO).
+# disc_optimizer:
+#   _target_: torch.optim.AdamW
+#   lr: 3e-4
+#   betas: [0.8, 0.99]
+#   weight_decay: 1e-3
+
+# aux_scheduler: scheduler for opt_aux. If omitted, falls back to the global
+# `scheduler:` above (same as disc). Override per-experiment if aux modules need
+# a different schedule (the pretraining recipe keeps the projection head at a constant lr).
+# aux_scheduler:
+#   _target_: sage.nn.schedulers.InverseLR
+#   inv_gamma: 200000
+#   power: 0.5
+#   warmup: 0.999
+#   interval: step
+
+scheduler:
+  _target_: sage.nn.schedulers.InverseLR
+  inv_gamma: 200000       # SAO params: LR ~93% at 32k steps, ~70% at 200k steps
+  power: 0.5
+  warmup: 0.999           # exponential warmup, 90% peak reached at ~2400 steps
+  interval: step          # Lightning calls scheduler.step() every batch
+  # --- CosineLRWithWarmup (step-based, matches Swin Transformer paper) ---
+  # _target_: sage.nn.schedulers.CosineLRWithWarmup
+  # total_steps: 32000      # epochs * steps_per_epoch (80 * 400 for FMA-small batch=16)
+  # warmup_steps: 1600      # ~5% of total_steps (~4 epochs)
+  # min_lr: 1.0e-6
+  # warmup_lr_init: 1.0e-7
+
+trainer:
+  precision: 32-true
+  epochs: 200
+  amp: false
+  log_interval: 1
+  deterministic: false
+  strict_deterministic: false
+  profile: false
+  save_every_n_epochs: 10
+  num_sanity_val_steps: 1
+  log_model_structure: false      # if true, on train it prints entire model structure
+  warmup_steps: 0                   # discriminator warm-up, in generator updates (0 = adversarial from the first step)
+  warmup_mode: adv
+  encoder_freeze_on_warmup: false   # freeze encoder only AFTER warmup_steps
+  freeze_encoder: false             # freeze encoder ALWAYS (decoder-finetune mode)
+  profiler_dir: lightning_profiler
+  val_check_interval: 1.0
+  check_val_every_n_epoch: 1
+  limit_train_batches: 1.0
+  limit_val_batches: 1.0
+  accumulate_grad_batches: 1
+  strategy: auto
+  num_gpus: 1
+  clip_grad_norm: 20.0
+  use_ema: true
+  ema_decay: 0.9998                # EMA of the generator weights, updated on generator steps (Table 6)
+  kl_annealing_epochs: 0
+  terminate_on_nan: true
+  detect_anomaly: false
+  # gradient_clip_val/algorithm rimossi: non supportati con manual optimization
+  # Il gradient clipping viene gestito manualmente in engine.py se necessario
+
+wandb:
+  project: ${config:DEFAULT_WANDB_PROJECT}
+  name: null                # run name; null -> derived from the model and a hash of the loss weights
+  use_wandb: true
+  log_model: false          # disabled: checkpoints are already saved in runs/checkpoints/ via ModelCheckpoint
+
+eval_loss_config:
+  sisdr:
+    zero_mean: true
+    reduction: mean
+  stft:
+    sample_rate: 44100
+    fft_size: 2048
+    hop_size: 512
+    win_length: 2048
+  mel:
+    fft_size: 2048
+    hop_size: 512
+    win_length: 2048
+    n_mels: 128
+
+# Generator loss, paper eq. 2. Defaults = the reconstruction and KL weights of the
+# pretraining (Table 6); the recipes in configs/experiment/ add L_sem and the
+# discriminator (L_adv, L_fm) and set every weight explicitly. A term with weight 0
+# is not built. Other losses: `extra` (see sage/nn/losses/experimental/__init__.py).
+loss_config:
+  spectral:                 # L_STFT: squared error on the power-compressed complex STFT
+    stft_mse:
+      config:
+        reduction: mean
+    weights:
+      stft_mse: 1.0
+  mrmel:                    # L_mel: log-mel + mel-magnitude L1 at 3 resolutions
+    weights:
+      mrmel: 0.5
+    config:
+      n_mels: [128, 128, 128]
+      window_lengths: [2048, 1024, 512]
+      pow: 2.0              # exponent of the mel spectrogram (1.0 = magnitude, 2.0 = power)
+      log_weight: 1.0
+      mag_weight: 1.0
+  mrstft_sd:                # L_SD: sum-and-difference MR-STFT (M, S, L, R), A-weighted, as in Stable Audio Open
+    weights:
+      mrstft_sd: 1.0
+    config:
+      fft_sizes:   [2048, 1024, 512, 256, 128, 64]
+      hop_sizes:   [512,  256,  128, 64,  32,  16]   # fft/4
+      win_lengths: [2048, 1024, 512, 256, 128, 64]
+      perceptual_weighting: true    # A-weighting FIR pre-filter
+      w_ms: 1.0                     # mid/side branch
+      w_lr: 1.0                     # left/right branch (0.5 per channel)
+  bottleneck:               # L_KL
+    weights:
+      kl: 1.0e-4
+  extra: []                 # experimental losses, appended after the paper terms

@@ -101,7 +101,7 @@ def _batch():
 # ── Tier 1: loss routing per phase ────────────────────────────────────────────
 def test_gen_step_runs_only_gen_losses():
     eng = _make_engine()
-    out = eng.compute(_batch(), global_step=10, disc_phase=False)
+    out = eng.compute(_batch(), gen_step=10, disc_phase=False)
     assert out["phase"] == "gen"
     assert eng.loss_manager.gen_calls == 1
     assert eng.loss_manager.disc_calls == 0
@@ -112,7 +112,7 @@ def test_gen_step_runs_only_gen_losses():
 
 def test_disc_step_runs_only_disc_loss():
     eng = _make_engine()
-    out = eng.compute(_batch(), global_step=10, disc_phase=True)
+    out = eng.compute(_batch(), gen_step=10, disc_phase=True)
     assert out["phase"] == "disc"
     assert eng.loss_manager.disc_calls == 1
     assert eng.loss_manager.gen_calls == 0
@@ -123,8 +123,8 @@ def test_disc_step_runs_only_disc_loss():
 
 def test_feature_matching_only_in_gen_step():
     eng = _make_engine()
-    gen = eng.compute(_batch(), global_step=10, disc_phase=False)["loss_info"]
-    disc = eng.compute(_batch(), global_step=10, disc_phase=True)["loss_info"]
+    gen = eng.compute(_batch(), gen_step=10, disc_phase=False)["loss_info"]
+    disc = eng.compute(_batch(), gen_step=10, disc_phase=True)["loss_info"]
     assert "loss_adv" in gen and "feature_matching_distance" in gen
     assert "loss_dis" not in gen
     assert "loss_dis" in disc
@@ -134,14 +134,14 @@ def test_feature_matching_only_in_gen_step():
 # ── Tier 2: no generator graph / backward on disc steps ───────────────────────
 def test_disc_step_generator_forward_is_no_grad():
     eng = _make_engine()
-    out = eng.compute(_batch(), global_step=10, disc_phase=True)
+    out = eng.compute(_batch(), gen_step=10, disc_phase=True)
     assert out["loss_info"]["decoded"].requires_grad is False
     assert out["loss_info"]["latents"].requires_grad is False
 
 
 def test_disc_loss_does_not_backprop_into_generator():
     eng = _make_engine()
-    out = eng.compute(_batch(), global_step=10, disc_phase=True)
+    out = eng.compute(_batch(), gen_step=10, disc_phase=True)
     g = torch.autograd.grad(out["disc_total"], eng.autoencoder.w, allow_unused=True)[0]
     assert g is None
     g_dw = torch.autograd.grad(out["disc_total"], eng.loss_manager.dw, retain_graph=True)[0]
@@ -150,7 +150,7 @@ def test_disc_loss_does_not_backprop_into_generator():
 
 def test_gen_step_keeps_generator_graph():
     eng = _make_engine()
-    out = eng.compute(_batch(), global_step=10, disc_phase=False)
+    out = eng.compute(_batch(), gen_step=10, disc_phase=False)
     assert out["loss_info"]["decoded"].requires_grad is True
     g = torch.autograd.grad(out["gen_total"], eng.autoencoder.w, retain_graph=True)[0]
     assert g is not None
@@ -159,7 +159,7 @@ def test_gen_step_keeps_generator_graph():
 # ── warmup gating preserved ───────────────────────────────────────────────────
 def test_gen_step_during_warmup_skips_discriminator():
     eng = _make_engine(warmup_steps=100)
-    out = eng.compute(_batch(), global_step=0, disc_phase=False)
+    out = eng.compute(_batch(), gen_step=0, disc_phase=False)
     assert out["phase"] == "gen"
     assert eng.loss_manager.loss_calls == 0
     assert float(out["loss_info"]["loss_adv"]) == 0.0
@@ -168,7 +168,7 @@ def test_gen_step_during_warmup_skips_discriminator():
 
 def test_disc_step_during_adv_warmup_trains_disc():
     eng = _make_engine(warmup_steps=100)
-    out = eng.compute(_batch(), global_step=0, disc_phase=True)
+    out = eng.compute(_batch(), gen_step=0, disc_phase=True)
     assert out["phase"] == "disc"
     assert eng.loss_manager.loss_calls == 1
     assert out["disc_total"] is not None

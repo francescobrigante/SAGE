@@ -3,7 +3,7 @@ Semantic-distillation infrastructure tests:
   - standardize_bottleneck: parameter-free C·F fold, real/complex/passthrough.
   - LossManager.aux_parameters: empty when distillation is off
     (so opt_aux is not created and training behavior is unchanged).
-  - engine.compute exposes loss_info["global_step"] (consumed by detached-warmup).
+  - engine.compute exposes loss_info["gen_step"] (consumed by the detached warm-up).
 """
 import torch
 

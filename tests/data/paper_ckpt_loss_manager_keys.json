@@ -1,0 +1,1910 @@
+{
+"_source": "SAGE_FTe992.ckpt (paper checkpoint, decoder fine-tuning epoch 992): shapes of every engine.loss_manager.* entry of its state_dict",
+"keys": {
+"engine.loss_manager.consistency_loss._window": [
+2048
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.0.weight_v": [
+32,
+1,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.1.bias": [
+128
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.1.weight_g": [
+128,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.1.weight_v": [
+128,
+32,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.2.bias": [
+512
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.2.weight_g": [
+512,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.2.weight_v": [
+512,
+128,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.3.bias": [
+1024
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.3.weight_g": [
+1024,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.3.weight_v": [
+1024,
+512,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.4.bias": [
+1024
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.4.weight_g": [
+1024,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.convs.4.weight_v": [
+1024,
+1024,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.conv_post.bias": [
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.conv_post.weight_g": [
+1,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.0.conv_post.weight_v": [
+1,
+1024,
+3,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.0.weight_v": [
+32,
+1,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.1.bias": [
+128
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.1.weight_g": [
+128,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.1.weight_v": [
+128,
+32,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.2.bias": [
+512
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.2.weight_g": [
+512,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.2.weight_v": [
+512,
+128,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.3.bias": [
+1024
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.3.weight_g": [
+1024,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.3.weight_v": [
+1024,
+512,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.4.bias": [
+1024
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.4.weight_g": [
+1024,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.convs.4.weight_v": [
+1024,
+1024,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.conv_post.bias": [
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.conv_post.weight_g": [
+1,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.1.conv_post.weight_v": [
+1,
+1024,
+3,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.0.weight_v": [
+32,
+1,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.1.bias": [
+128
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.1.weight_g": [
+128,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.1.weight_v": [
+128,
+32,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.2.bias": [
+512
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.2.weight_g": [
+512,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.2.weight_v": [
+512,
+128,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.3.bias": [
+1024
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.3.weight_g": [
+1024,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.3.weight_v": [
+1024,
+512,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.4.bias": [
+1024
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.4.weight_g": [
+1024,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.convs.4.weight_v": [
+1024,
+1024,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.conv_post.bias": [
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.conv_post.weight_g": [
+1,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.2.conv_post.weight_v": [
+1,
+1024,
+3,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.0.weight_v": [
+32,
+1,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.1.bias": [
+128
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.1.weight_g": [
+128,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.1.weight_v": [
+128,
+32,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.2.bias": [
+512
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.2.weight_g": [
+512,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.2.weight_v": [
+512,
+128,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.3.bias": [
+1024
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.3.weight_g": [
+1024,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.3.weight_v": [
+1024,
+512,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.4.bias": [
+1024
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.4.weight_g": [
+1024,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.convs.4.weight_v": [
+1024,
+1024,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.conv_post.bias": [
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.conv_post.weight_g": [
+1,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.3.conv_post.weight_v": [
+1,
+1024,
+3,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.0.weight_v": [
+32,
+1,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.1.bias": [
+128
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.1.weight_g": [
+128,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.1.weight_v": [
+128,
+32,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.2.bias": [
+512
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.2.weight_g": [
+512,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.2.weight_v": [
+512,
+128,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.3.bias": [
+1024
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.3.weight_g": [
+1024,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.3.weight_v": [
+1024,
+512,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.4.bias": [
+1024
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.4.weight_g": [
+1024,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.convs.4.weight_v": [
+1024,
+1024,
+5,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.conv_post.bias": [
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.conv_post.weight_g": [
+1,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mpd.discriminators.4.conv_post.weight_v": [
+1,
+1024,
+3,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.0.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.0.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.0.weight_v": [
+64,
+1,
+7,
+5
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.1.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.1.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.1.weight_v": [
+64,
+64,
+5,
+3
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.2.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.2.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.2.weight_v": [
+64,
+64,
+5,
+3
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.3.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.3.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.3.weight_v": [
+64,
+64,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.4.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.4.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.convs.4.weight_v": [
+64,
+64,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.conv_post.bias": [
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.conv_post.weight_g": [
+1,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.0.conv_post.weight_v": [
+1,
+64,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.0.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.0.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.0.weight_v": [
+64,
+1,
+7,
+5
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.1.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.1.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.1.weight_v": [
+64,
+64,
+5,
+3
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.2.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.2.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.2.weight_v": [
+64,
+64,
+5,
+3
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.3.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.3.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.3.weight_v": [
+64,
+64,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.4.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.4.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.convs.4.weight_v": [
+64,
+64,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.conv_post.bias": [
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.conv_post.weight_g": [
+1,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.1.conv_post.weight_v": [
+1,
+64,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.0.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.0.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.0.weight_v": [
+64,
+1,
+7,
+5
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.1.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.1.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.1.weight_v": [
+64,
+64,
+5,
+3
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.2.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.2.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.2.weight_v": [
+64,
+64,
+5,
+3
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.3.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.3.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.3.weight_v": [
+64,
+64,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.4.bias": [
+64
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.4.weight_g": [
+64,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.convs.4.weight_v": [
+64,
+64,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.conv_post.bias": [
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.conv_post.weight_g": [
+1,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.vocos_mrd.discriminators.2.conv_post.weight_v": [
+1,
+64,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.0.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.1.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.2.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.3.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.band_convs.4.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.conv_post.bias": [
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.conv_post.weight_g": [
+1,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.0.conv_post.weight_v": [
+1,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.0.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.1.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.2.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.3.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.band_convs.4.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.conv_post.bias": [
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.conv_post.weight_g": [
+1,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.1.conv_post.weight_v": [
+1,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.0.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.1.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.2.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.3.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.0.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.0.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.0.0.weight_v": [
+32,
+2,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.1.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.1.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.1.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.2.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.2.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.2.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.3.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.3.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.3.0.weight_v": [
+32,
+32,
+3,
+9
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.4.0.bias": [
+32
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.4.0.weight_g": [
+32,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.band_convs.4.4.0.weight_v": [
+32,
+32,
+3,
+3
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.conv_post.bias": [
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.conv_post.weight_g": [
+1,
+1,
+1,
+1
+],
+"engine.loss_manager.discriminator.discriminator.dac_disc.discriminators.2.conv_post.weight_v": [
+1,
+32,
+3,
+3
+],
+"engine.loss_manager.losses_gen.losses.0.weight": [],
+"engine.loss_manager.losses_gen.losses.1.weight": [],
+"engine.loss_manager.losses_gen.losses.2.weight": [],
+"engine.loss_manager.losses_gen.losses.3.weight": [],
+"engine.loss_manager.losses_gen.losses.4.weight": [],
+"engine.loss_manager.losses_gen.losses.5.weight": [],
+"engine.loss_manager.losses_disc.losses.0.weight": [],
+"engine.loss_manager.eval_losses.mel.fb": [
+1,
+128,
+1025
+]
+}
+}

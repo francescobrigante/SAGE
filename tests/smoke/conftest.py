@@ -109,7 +109,7 @@ def run_training(overrides: list[str], out_dir: Path) -> Path:
     import train                                                  # registers the ${config:} / ${mul:} resolvers
     import sage.training.loss_manager as loss_manager
 
-    with initialize_config_dir(config_dir=str(REPO / "config"), version_base=None):
+    with initialize_config_dir(config_dir=str(REPO / "configs"), version_base=None):
         cfg = compose(config_name="main", overrides=overrides)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(train, "get_original_cwd", lambda: str(out_dir))   # runs/ goes under out_dir
@@ -129,12 +129,10 @@ def audio_dir(tmp_path_factory) -> Path:
 
 
 PRETRAIN = [
-    "+experiment=MULTICORPUS_swiglu",                              # paper pretraining recipe (Tab. 6)
+    "+experiment=pretrain",                                        # paper pretraining recipe (Table 6)
     "data=fma",                                                    # single-corpus loader for the smoke test
-    "trainer.scheduler.inv_gamma=200000",
-    "trainer.loss_config.mrstft_sd.weights.mrstft_sd=1.0",
-    "++trainer.loss_config.discriminator.config.fold_lrms=true",
     "trainer.loss_config.semantic_distill.detach_warmup_steps=0",  # gate open: gradient flows into the latent
+    "trainer.wandb.name=smoke_pretrain",
 ]
 
 

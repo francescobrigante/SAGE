@@ -165,8 +165,13 @@ def _load_autoencoder_weights(wrapper, ckpt_file: str, use_ema: bool = True) -> 
         warn(f"init_from: '{prefix}' weights absent; fell back to '{alt}'.", prefix="TRAINER")
     if not weights:
         raise ValueError(f"init_from: no autoencoder weights found in {ckpt_file}.")
-    missing, unexpected = wrapper.engine.autoencoder.load_state_dict(weights, strict=False)
-    ok(f"init_from: loaded {len(weights)} autoencoder weights from {ckpt_file} "
+    target = getattr(wrapper.engine.autoencoder, "_orig_mod", wrapper.engine.autoencoder)  # unwrap torch.compile
+    missing, unexpected = target.load_state_dict(weights, strict=False)
+    loaded = len(weights) - len(unexpected)
+    if loaded == 0:
+        raise ValueError(f"init_from: none of the {len(weights)} weights in {ckpt_file} match the model "
+                         f"(first keys: {list(weights)[:3]} vs expected {missing[:3]}).")
+    ok(f"init_from: loaded {loaded} autoencoder weights from {ckpt_file} "
        f"(ema={use_ema}); missing={len(missing)} unexpected={len(unexpected)}.", prefix="TRAINER")
     if missing:
         warn(f"init_from missing keys (first 5): {missing[:5]}", prefix="TRAINER")
@@ -204,7 +209,7 @@ def _load_discriminator_weights(wrapper, ckpt_file: str) -> None:
         warn(f"init_from_disc unexpected keys (first 5): {unexpected[:5]}", prefix="TRAINER")
 
 
-@hydra.main(version_base=None, config_path="config", config_name="main")
+@hydra.main(version_base=None, config_path="configs", config_name="main")
 def main(cfg: DictConfig):
     """Hydra entrypoint using native instantiate API.
     
@@ -236,10 +241,7 @@ def main(cfg: DictConfig):
     
     # 1) Get the run name (user provided via wandb.name or resolved)
     user_run_name = cfg.trainer.get("wandb", {}).get("name") if cfg.get("trainer") else None
-    if not user_run_name or user_run_name == "FMA_autoencoder_KL":
-        run_name = resolve_run_name(cfg)
-    else:
-        run_name = user_run_name
+    run_name = user_run_name or resolve_run_name(cfg)
         
     ok(f"Resolved run name: {run_name}", prefix="MODEL")
     
@@ -468,7 +470,7 @@ def main(cfg: DictConfig):
             )
             try:
                 run = logger.experiment
-                conf_root = Path(get_original_cwd()) / "config"
+                conf_root = Path(get_original_cwd()) / "configs"
                 WandbConfigLogger(conf_root, use_artifact=True, log_text=False).log_to_wandb(run)
             except Exception as e:
                 warn(f"Upload dir conf on W&B failed ({type(e).__name__}: {e})", prefix="TRAINER")
@@ -530,7 +532,7 @@ def main(cfg: DictConfig):
         )
 
     use_ema = bool(pl_trainer_cfg.get("use_ema", True))
-    ema_decay = float(pl_trainer_cfg.get("ema_decay", 0.9999))
+    ema_decay = float(pl_trainer_cfg["ema_decay"])       # configs/trainer.yaml: 0.9998 (Table 6)
     if use_ema and ema_decay > 0:
         callbacks.append(EMACallback(decay=ema_decay))
 
@@ -577,6 +579,24 @@ def main(cfg: DictConfig):
         has_complex_params = False
     if is_bf16 and has_complex_params:
         warn("bf16 + complex detected: convolutions will use torch.complex64 (complex-bfloat16 not supported).", prefix="TRAINER")
+
+    ckpt_path = OmegaConf.select(cfg, "ckpt_path", default=None)
+    init_from = OmegaConf.select(cfg, "init_from", default=None)
+    init_from_ema = bool(OmegaConf.select(cfg, "init_from_ema", default=True))
+    init_from_disc = bool(OmegaConf.select(cfg, "init_from_disc", default=False))
+    if ckpt_path:
+        # Full resume takes precedence: the run's own checkpoint already holds the
+        # fine-tuned weights + discriminator + optimizer/step state.
+        ok(f"Resuming from checkpoint: {ckpt_path}", prefix="TRAINER")
+        if init_from:
+            warn(f"init_from={init_from} IGNORED: ckpt_path resume takes precedence.", prefix="TRAINER")
+    elif init_from:
+        # Cold start of a fine-tune run: load only the autoencoder weights, fresh
+        # step/optimizer (decoder fine-tuning from the phase-1 EMA, new discriminator).
+        # Done BEFORE torch.compile, whose wrapper renames every key to _orig_mod.* (bug B1).
+        _load_autoencoder_weights(wrapper, str(init_from), use_ema=init_from_ema)
+        if init_from_disc:
+            _load_discriminator_weights(wrapper, str(init_from))
 
     # ─────────────────────────────────────────────────────────────────────────
     # Optional torch.compile (off by default; opt-in via trainer.trainer.compile=true).
@@ -632,23 +652,6 @@ def main(cfg: DictConfig):
 
     ok(f"{req_accelerator}", prefix="DEVICE")
     
-    ckpt_path = OmegaConf.select(cfg, "ckpt_path", default=None)
-    init_from = OmegaConf.select(cfg, "init_from", default=None)
-    init_from_ema = bool(OmegaConf.select(cfg, "init_from_ema", default=True))
-    init_from_disc = bool(OmegaConf.select(cfg, "init_from_disc", default=False))
-    if ckpt_path:
-        # Full resume takes precedence: the run's own checkpoint already holds the
-        # fine-tuned weights + discriminator + optimizer/step state.
-        ok(f"Resuming from checkpoint: {ckpt_path}", prefix="TRAINER")
-        if init_from:
-            warn(f"init_from={init_from} IGNORED: ckpt_path resume takes precedence.", prefix="TRAINER")
-    elif init_from:
-        # Cold start of a fine-tune run: load only the autoencoder weights, fresh
-        # step/optimizer (e.g. decoder-finetune from M5 with a new discriminator).
-        _load_autoencoder_weights(wrapper, str(init_from), use_ema=init_from_ema)
-        if init_from_disc:
-            _load_discriminator_weights(wrapper, str(init_from))
-
     try:
         trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl, ckpt_path=ckpt_path)
     except KeyboardInterrupt:
