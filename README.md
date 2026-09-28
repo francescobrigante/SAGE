@@ -110,10 +110,11 @@ python train.py +experiment=decoder_ft +init_from=<phase-1 checkpoint> trainer.t
 
 The batch size is global, so the recipes run unchanged on fewer GPUs. Runs are written
 to `runs/<name>/<date>/`; logging goes to Weights & Biases (`trainer.wandb.use_wandb=false`
-for TensorBoard only). Launching a run name again (after a crash, a SLURM requeue or a
-resubmission) continues its newest checkpoint in its own folder and its W&B run;
-`+ckpt_path=<file>` resumes a given checkpoint, `auto_resume=false` or a new
-`trainer.wandb.name` starts over. For SLURM clusters, `scripts/slurm/train.sbatch <recipe>`
+for TensorBoard only). A SLURM requeue, or launching a run name again (the recipe's or
+`trainer.wandb.name=`) after a crash, continues its newest checkpoint in its own folder and
+its W&B run; `+ckpt_path=<file>` resumes a given checkpoint, `auto_resume=false` or a new
+`trainer.wandb.name` starts over. A run that already has checkpoints refuses a new
+`+init_from` instead of resuming over it. For SLURM clusters, `scripts/slurm/train.sbatch <recipe>`
 runs a recipe with requeueing. On multi-node InfiniBand clusters where NCCL stops at the
 first collective with `Could not find NET with id 0` (NCCL 2.26 of the PyTorch wheels, seen
 with GPUDirect RDMA), `export NCCL_NET_GDR_LEVEL=LOC` before `sbatch` fixes it. Losses outside the paper are available for experiments in

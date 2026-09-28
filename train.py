@@ -44,7 +44,8 @@ logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
 from sage.training.callbacks import DatasetEpochSetter, MultiCorpusEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger
-from sage.training.resume import find_resume_checkpoint, read_run_id, resume_run_dir
+from sage.training.resume import (find_resume_checkpoint, is_slurm_requeue, read_run_id, resume_run_dir,
+                                  should_auto_resume)
 from sage.training.data.dataset import MultiCorpusDataset
 from sage.training.data.sampling import MultiCorpusRotatingSampler
 from sage.utils.model_info import extract_model_config
@@ -245,19 +246,28 @@ def main(cfg: DictConfig):
         
     ok(f"Resolved run name: {run_name}", prefix="MODEL")
     
-    # 2) Resume: an explicit +ckpt_path, else (auto_resume) the newest checkpoint of this run
-    #    name, e.g. after a SLURM requeue. A resumed run continues in its own folder.
+    # 2) Resume: an explicit +ckpt_path, else the newest checkpoint of this run name after a
+    #    SLURM requeue, or on relaunching a chosen name (auto_resume; sage/training/resume.py).
+    #    A resumed run continues in its own folder.
     run_root = Path(get_original_cwd()) / "runs" / run_name
     ckpt_path = OmegaConf.select(cfg, "ckpt_path", default=None)
-    if not ckpt_path and bool(OmegaConf.select(cfg, "auto_resume", default=True)):
+    requeued = is_slurm_requeue()
+    if not ckpt_path and (requeued or bool(OmegaConf.select(cfg, "auto_resume", default=True))):
         found = find_resume_checkpoint(run_root)
         if found is not None:
-            ckpt_path = str(found)
-            ok(f"auto_resume: continuing {found} (auto_resume=false or another trainer.wandb.name "
-               "starts over)", prefix="TRAINER")
+            if should_auto_resume(found, requeued=requeued, chosen_name=bool(user_run_name),
+                                  init_from=OmegaConf.select(cfg, "init_from", default=None)):
+                ckpt_path = str(found)
+                ok(f"auto_resume: continuing {found} (auto_resume=false or another trainer.wandb.name "
+                   "starts over)", prefix="TRAINER")
+            else:
+                warn(f"{run_root} holds checkpoints of an earlier run, not resumed: the run name is derived "
+                     "from the config (set trainer.wandb.name to resume by name, or +ckpt_path=).",
+                     prefix="TRAINER")
 
     # 3) Run directory: the resumed run's, or a new dated one
-    run_dir = resume_run_dir(run_root, ckpt_path) or run_root / now
+    resumed_dir = resume_run_dir(run_root, ckpt_path)
+    run_dir = resumed_dir or run_root / now
     run_dir.mkdir(parents=True, exist_ok=True)
     
     ckpt_dir = run_dir / "checkpoints"
@@ -471,8 +481,9 @@ def main(cfg: DictConfig):
     logger = None
     if use_wandb:
         if _is_rank0():
-            # A resumed run keeps logging to the W&B run of its first launch
-            run_id = read_run_id(Path(get_original_cwd()) / ".run_ids", run_name) if ckpt_path else None
+            # A run resumed in its own folder keeps logging to the W&B run of its first launch
+            # (a checkpoint of another run starts a new folder and a new W&B run)
+            run_id = read_run_id(Path(get_original_cwd()) / ".run_ids", run_name) if resumed_dir else None
             if run_id:
                 ok(f"W&B: continuing run {run_id}", prefix="TRAINER")
             logger = WandbLogger(

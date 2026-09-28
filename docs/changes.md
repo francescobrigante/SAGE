@@ -26,10 +26,11 @@ resumed run drops the one buffer that no longer exists.
   `trainer.loss_config.semantic_distill.teacher_checkpoint` (default `paths.clap_teacher`).
 - `trainer.device` defaults to `auto`, the W&B project to `sage`, and Hydra no longer
   changes the working directory (`runs/` is created where the command is launched).
-- Resuming no longer needs a SLURM script: launching a run name again continues its newest
-  checkpoint (`runs/<name>/*/`, including Lightning's save on a requeue) in its own folder and
-  its W&B run (`.run_ids/<name>`), which the paper's scripts did with `WANDB_RUN_ID` and
-  `+ckpt_path`. `auto_resume=false` starts over.
+- Resuming no longer needs a SLURM script: a requeue, or launching a chosen run name again
+  (`trainer.wandb.name`, set by the recipes), continues its newest checkpoint (`runs/<name>/*/`,
+  including Lightning's save on a requeue) in its own folder and its W&B run (`.run_ids/<name>`),
+  which the paper's scripts did with `WANDB_RUN_ID` and `+ckpt_path`. `auto_resume=false`
+  starts over; a name derived from the config is never resumed.
 - Without a recipe, `configs/trainer.yaml` now holds the pretraining weights of Table 6
   (mel 0.5, KL 1e-4, sum-and-difference 1; previously 0.3, 1e-3 and 0).
 

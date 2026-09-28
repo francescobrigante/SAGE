@@ -9,8 +9,9 @@ defaults:
   - trainer@trainer
   - _self_
 
-# Relaunching a run name (SLURM requeue, crash, resubmission) continues its newest checkpoint
-# in runs/<name>/ and its W&B run; +ckpt_path=<file> picks one. false: start over.
+# Relaunching a chosen run name (trainer.wandb.name, set by the recipes) continues its newest
+# checkpoint in runs/<name>/ and its W&B run; +ckpt_path=<file> picks one. false: start over.
+# A SLURM requeue always continues its own run.
 auto_resume: true
 
 hydra:

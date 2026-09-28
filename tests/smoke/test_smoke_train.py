@@ -70,3 +70,28 @@ def test_relaunching_a_run_resumes_it_in_its_folder(audio_dir, tmp_path):
     assert len(list((tmp_path / "runs" / "smoke_resume").iterdir())) == 1          # one folder per run
     run_training(base + RUN + ["auto_resume=false"], tmp_path)                        # starts over
     assert len(list((tmp_path / "runs" / "smoke_resume").iterdir())) == 2
+
+
+def test_relaunching_with_a_new_init_from_or_a_derived_name(tiny_pretrain_ckpt, audio_dir, tmp_path, monkeypatch):
+    # A run that has checkpoints refuses a new +init_from instead of silently resuming over it,
+    # except in a SLURM requeue (same job, same command); a name derived from the config is not
+    # resumed, since different experiments can share it.
+    monkeypatch.delenv("SLURM_RESTART_COUNT", raising=False)
+    ft = FINETUNE + [f"+init_from={tiny_pretrain_ckpt}"] + TINY_MODEL + SMOKE_DISC + _data_overrides(audio_dir)
+    first = torch.load(run_training(ft + RUN, tmp_path), map_location="cpu", weights_only=False)
+    two_epochs = [o for o in RUN if not o.startswith("trainer.trainer.epochs=")] + ["trainer.trainer.epochs=2"]
+    with pytest.raises(SystemExit, match="drop \\+init_from"):
+        run_training(ft + two_epochs, tmp_path)
+    monkeypatch.setenv("SLURM_RESTART_COUNT", "1")
+    requeued = torch.load(run_training(ft + two_epochs, tmp_path), map_location="cpu", weights_only=False)
+    assert requeued["global_step"] == 2 * first["global_step"] > 0                   # continued, not restarted
+    assert len(list((tmp_path / "runs" / "smoke_decoder_ft").iterdir())) == 1
+
+    monkeypatch.delenv("SLURM_RESTART_COUNT")
+    derived = PRETRAIN_RESUME[:-1] + ["trainer.wandb.name=null"] + TINY_MODEL + SMOKE_DISC + _data_overrides(audio_dir)
+    out = tmp_path / "derived"
+    out.mkdir()
+    run_training(derived + RUN, out)
+    run_training(derived + RUN, out)
+    (name,) = [d.name for d in (out / "runs").iterdir()]
+    assert len(list((out / "runs" / name).iterdir())) == 2                           # started over
