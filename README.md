@@ -1,4 +1,24 @@
-# SAGE: Semantic Audio Generative Encoder
+<h1 align="center">SAGE: Semantic Audio Generative Encoder</h1>
+
+<p align="center">
+Francesco Brigante<sup>1</sup> · Luca Cerovaz<sup>1,3</sup> · Davide Marincione<sup>1</sup> ·
+Giorgio Strano<sup>1</sup> · Luca Zhou<sup>1</sup> · Emanuele Rodolà<sup>1,3</sup> ·
+Michele Mancusi<sup>1,2</sup><br>
+<sup>1</sup>Sapienza University of Rome · <sup>2</sup>Moises Systems · <sup>3</sup>Paradigma
+</p>
+
+<p align="center">
+  <a href="https://arxiv.org/abs/2609.32755"><img src="https://img.shields.io/badge/arXiv-2609.32755-b31b1b.svg" alt="arXiv"></a>
+  <a href="https://sage-music.pages.dev/"><img src="https://img.shields.io/badge/Project-page-6d4aff.svg" alt="Project page"></a>
+  <!-- <a href="https://huggingface.co/TBD"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-weights-ffcc4d.svg" alt="Weights"></a> -->
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+  <a href="https://github.com/francescobrigante/SAGE/actions/workflows/tests.yml"><img src="https://github.com/francescobrigante/SAGE/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/teaser.png" width="600" alt="FAD-MERT on the MoisesDB mixtures against real-time factor: SAGE has the lowest FAD-MERT at the real-time factor of Stable Audio Open">
+  <br><em>Distributional fidelity against inference cost on the MoisesDB mixtures; marker area is the parameter count.</em>
+</p>
 
 SAGE is a compact variational autoencoder for stereo music at 44.1 kHz. A Swin
 Transformer V2 encoder and decoder operate on the STFT, and the latent is shaped by
@@ -6,8 +26,32 @@ distilling the embeddings of a pretrained audio-text model (LAION-CLAP). The rel
 model has 104.6M parameters and compresses a stereo waveform ×64 into a 16-channel
 latent at 86 frames per second (one latent frame per 512 samples).
 
+- **Fast:** it runs at the inference cost of Stable Audio Open.
+- **High fidelity:** its listening-test score matches SAME-L, an autoencoder 8× larger and 4×
+  slower, and it surpasses both on objective perceptual and distributional reconstruction metrics.
+- **Semantic latent:** it sets the state of the art on all nineteen probing tasks of latent
+  semantics, in domain and out of domain.
+- **Open data:** it is trained solely on publicly available music.
+
 This repository contains the model, the two training phases, the evaluation code of
 the paper and the released checkpoint's loader.
+
+## Results
+
+Listening test (MUSHRA, 21 raters after filtering; paper Table 3) and average probing score
+per block of tasks (paper Table 4):
+
+| Model | Params | RTF ↓ | MUSHRA ↑ | FMA (6) ↑ | MoisesDB (7) ↑ | Upstream MAEB (6) ↑ |
+|---|---|---|---|---|---|---|
+| **SAGE** | 105M | 0.0045 | 81.6 ± 2.7 | **0.563** | **0.544** | **0.622** |
+| SAME-L | 852M | 0.0192 | **81.8 ± 2.6** | 0.470 | 0.493 | 0.473 |
+| Stable Audio Open | 156M | 0.0045 | 64.6 ± 3.7 | 0.490 | 0.469 | 0.481 |
+| CoDiCodec | 150M | 0.0237 | 66.4 ± 3.5 | 0.474 | 0.456 | 0.471 |
+
+SAGE and SAME-L are statistically indistinguishable in the listening test. Reconstruction
+metrics on the five evaluation sets, the per-task probing scores and the other baselines
+(SAME-S, Music2Latent) are in the paper; [docs/paper_runs.md](docs/paper_runs.md) gives the
+command that reproduces each of them.
 
 ## Installation
 
@@ -15,7 +59,7 @@ Python 3.11 and [uv](https://docs.astral.sh/uv/). PyTorch 2.7.1 is installed wit
 12.6 wheels on Linux and the default wheels elsewhere.
 
 ```bash
-git clone <repository url> sage && cd sage
+git clone https://github.com/francescobrigante/SAGE.git && cd SAGE
 uv sync                                   # inference only
 uv sync --extra train                     # + training
 uv sync --extra train --extra eval        # + evaluation (FAD, CLAP, CDPAM, MAEB)
@@ -41,7 +85,7 @@ export PYTHONPATH=$PWD:$PYTHONPATH              # make it importable (`uv sync` 
 |---|---|---|
 | `SAGE_FTe992.ckpt` (EMA weights, epoch 992) | 402 MiB | `dd87d01eaee88ca92f96c80ffe0e504a1d7cbc02e4271d8c48033df591d6ac99` |
 
-Download link: *to be added.* Put the file in `models/` (the default location, see
+Download: Hugging Face, *link to be added*. Put the file in `models/` (the default location, see
 [Paths](#paths)). It holds the model configuration and the EMA weights only; it was
 exported from the training checkpoint with `scripts/export_checkpoint.py`.
 
@@ -164,6 +208,12 @@ tests/                test suite
 
 ## Acknowledgements and third-party code
 
+We acknowledge ISCRA for awarding this project access to the LEONARDO supercomputer, owned
+by the EuroHPC Joint Undertaking, hosted by CINECA (Italy).
+
+The codebase started from [EuleroDec](https://github.com/CerovazS/EuleroDec) by Luca Cerovaz
+([@CerovazS](https://github.com/CerovazS)).
+
 SAGE builds on [PyTorch](https://pytorch.org/), [Lightning](https://lightning.ai/),
 [Hydra](https://hydra.cc/) and the [Swin Transformer V2](https://github.com/microsoft/Swin-Transformer)
 architecture; the mel loss and a discriminator layer come from
@@ -182,8 +232,20 @@ MoisesDB, MusicCaps and Song Describer.
 
 ## License
 
-*To be added.*
+The code is released under the [MIT License](LICENSE). Files adapted from other projects keep
+their original license, as noted in their headers (see above).
 
 ## Citation
 
-*To be added.*
+```bibtex
+@misc{brigante2026sage,
+  title         = {{SAGE}: Semantic Audio Generative Encoder},
+  author        = {Brigante, Francesco and Cerovaz, Luca and Marincione, Davide and Strano, Giorgio and
+                   Zhou, Luca and Rodol{\`a}, Emanuele and Mancusi, Michele},
+  year          = {2026},
+  eprint        = {2609.32755},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.SD},
+  url           = {https://arxiv.org/abs/2609.32755}
+}
+```

@@ -5,7 +5,7 @@ description = "SAGE: Semantic Audio Generative Encoder — a Swin V2 variational
 authors = [
     { name = "Francesco Brigante", email = "francescobrigantefb@gmail.com" },
 ]
-license = { text = "TBD" }
+license = { text = "MIT" }
 readme = "README.md"
 # Python 3.11 is the only version SAGE has been trained and tested with.
 requires-python = ">=3.11,<3.12"
