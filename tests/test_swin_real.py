@@ -213,6 +213,29 @@ def test_u6_swin_block_gradients():
         assert param.grad is not None, f"No gradient for '{name}'"
 
 
+def test_fused_kernels_are_skipped_for_cpu_tensors(monkeypatch):
+    """A block built where the fused CUDA kernels are available (GPU machine, extension
+    installed) still runs on CPU tensors, through the plain roll + partition path."""
+    import sage.model.swin.block as block_mod
+
+    def cuda_only(*args, **kwargs):
+        raise RuntimeError("input must be a CUDA tensor")
+
+    kernel = type("CudaOnlyKernel", (), {"apply": staticmethod(cuda_only)})
+    monkeypatch.setattr(block_mod, "FUSED_WINDOW_AVAILABLE", True)
+    monkeypatch.setattr(block_mod, "WindowProcess", kernel)
+    monkeypatch.setattr(block_mod, "WindowProcessReverse", kernel)
+    H, W, C = 16, 16, 48
+    kw = dict(dim=C, input_resolution=(H, W), num_heads=3, window_size=8, shift_size=4)
+    fused = SwinTransformerBlock(**kw, fused_window_process=True).eval()
+    plain = SwinTransformerBlock(**kw, fused_window_process=False).eval()
+    plain.load_state_dict(fused.state_dict())
+    assert fused.fused_window_process and not plain.fused_window_process
+    x = torch.randn(B, H * W, C)
+    with torch.no_grad():
+        assert torch.equal(fused(x), plain(x))
+
+
 # ---------------------------------------------------------------------------
 # U7 — BasicLayer without PatchMerging: shape preserved
 # ---------------------------------------------------------------------------

@@ -402,6 +402,8 @@ class SwinTransformerBlock(nn.Module):
 
         Hp = H + pad_b
         Wp = W + pad_r
+        # The fused kernels take CUDA tensors only: a block built on a GPU machine may run on CPU
+        fused = self.fused_window_process and x.is_cuda
 
         # cached attention mask uses -100.0 for cross-region pairs so softmax -> 0 after exp.
         if max(sh, sw) > 0:
@@ -444,7 +446,7 @@ class SwinTransformerBlock(nn.Module):
         # Cyclic shift + window partition
         if max(sh, sw) > 0:
             # not cuda
-            if not self.fused_window_process:
+            if not fused:
                 shifted_x = torch.roll(x, shifts=(-sh, -sw), dims=(1, 2))
                 x_windows = window_partition(shifted_x, self.window_size)  # (nW*B, wh, ww, C)
             # cuda — complex64: reinterpret as float32 (B,Hp,Wp,2C), run kernel, cast back.
@@ -474,7 +476,7 @@ class SwinTransformerBlock(nn.Module):
         attn_windows = attn_windows.view(-1, wh, ww, C)
         if max(sh, sw) > 0:
             # not cuda
-            if not self.fused_window_process:
+            if not fused:
                 shifted_x = window_reverse(attn_windows, self.window_size, Hp, Wp)  # (B, Hp, Wp, C)
                 x = torch.roll(shifted_x, shifts=(sh, sw), dims=(1, 2))
             # cuda — complex64 view trick (same rationale as forward path above)
