@@ -16,9 +16,9 @@ Michele Mancusi<sup>1,2</sup><br>
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/teaser_dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/teaser.png">
-    <img src="docs/assets/teaser.png" width="600" alt="FAD-MERT on the MoisesDB mixtures against real-time factor: SAGE has the lowest FAD-MERT at the real-time factor of Stable Audio Open">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/efficiency_dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/efficiency.png">
+    <img src="docs/assets/efficiency.png" width="600" alt="FAD-MERT on the MoisesDB mixtures against real-time factor: SAGE has the lowest FAD-MERT at the real-time factor of Stable Audio Open">
   </picture>
   <br><em>Distributional fidelity against inference cost on the MoisesDB mixtures; marker area is the parameter count.</em>
 </p>
