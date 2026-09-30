@@ -38,32 +38,16 @@ latent representation.
 This repository includes pretrained-model inference, both training phases, and the
 paper's evaluation code.
 
-- [Usage](#usage): reconstruct audio, or encode and decode latents.
-- [Training guide](docs/training.md): data setup, training recipes, checkpoint resuming, and SLURM.
-- [Paper runs](docs/paper_runs.md): commands and protocols for reproducing the reported results.
-- [Changes from the development code](docs/changes.md): migration notes for pre-release users.
+**What do you want to do?**
 
-## Results
+- Encode or reconstruct your own audio → [Quickstart](#quickstart)
+- Train SAGE from scratch → [Training guide](docs/training.md)
+- Reproduce the numbers of the paper → [Paper runs](docs/paper_runs.md)
+- Upgrade from the pre-release code → [Changes from the development code](docs/changes.md)
 
-Listening test (MUSHRA, 21 raters after filtering; paper Table 3) and average probing score
-per block of tasks (paper Table 4):
+## Quickstart
 
-| Model | Params | RTF ↓ | MUSHRA ↑ | FMA (6) ↑ | MoisesDB (7) ↑ | Upstream MAEB (6) ↑ |
-|---|---|---|---|---|---|---|
-| **SAGE** | 105M | 0.0045 | 81.6 ± 2.7 | **0.563** | **0.544** | **0.622** |
-| SAME-L | 852M | 0.0192 | **81.8 ± 2.6** | 0.470 | 0.493 | 0.473 |
-| Stable Audio Open | 156M | 0.0045 | 64.6 ± 3.7 | 0.490 | 0.469 | 0.481 |
-| CoDiCodec | 150M | 0.0237 | 66.4 ± 3.5 | 0.474 | 0.456 | 0.471 |
-
-SAGE and SAME-L are statistically indistinguishable in the listening test. Reconstruction
-metrics on the five evaluation sets, the per-task probing scores and the other baselines
-(SAME-S, Music2Latent) are in the paper; [docs/paper_runs.md](docs/paper_runs.md) gives the
-command that reproduces each of them.
-
-## Installation
-
-Python 3.11 and [uv](https://docs.astral.sh/uv/). PyTorch 2.7.1 is installed with CUDA
-12.6 wheels on Linux and the default wheels elsewhere.
+**1. Install.** You need Python 3.11 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/francescobrigante/SAGE.git
@@ -71,75 +55,126 @@ cd SAGE
 uv sync
 ```
 
-Choose the extras for your workflow:
+**2. Download the weights** from [Hugging Face](https://huggingface.co/francescobrigante/SAGE)
+into `models/`, where the code looks for them by default:
+
+```bash
+uv run hf download francescobrigante/SAGE SAGE_FTe992.ckpt --local-dir models
+```
+
+**3. Reconstruct an audio file** (any sample rate; it is resampled to 44.1 kHz):
+
+```bash
+uv run python scripts/encode_decode.py reconstruct song.wav song_rec.wav --ckpt models/SAGE_FTe992.ckpt
+```
+
+Or save the latents and decode them later:
+
+```bash
+uv run python scripts/encode_decode.py encode song.wav song.pt      --ckpt models/SAGE_FTe992.ckpt
+uv run python scripts/encode_decode.py decode song.pt  song_rec.wav --ckpt models/SAGE_FTe992.ckpt
+```
+
+## Using SAGE
+
+```python
+import torch
+from sage import SAGE
+
+codec = SAGE.from_checkpoint("models/SAGE_FTe992.ckpt")  # uses CUDA if available
+wav = torch.randn(1, 2, 10 * codec.sample_rate)          # (batch, 2 channels, samples) at 44.1 kHz
+
+rec = codec.reconstruct(wav)  # encode + decode; same shape as the input
+```
+
+To work with the latents directly:
+
+```python
+padded, n = codec.pad(wav)                    # right-pad to a multiple of the frame size
+z = codec.encode(padded, deterministic=True)  # (batch, 16, frames)
+y = codec.decode(z, target_length=padded.shape[-1])[..., :n]  # back to the original length
+```
+
+A VAE encodes each input as a distribution. `deterministic=True` takes its mean, so the same
+input always gives the same latent; this is usually what you want for downstream models.
+By default, `reconstruct` and `encode` instead *sample* the latent, as in the paper's
+reconstruction evaluation.
+
+About the checkpoint name: `SAGE_FTe992.ckpt` holds the model configuration and the
+exponential-moving-average (EMA) weights at epoch 992 of the second training phase, decoder
+fine-tuning ("FT"). It is an inference-only export (see `scripts/export_checkpoint.py`) and
+cannot be used to resume training.
+
+## Results
+
+| Model | Params | Speed (RTF ↓) | Listening test (MUSHRA ↑) | Probing: FMA ↑ | Probing: MoisesDB ↑ | Probing: MAEB music ↑ |
+|---|---|---|---|---|---|---|
+| **SAGE** | 105M | 0.0045 | 81.6 ± 2.7 | **0.563** | **0.544** | **0.622** |
+| SAME-L | 852M | 0.0192 | **81.8 ± 2.6** | 0.470 | 0.493 | 0.473 |
+| Stable Audio Open | 156M | 0.0045 | 64.6 ± 3.7 | 0.490 | 0.469 | 0.481 |
+| CoDiCodec | 150M | 0.0237 | 66.4 ± 3.5 | 0.474 | 0.456 | 0.471 |
+
+How to read the table:
+
+- **RTF** (real-time factor): processing time divided by audio duration. Lower is faster.
+- **MUSHRA**: a listening test in which 21 raters (after filtering) scored reconstructions
+  from 0 to 100 against the original (paper Table 3). SAGE and SAME-L are statistically
+  indistinguishable.
+- **Probing**: average score of simple models trained on top of the frozen latents, per block
+  of tasks: FMA (6 tasks), MoisesDB (7) and the upstream MAEB music tasks (6) (paper Table 4).
+  Higher means the latent carries more musical information.
+
+Reconstruction metrics on five evaluation sets, per-task probing scores and the other baselines
+(SAME-S, Music2Latent) are in the paper; [docs/paper_runs.md](docs/paper_runs.md) gives the
+command that reproduces each of them.
+
+## Installation options
+
+`uv sync` installs what you need for inference. Other workflows need extras:
 
 | Workflow | Install command |
 |---|---|
 | Inference | `uv sync` |
 | Training | `uv sync --extra train` |
 | Evaluation (FAD, CLAP, CDPAM, MAEB) | `uv sync --extra train --extra eval` |
-| All extras, including paper baselines | `uv sync --all-extras` |
+| Everything, including the paper's baselines | `uv sync --all-extras` |
 
-Run the commands below with `uv run`, or activate the environment first with
-`source .venv/bin/activate`.
-
+PyTorch 2.7.1 is installed with CUDA 12.6 wheels on Linux and the default wheels elsewhere.
+Run commands with `uv run`, or activate the environment once with `source .venv/bin/activate`.
 `pip install .` (or `pip install ".[train,eval]"`) also works, without the lock file.
-Optional [fused CUDA kernels](docs/training.md#optional-fused-cuda-kernels) can speed
-up training and inference on NVIDIA GPUs.
 
-## Checkpoint
+On NVIDIA GPUs, optional [fused CUDA kernels](docs/training.md#optional-fused-cuda-kernels)
+speed up both training and inference.
 
-| File | Size | Weights |
-|---|---|---|
-| `SAGE_FTe992.ckpt` | 402 MiB | EMA weights from decoder fine-tuning, epoch 992 |
+## Training
 
-Download the checkpoint from
-[Hugging Face](https://huggingface.co/francescobrigante/SAGE) and place it in
-`models/` (the default location; see [Paths](#paths)):
+Training runs in two phases: pretraining of the whole model (500 epochs), then fine-tuning of
+the decoder only (992 epochs). The [training guide](docs/training.md) covers data setup, the
+commands for both phases, GPU sizing, resuming and SLURM.
 
-```bash
-hf download francescobrigante/SAGE SAGE_FTe992.ckpt --local-dir models
-```
-
-This inference checkpoint contains the model configuration and EMA weights,
-exported with
-`scripts/export_checkpoint.py`.
-
-## Usage
-
-```python
-import torch
-from sage import SAGE
-
-codec = SAGE.from_checkpoint("models/SAGE_FTe992.ckpt")  # CUDA if available
-wav = torch.randn(1, 2, 10 * codec.sample_rate)          # (B, 2, N) at 44.1 kHz
-
-rec = codec.reconstruct(wav)  # encode + decode, same length as the input
-```
-
-To work with latents directly:
-
-```python
-padded, n = codec.pad(wav)                    # right-pad to the model's frame grid
-z = codec.encode(padded, deterministic=True)  # posterior mean, (B, 16, frames)
-y = codec.decode(z, target_length=padded.shape[-1])[..., :n]  # restore input length
-```
-
-By default, `reconstruct` and `encode` sample the latent, as in the paper's
-reconstruction evaluation. Pass `deterministic=True` to use the posterior mean,
-as in the manual example above.
-
-The command-line interface resamples audio to 44.1 kHz and duplicates mono to stereo:
+## Reproducing the paper
 
 ```bash
-python scripts/encode_decode.py reconstruct song.wav song_rec.wav --ckpt models/SAGE_FTe992.ckpt
-python scripts/encode_decode.py encode      song.wav song.pt      --ckpt models/SAGE_FTe992.ckpt
-python scripts/encode_decode.py decode      song.pt  song_rec.wav --ckpt models/SAGE_FTe992.ckpt
+python -m evaluation.build_references dataset=musiccaps            # once per 10 s clip set
+python -m evaluation.reconstruction dataset=fma model=sage          # reconstruction metrics (Table 2)
+python -m evaluation.maeb encoder=sage                              # the 19 probing tasks (Tables 4, 9)
+python -m evaluation.tables --recon "FMA test=results/recon_fma" --maeb results/maeb/SAGE_FTe992
 ```
 
-## Paths
+Evaluation sets: `fma`, `moisesdb_mix`, `moisesdb_stems`, `musiccaps`, `song_describer`
+(`configs/dataset/`). `build_references` writes the reference embeddings and statistics into
+the set's own folder (`embeddings/`, `stats_ours/`), where `reconstruction` reads them. It
+overwrites references already there, so to keep existing ones use a copy of the folder
+(symlinks to the audio suffice). `scripts/slurm/eval.sbatch` runs any of these commands on
+SLURM, sharding the reconstruction metrics over GPUs.
 
-Every machine-specific location (datasets, weights, outputs) is set in one file,
+[docs/paper_runs.md](docs/paper_runs.md) lists every result of the paper with the command
+that reproduces it, how randomness is seeded, and what this repository does not reproduce.
+
+## Configuring paths
+
+Inference only needs the checkpoint. Training and evaluation also need datasets and extra
+weights, whose locations are all set in one file,
 [`configs/paths/default.yaml`](configs/paths/default.yaml). Each entry reads an environment
 variable and falls back to a default:
 
@@ -148,44 +183,22 @@ variable and falls back to a default:
 | `SAGE_MODELS` (default `models/`) | the SAGE checkpoint, the LAION-CLAP teacher and the PANN weights of FAD-PANN |
 | `SAGE_CHECKPOINT`, `CLAP_TEACHER_CKPT`, `PANN_CKPT`, `CLAP_FAD_CKPT`, `SAO_VAE_DIR` | single weight files, instead of their place under `SAGE_MODELS` |
 | `FMA_AUDIO`, `FMA_METADATA` | FMA audio (`fma_large/`) and `fma_metadata/tracks.csv` |
-| `FMA_FULL_AUDIO`, `JAMENDO_AUDIO`, `JAMENDO_SPLIT_TSV`, `M4SINGER_AUDIO` | the pretraining corpora |
+| `FMA_FULL_AUDIO`, `JAMENDO_AUDIO`, `JAMENDO_SPLIT_TSV`, `M4SINGER_AUDIO` | the training corpora |
 | `MOISESDB_MIX`, `MOISESDB_STEMS`, `MUSICCAPS`, `SONG_DESCRIBER` | the 10 s clip sets of the reconstruction evaluation |
-| `MOISESDB_ROOT`, `MOISESDB_CHUNKS_ROOT` | MoisesDB metadata and 30 s chunks of the probing tasks |
+| `MOISESDB_ROOT`, `MOISESDB_CHUNKS_ROOT` | MoisesDB metadata and the 30 s chunks of the probing tasks |
 | `SAGE_EVAL_OUTPUT` (`results/`), `SAGE_EVAL_CACHE` (`eval_cache/`) | evaluation outputs and cache |
 
-Instead of environment variables, copy the file to `configs/paths/local.yaml`
-(ignored by git), edit it and add `paths=local` to training and evaluation commands.
-Any single entry can also be overridden on the command line, e.g.
-`paths.fma_audio=/data/fma_large`.
+You can set them in three ways:
 
-The weights under `SAGE_MODELS`: `SAGE_FTe992.ckpt`,
-`LAION_CLAP/music_audioset_epoch_15_esc_90.14.pt` (training teacher and probing oracle,
-from [LAION-CLAP](https://github.com/LAION-AI/CLAP)) and `PANN/Cnn14_16k_mAP=0.438.pth`
+- export the environment variables;
+- copy the file to `configs/paths/local.yaml` (ignored by git), edit it, and add `paths=local`
+  to every training and evaluation command;
+- override a single entry on the command line, e.g. `paths.fma_audio=/data/fma_large`.
+
+Expected files under `SAGE_MODELS`: `SAGE_FTe992.ckpt`,
+`LAION_CLAP/music_audioset_epoch_15_esc_90.14.pt` (training teacher and probing oracle, from
+[LAION-CLAP](https://github.com/LAION-AI/CLAP)) and `PANN/Cnn14_16k_mAP=0.438.pth`
 (from [PANNs](https://zenodo.org/record/3987831)).
-
-## Training
-
-See the [training guide](docs/training.md) for setup, commands, checkpoint handling,
-and cluster execution.
-
-## Evaluation
-
-```bash
-python -m evaluation.build_references dataset=musiccaps            # once per 10 s clip set
-python -m evaluation.reconstruction dataset=fma model=sage          # reconstruction metrics (Table 2)
-python -m evaluation.reconstruction dataset=musiccaps model=same-s  # a baseline
-python -m evaluation.maeb encoder=sage                              # 19 probing tasks (Tables 4, 9)
-python -m evaluation.tables --recon "FMA test=results/recon_fma" --maeb results/maeb/SAGE_FTe992
-```
-
-Evaluation sets: `fma`, `moisesdb_mix`, `moisesdb_stems`, `musiccaps`, `song_describer`
-(`configs/dataset/`). `build_references` writes the reference embeddings and statistics
-into the set's own folder (`embeddings/`, `stats_ours/`), where `reconstruction` reads
-them: it overwrites references already there, so use a copy of the folder (symlinks to the
-audio suffice) to keep existing ones. [docs/paper_runs.md](docs/paper_runs.md) lists every result of the
-paper with the command that reproduces it, how the random parts of the evaluation are
-seeded, and what this repository does not reproduce. `scripts/slurm/eval.sbatch` runs any
-of these commands on SLURM, sharding the reconstruction metrics over GPUs.
 
 ## Tests
 
