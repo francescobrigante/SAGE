@@ -216,7 +216,7 @@ tests/                test suite
 We acknowledge ISCRA for awarding this project access to the LEONARDO supercomputer, owned
 by the EuroHPC Joint Undertaking, hosted by CINECA (Italy).
 
-The codebase started from [EuleroDec](https://github.com/CerovazS/EuleroDec) by Luca Cerovaz
+The codebase started from [Eulero](https://github.com/CerovazS/Eulero) by Luca Cerovaz
 ([@CerovazS](https://github.com/CerovazS)).
 
 SAGE builds on [PyTorch](https://pytorch.org/), [Lightning](https://lightning.ai/),
