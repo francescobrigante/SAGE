@@ -10,9 +10,8 @@ Michele Mancusi<sup>1,2</sup><br>
 <p align="center">
   <a href="https://arxiv.org/abs/2609.32755"><img src="https://img.shields.io/badge/arXiv-2609.32755-b31b1b.svg" alt="arXiv"></a>
   <a href="https://sage-music.pages.dev/"><img src="https://img.shields.io/badge/Project-page-6d4aff.svg" alt="Project page"></a>
-  <!-- <a href="https://huggingface.co/TBD"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-weights-ffcc4d.svg" alt="Weights"></a> -->
+  <a href="https://huggingface.co/francescobrigante/SAGE"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-weights-ffcc4d.svg" alt="Weights on Hugging Face"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
-  <a href="https://github.com/francescobrigante/SAGE/actions/workflows/tests.yml"><img src="https://github.com/francescobrigante/SAGE/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
 </p>
 
 <p align="center">
@@ -85,8 +84,14 @@ export PYTHONPATH=$PWD:$PYTHONPATH              # make it importable (`uv sync` 
 |---|---|---|
 | `SAGE_FTe992.ckpt` (EMA weights, epoch 992) | 402 MiB | `dd87d01eaee88ca92f96c80ffe0e504a1d7cbc02e4271d8c48033df591d6ac99` |
 
-Download: Hugging Face, *link to be added*. Put the file in `models/` (the default location, see
-[Paths](#paths)). It holds the model configuration and the EMA weights only; it was
+Download it from [Hugging Face](https://huggingface.co/francescobrigante/SAGE) and put it in `models/` (the default
+location, see [Paths](#paths)):
+
+```bash
+hf download francescobrigante/SAGE SAGE_FTe992.ckpt --local-dir models
+```
+
+The file holds the model configuration and the EMA weights only; it was
 exported from the training checkpoint with `scripts/export_checkpoint.py`.
 
 ## Usage
@@ -233,7 +238,9 @@ MoisesDB, MusicCaps and Song Describer.
 ## License
 
 The code is released under the [MIT License](LICENSE). Files adapted from other projects keep
-their original license, as noted in their headers (see above).
+their original license, as noted in their headers (see above). The model weights are released
+under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/), following the
+non-commercial terms of part of the training data.
 
 ## Citation
 
