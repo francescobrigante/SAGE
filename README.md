@@ -19,11 +19,14 @@ Michele Mancusi<sup>1,2</sup><br>
   <br><em>Distributional fidelity against inference cost on the MoisesDB mixtures; marker area is the parameter count.</em>
 </p>
 
-SAGE is a compact variational autoencoder for stereo music at 44.1 kHz. A Swin
-Transformer V2 encoder and decoder operate on the STFT, and the latent is shaped by
-distilling the embeddings of a pretrained audio-text model (LAION-CLAP). The released
-model has 104.6M parameters and compresses a stereo waveform ×64 into a 16-channel
-latent at 86 frames per second (one latent frame per 512 samples).
+SAGE is a compact variational autoencoder for stereo music at 44.1 kHz. It encodes
+audio into a 16-channel latent representation and decodes it back to a waveform.
+The released model has 104.6M parameters, with 64× compression and approximately
+86 latent frames per second (one frame per 512 input samples).
+
+Its Swin Transformer V2 encoder and decoder operate on the STFT. During training,
+semantic distillation from LAION-CLAP, a pretrained audio-text model, shapes the
+latent representation.
 
 - **Fast:** it runs at the inference cost of Stable Audio Open.
 - **High fidelity:** its listening-test score matches SAME-L, an autoencoder 8× larger and 4×
@@ -32,8 +35,13 @@ latent at 86 frames per second (one latent frame per 512 samples).
   semantics, in domain and out of domain.
 - **Open data:** it is trained solely on publicly available music.
 
-This repository contains the model, the two training phases, the evaluation code of
-the paper and the released checkpoint's loader.
+This repository includes pretrained-model inference, both training phases, and the
+paper's evaluation code.
+
+- [Usage](#usage): reconstruct audio, or encode and decode latents.
+- [Training guide](docs/training.md): data setup, training recipes, checkpoint resuming, and SLURM.
+- [Paper runs](docs/paper_runs.md): commands and protocols for reproducing the reported results.
+- [Changes from the development code](docs/changes.md): migration notes for pre-release users.
 
 ## Results
 
@@ -58,41 +66,44 @@ Python 3.11 and [uv](https://docs.astral.sh/uv/). PyTorch 2.7.1 is installed wit
 12.6 wheels on Linux and the default wheels elsewhere.
 
 ```bash
-git clone https://github.com/francescobrigante/SAGE.git && cd SAGE
-uv sync                                   # inference only
-uv sync --extra train                     # + training
-uv sync --extra train --extra eval        # + evaluation (FAD, CLAP, CDPAM, MAEB)
-uv sync --all-extras                      # + baselines of the paper (SAME, SAO VAE, CoDiCodec, Music2Latent)
+git clone https://github.com/francescobrigante/SAGE.git
+cd SAGE
+uv sync
 ```
 
-`pip install .` (or `pip install ".[train,eval]"`) works too, without the lock file.
+Choose the extras for your workflow:
 
-Optional, Linux with an NVIDIA GPU: fused CUDA kernels for the Swin window shift/partition
-(NVIDIA, see Acknowledgements). They give the same outputs and speed up training and
-inference, and are used automatically on GPU once importable. Building them needs the CUDA
-toolkit of the PyTorch wheels (`nvcc`, `CUDA_HOME`) and gcc ≥ 9:
+| Workflow | Install command |
+|---|---|
+| Inference | `uv sync` |
+| Training | `uv sync --extra train` |
+| Evaluation (FAD, CLAP, CDPAM, MAEB) | `uv sync --extra train --extra eval` |
+| All extras, including paper baselines | `uv sync --all-extras` |
 
-```bash
-cd src/sage/model/swin/cuda_kernels
-python setup.py build_ext --inplace            # with the environment active; writes swin_window_process*.so
-export PYTHONPATH=$PWD:$PYTHONPATH              # make it importable (`uv sync` leaves it in place)
-```
+Run the commands below with `uv run`, or activate the environment first with
+`source .venv/bin/activate`.
+
+`pip install .` (or `pip install ".[train,eval]"`) also works, without the lock file.
+Optional [fused CUDA kernels](docs/training.md#optional-fused-cuda-kernels) can speed
+up training and inference on NVIDIA GPUs.
 
 ## Checkpoint
 
-| File | Size | SHA-256 |
+| File | Size | Weights |
 |---|---|---|
-| `SAGE_FTe992.ckpt` (EMA weights, epoch 992) | 402 MiB | `dd87d01eaee88ca92f96c80ffe0e504a1d7cbc02e4271d8c48033df591d6ac99` |
+| `SAGE_FTe992.ckpt` | 402 MiB | EMA weights from decoder fine-tuning, epoch 992 |
 
-Download it from [Hugging Face](https://huggingface.co/francescobrigante/SAGE) and put it in `models/` (the default
-location, see [Paths](#paths)):
+Download the checkpoint from
+[Hugging Face](https://huggingface.co/francescobrigante/SAGE) and place it in
+`models/` (the default location; see [Paths](#paths)):
 
 ```bash
 hf download francescobrigante/SAGE SAGE_FTe992.ckpt --local-dir models
 ```
 
-The file holds the model configuration and the EMA weights only; it was
-exported from the training checkpoint with `scripts/export_checkpoint.py`.
+This inference checkpoint contains the model configuration and EMA weights,
+exported with
+`scripts/export_checkpoint.py`.
 
 ## Usage
 
@@ -100,20 +111,25 @@ exported from the training checkpoint with `scripts/export_checkpoint.py`.
 import torch
 from sage import SAGE
 
-codec = SAGE.from_checkpoint("models/SAGE_FTe992.ckpt")          # CUDA if available
-wav = torch.randn(1, 2, 10 * codec.sample_rate)                  # (B, 2, N) at 44.1 kHz
+codec = SAGE.from_checkpoint("models/SAGE_FTe992.ckpt")  # CUDA if available
+wav = torch.randn(1, 2, 10 * codec.sample_rate)          # (B, 2, N) at 44.1 kHz
 
-rec = codec.reconstruct(wav)                                     # encode + decode, same length as the input
-
-padded, n = codec.pad(wav)                                       # right-pad to the model's frame grid
-z = codec.encode(padded, deterministic=True)                     # posterior mean, (B, 16, frames)
-y = codec.decode(z, target_length=padded.shape[-1])[..., :n]     # back to audio, input length
+rec = codec.reconstruct(wav)  # encode + decode, same length as the input
 ```
 
-`reconstruct` pads, encodes and decodes exactly as the paper's evaluation does; the last
-three lines do the same by hand. `encode` samples the latent unless `deterministic=True`
-(the paper's reconstruction metrics use a sampled latent). From the command line, for any audio file (resampled to
-44.1 kHz, mono duplicated to stereo):
+To work with latents directly:
+
+```python
+padded, n = codec.pad(wav)                    # right-pad to the model's frame grid
+z = codec.encode(padded, deterministic=True)  # posterior mean, (B, 16, frames)
+y = codec.decode(z, target_length=padded.shape[-1])[..., :n]  # restore input length
+```
+
+By default, `reconstruct` and `encode` sample the latent, as in the paper's
+reconstruction evaluation. Pass `deterministic=True` to use the posterior mean,
+as in the manual example above.
+
+The command-line interface resamples audio to 44.1 kHz and duplicates mono to stereo:
 
 ```bash
 python scripts/encode_decode.py reconstruct song.wav song_rec.wav --ckpt models/SAGE_FTe992.ckpt
@@ -137,9 +153,10 @@ variable and falls back to a default:
 | `MOISESDB_ROOT`, `MOISESDB_CHUNKS_ROOT` | MoisesDB metadata and 30 s chunks of the probing tasks |
 | `SAGE_EVAL_OUTPUT` (`results/`), `SAGE_EVAL_CACHE` (`eval_cache/`) | evaluation outputs and cache |
 
-Instead of environment variables, copy the file to `configs/paths/local.yaml` (ignored by
-git), edit it and add `paths=local` to the commands below. Any single entry can also be
-overridden on the command line, e.g. `paths.fma_audio=/data/fma_large`.
+Instead of environment variables, copy the file to `configs/paths/local.yaml`
+(ignored by git), edit it and add `paths=local` to training and evaluation commands.
+Any single entry can also be overridden on the command line, e.g.
+`paths.fma_audio=/data/fma_large`.
 
 The weights under `SAGE_MODELS`: `SAGE_FTe992.ckpt`,
 `LAION_CLAP/music_audioset_epoch_15_esc_90.14.pt` (training teacher and probing oracle,
@@ -148,26 +165,8 @@ from [LAION-CLAP](https://github.com/LAION-AI/CLAP)) and `PANN/Cnn14_16k_mAP=0.4
 
 ## Training
 
-Two phases (paper Section 2.3, Table 6), each a Hydra recipe in `configs/experiment/`:
-
-```bash
-# phase 1: pretraining on FMA-full + MTG-Jamendo + M4Singer (500 epochs, 16 GPUs, global batch 128)
-python train.py +experiment=pretrain trainer.trainer.num_gpus=4 ++trainer.trainer.num_nodes=4
-# phase 2: decoder fine-tuning from the phase-1 checkpoint (encoder frozen)
-python train.py +experiment=decoder_ft +init_from=<phase-1 checkpoint> trainer.trainer.num_gpus=4 ++trainer.trainer.num_nodes=4
-```
-
-The batch size is global, so the recipes run unchanged on fewer GPUs. Runs are written
-to `runs/<name>/<date>/`; logging goes to Weights & Biases (`trainer.wandb.use_wandb=false`
-for TensorBoard only). A SLURM requeue, or launching a run name again (the recipe's or
-`trainer.wandb.name=`) after a crash, continues its newest checkpoint in its own folder and
-its W&B run; `+ckpt_path=<file>` resumes a given checkpoint, `auto_resume=false` or a new
-`trainer.wandb.name` starts over. A run that already has checkpoints refuses a new
-`+init_from` instead of resuming over it. For SLURM clusters, `scripts/slurm/train.sbatch <recipe>`
-runs a recipe with requeueing. On multi-node InfiniBand clusters where NCCL stops at the
-first collective with `Could not find NET with id 0` (NCCL 2.26 of the PyTorch wheels, seen
-with GPUDirect RDMA), `export NCCL_NET_GDR_LEVEL=LOC` before `sbatch` fixes it. Losses outside the paper are available for experiments in
-`sage/nn/losses/experimental/` (see its `__init__`).
+See the [training guide](docs/training.md) for setup, commands, checkpoint handling,
+and cluster execution.
 
 ## Evaluation
 
@@ -208,6 +207,7 @@ train.py              training entry point (Hydra)
 configs/              Hydra configs: training recipes, evaluation, paths
 evaluation/           reconstruction metrics, reference statistics, MAEB probing, tables, baselines
 scripts/              encode_decode.py, export_checkpoint.py, SLURM templates
+docs/                 training guide, paper reproduction commands, migration notes
 tests/                test suite
 ```
 

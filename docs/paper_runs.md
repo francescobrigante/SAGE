@@ -18,6 +18,9 @@ e.g. `paths.musiccaps=/data/musiccaps_10s`. The weights go under `SAGE_MODELS`
 
 ## Training (Table 6)
 
+See the [training guide](training.md) for data and teacher setup, GPU sizing,
+logging, checkpoint resuming, and SLURM execution.
+
 | Result | Command |
 |---|---|
 | Phase 1, pretraining (500 epochs, 16 GPUs, global batch 128) | `python train.py +experiment=pretrain trainer.trainer.num_gpus=4 ++trainer.trainer.num_nodes=4` |
