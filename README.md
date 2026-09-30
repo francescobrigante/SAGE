@@ -223,7 +223,7 @@ train.py              training entry point (Hydra)
 configs/              Hydra configs: training recipes, evaluation, paths
 evaluation/           reconstruction metrics, reference statistics, MAEB probing, tables, baselines
 scripts/              encode_decode.py, export_checkpoint.py, SLURM templates
-docs/                 training guide, paper reproduction commands, migration notes
+docs/                 training guide, paper reproduction commands
 tests/                test suite
 ```
 
