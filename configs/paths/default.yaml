@@ -1,0 +1,43 @@
+# =============================================================================
+# Machine-specific paths: the one place to set them, for training and evaluation.
+#
+# Every value reads an environment variable, with the default after the comma
+# (null = not set: the step that needs it stops and names the key). Either export
+# the variables, or copy this file to configs/paths/local.yaml (git-ignored),
+# write your paths there and add `paths=local` to the command. A single value can
+# also be overridden on the command line, e.g. `paths.fma_audio=/data/fma_large`.
+# Relative paths are resolved from the directory the command is launched in.
+# =============================================================================
+
+# ── Model weights ────────────────────────────────────────────────────────────
+models_dir: ${oc.env:SAGE_MODELS,models}
+sage_checkpoint: ${oc.env:SAGE_CHECKPOINT,${.models_dir}/SAGE_FTe992.ckpt}
+# LAION-CLAP music checkpoint: teacher of L_sem (pretraining) and the oracle row of MAEB
+clap_teacher: ${oc.env:CLAP_TEACHER_CKPT,${.models_dir}/LAION_CLAP/music_audioset_epoch_15_esc_90.14.pt}
+# LAION-CLAP 630k-audioset-best.pt for FAD-CLAP; null = laion_clap downloads it
+clap_fad: ${oc.env:CLAP_FAD_CKPT,null}
+# PANN Cnn14_16k for FAD-PANN (https://zenodo.org/record/3987831)
+pann: ${oc.env:PANN_CKPT,'${.models_dir}/PANN/Cnn14_16k_mAP=0.438.pth'}
+# local snapshot of stabilityai/stable-audio-open-1.0 (baseline sao-vae); null = the gated HF repo
+sao_vae: ${oc.env:SAO_VAE_DIR,null}
+
+# ── Training data ────────────────────────────────────────────────────────────
+fma_audio: ${oc.env:FMA_AUDIO,null}                 # fma_large/: FMA training (data=fma), validation, FMA evaluation
+fma_metadata: ${oc.env:FMA_METADATA,null}           # fma_metadata/tracks.csv
+fma_full_audio: ${oc.env:FMA_FULL_AUDIO,null}       # fma_full/: multi-corpus pretraining
+jamendo_audio: ${oc.env:JAMENDO_AUDIO,null}         # MTG-Jamendo audio root (XX/ID.mp3)
+jamendo_split_tsv: ${oc.env:JAMENDO_SPLIT_TSV,null} # split-0 autotagging-train.tsv
+m4singer_audio: ${oc.env:M4SINGER_AUDIO,null}       # M4Singer wav root
+filelist_cache_dir: ${oc.env:SAGE_FILELIST_CACHE,filelist_cache}   # scanned file lists of the multi-corpus loader
+
+# ── Evaluation data (clip sets: flat folders of 10 s clips) ──────────────────
+moisesdb_mix: ${oc.env:MOISESDB_MIX,null}           # MoisesDB mixtures, 1,998 windows
+moisesdb_stems: ${oc.env:MOISESDB_STEMS,null}       # MoisesDB stems, 1,546 windows
+musiccaps: ${oc.env:MUSICCAPS,null}                 # MusicCaps, 964 clips
+song_describer: ${oc.env:SONG_DESCRIBER,null}       # Song Describer, 8,364 chunks
+moisesdb_root: ${oc.env:MOISESDB_ROOT,null}         # moisesdb_v0.1/ (track metadata of the MAEB tasks)
+moisesdb_chunks: ${oc.env:MOISESDB_CHUNKS_ROOT,null}  # chunks_30s/ (audio of the MAEB tasks)
+
+# ── Evaluation outputs ───────────────────────────────────────────────────────
+eval_cache: ${oc.env:SAGE_EVAL_CACHE,eval_cache}    # FMA protocol: resampled audio and target embeddings
+eval_output: ${oc.env:SAGE_EVAL_OUTPUT,results}     # reconstruction metrics and MAEB scores

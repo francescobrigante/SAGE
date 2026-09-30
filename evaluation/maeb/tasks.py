@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # =============================================================================
 # evaluation/maeb/tasks.py
-# Task resolution for the MAEB suite: the 6 FMA music tasks (default), opt-in
-# upstream MAEB music tasks on their ORIGINAL datasets (MAEB_ORIGINAL_MUSIC),
-# and opt-in MoisesDB tasks. Audio-only filtering + name resolution.
+# Task resolution for the MAEB suites: the 6 FMA music tasks, the 7 MoisesDB
+# tasks and the 6 upstream MAEB music tasks on their ORIGINAL datasets
+# (MAEB_ORIGINAL_MUSIC); the paper reports all 19. Audio-only filtering + name resolution.
 # =============================================================================
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# FMA-local music-semantic suite (defined in fma_tasks.py). Default per ogni eval.
+# FMA-local music-semantic suite (defined in fma_tasks.py).
 FMA_SUITE = [
     "FMAGenreClassification",
     "FMAGenreClustering",
@@ -21,51 +21,41 @@ FMA_SUITE = [
     "FMAGenreAudioReranking",
     "FMAArtistPairClassification",
 ]
-# Suite MAEB musicale upstream sui dataset ORIGINARI (hub, già in cache su
-# $FAST). Solo task musicali audio-only (no speech, no cross-modal audio-text).
-# NON nel default: si attiva via `--maeb-original-music-only` (pass separato che
-# si fonde nel summary.json esistente, merge non-distruttivo).
+# Upstream MAEB music tasks on their original datasets (from the HuggingFace hub):
+# audio-only music tasks (no speech, no cross-modal audio-text). Results of separate
+# runs into the same output folder merge into its summary.json.
 MAEB_ORIGINAL_MUSIC = [
-    "GTZANGenre",               # genre classification (canonica)
+    "GTZANGenre",               # genre classification
     "GTZANGenreClustering",     # genre clustering
     "MusicGenreClustering",     # genre clustering
     "GTZANAudioReranking",      # genre reranking
-    "NSynth",                   # instrument/timbre (note singole)
-    "JamAltArtistA2ARetrieval", # artist A2A retrieval (unica audio-only del core-30)
+    "NSynth",                   # instrument/timbre (single notes)
+    "JamAltArtistA2ARetrieval", # artist A2A retrieval (the only audio-only one of core-30)
 ]
 
-# MoisesDB-local tasks (chunks_30s). Opt-in via --with-moisesdb / --moisesdb-only.
+# MoisesDB-local tasks (chunks_30s).
 from .moisesdb_tasks import MOISESDB_SUITE  # noqa: E402
 
 # The complete set of task names these CLIs may run.
 ALLOWED_TASKS = FMA_SUITE + MAEB_ORIGINAL_MUSIC + MOISESDB_SUITE
 
+# Named suites (configs/maeb.yaml `suite`); "paper" is the 19 tasks of Table 9.
+SUITES = {
+    "paper": FMA_SUITE + MOISESDB_SUITE + MAEB_ORIGINAL_MUSIC,
+    "fma": FMA_SUITE,
+    "moisesdb": MOISESDB_SUITE,
+    "fma_moisesdb": FMA_SUITE + MOISESDB_SUITE,
+    "maeb_music": MAEB_ORIGINAL_MUSIC,
+}
 
-def select_task_names(
-    subset: list[str] | None,
-    *,
-    maeb_original_music_only: bool = False,
-    with_moisesdb: bool = False,
-    moisesdb_only: bool = False,
-) -> list[str]:
-    """Pick which task names to run, given the opt-in flags.
 
-    Precedence:
-    1. An explicit ``subset`` (``--tasks``) always wins.
-    2. ``maeb_original_music_only`` → only the upstream MAEB music tasks.
-    3. ``moisesdb_only`` → only MoisesDB tasks.
-    4. Otherwise: FMA suite (default), optionally + moisesdb.
-    """
+def select_task_names(subset: list[str] | None, suite: str = "paper") -> list[str]:
+    """Task names to run: an explicit ``subset`` wins, otherwise the tasks of ``suite`` (SUITES)."""
     if subset:
         return list(subset)
-    if maeb_original_music_only:
-        return list(MAEB_ORIGINAL_MUSIC)
-    if moisesdb_only:
-        return list(MOISESDB_SUITE)
-    result = list(FMA_SUITE)
-    if with_moisesdb:
-        result += MOISESDB_SUITE
-    return result
+    if suite not in SUITES:
+        raise ValueError(f"Unknown suite {suite!r}. Available: {sorted(SUITES)}")
+    return list(SUITES[suite])
 
 
 def is_audio_only_task(task: Any) -> bool:

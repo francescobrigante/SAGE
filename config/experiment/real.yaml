@@ -1,7 +1,0 @@
-# @package _global_
-defaults:
-  - override /models: SEANet_real_model
-
-trainer:
-  wandb:
-    name: "REAL_Base"

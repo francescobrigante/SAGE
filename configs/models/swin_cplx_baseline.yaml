@@ -1,0 +1,109 @@
+# @package _global_
+#
+# Model configuration — Swin V2 Complex VAE Baseline (3-stage, depths=[2,6,2], embed_dim=256)
+# Used as the champion baseline for complex reconstruction experiments.
+#
+# Fully self-contained configuration file with no external file dependencies.
+# Uses global package routing to automatically disable CAC and set model channels to 2.
+#
+# Geometry:
+#   - Input: (B, 2, 1024, 128) stereo complex STFT
+#   - PatchEmbed (PS=[64,1]): grid (16, 128)
+#   - Stage 0 (depth=2, heads=8): grid (16, 128), window [4,32]
+#   - PatchMerge -> grid (8, 64)
+#   - Stage 1 (depth=6, heads=16): grid (8, 64), window [4,32]
+#   - PatchMerge -> grid (4, 32)
+#   - Stage 2 (depth=2, heads=32): grid (4, 32), window [4,32] (fully global!)
+#   - Latent sequence: 128 tokens, 8 channels (2048 scalars) -> x64 complex compression
+
+models:
+  model:
+    # ── latent space ────────────────────────────────────────────────────────────
+    latent_channels: 8            # ×64 complex: C_lat × N × 2 = 8 × 128 × 2 = 2048 scalars
+    parameters_to_predict: 3      # ComplexVAEBottleneck improper: mu + sigma + c
+
+    # ── autoencoder wrapper ──────────────────────────────────────────────────────
+    autoencoder:
+      return_latent: false
+      pre_transform:
+        type: power_norm
+        apply_target: true
+        apply_inverse: true
+        config:
+          eps: 1.0e-8
+          alpha: 0.65
+          beta: 0.35
+
+    # ── bottleneck ───────────────────────────────────────────────────────────────
+    bottleneck:
+      _target_: sage.nn.complex.bottleneck.ComplexVAEBottleneck
+      apply_cholesky_constraints: false
+      apply_spectral_parameterization: false
+      proper: false
+
+    # ── shared Swin hyperparameters ─────────────────────────────────────────────
+    swin:
+      embed_dim: 256
+      window_size: [4, 32]
+      patch_size: [64, 1]
+      mlp_ratio: 4.0
+      drop_rate: 0.0
+      attn_drop_rate: 0.0
+      drop_path_rate: 0.1
+      use_checkpoint: false
+      complex_activation: ComplexGELU1d
+      abs_pos_embed: false
+      mim_mask_ratio: 0.0
+
+    # ── encoder ─────────────────────────────────────────────────────────────────
+    encoder:
+      _target_: sage.model.encoder.SAGEEncoder
+      in_channels: 2                    # stereo complex STFT (complex_L, complex_R)
+      is_complex: true
+      embed_dim: ${models.model.swin.embed_dim}
+      depths: [2, 6, 2]                 # champion depths
+      num_heads: [8, 16, 32]            # head_dim=32 constant: 256/8, 512/16, 1024/32
+      window_size: ${models.model.swin.window_size}
+      patch_size: ${models.model.swin.patch_size}
+      dimension: ${mul:${models.model.parameters_to_predict},${models.model.latent_channels}}
+      mlp_ratio: ${models.model.swin.mlp_ratio}
+      drop_rate: ${models.model.swin.drop_rate}
+      attn_drop_rate: ${models.model.swin.attn_drop_rate}
+      drop_path_rate: ${models.model.swin.drop_path_rate}
+      use_checkpoint: ${models.model.swin.use_checkpoint}
+      complex_activation: ${models.model.swin.complex_activation}
+      abs_pos_embed: ${models.model.swin.abs_pos_embed}
+      mim_mask_ratio: ${models.model.swin.mim_mask_ratio}
+      fused_window_process: true
+      time_frames: 128
+      use_smooth_convs: false
+
+    # ── decoder ─────────────────────────────────────────────────────────────────
+    decoder:
+      _target_: sage.model.decoder.SAGEDecoder
+      is_complex: true
+      channels: ${models.model.latent_channels}
+      in_channels: 2
+      embed_dim: ${models.model.swin.embed_dim}
+      depths: [2, 6, 2]                 # reversed encoder depths
+      num_heads: [32, 16, 8]            # reversed encoder heads
+      window_size: ${models.model.swin.window_size}
+      patch_size: ${models.model.swin.patch_size}
+      mlp_ratio: ${models.model.swin.mlp_ratio}
+      drop_rate: ${models.model.swin.drop_rate}
+      attn_drop_rate: ${models.model.swin.attn_drop_rate}
+      drop_path_rate: ${models.model.swin.drop_path_rate}
+      use_checkpoint: ${models.model.swin.use_checkpoint}
+      time_frames: 128
+      use_smooth_convs: false
+
+# Automatic data configuration overrides for complex models to bypass command line boilerplate
+data:
+  train_dataset:
+    cac: false
+  eval_dataset:
+    cac: false
+  demo:
+    istft_params:
+      cac: false
+  model_channels: 2

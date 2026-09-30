@@ -1,0 +1,30 @@
+# Test suite on CPU: unit, smoke (tiny training, fine-tuning, evaluation) and CLI tests,
+# in the locked environment. Tests that need the released checkpoint, real pretrained
+# models (`-m weights`) or datasets skip themselves.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.10.4"
+          python-version: "3.11"
+          enable-cache: true
+      - name: Install (locked, all extras)
+        run: uv sync --frozen --all-extras
+      - name: Test
+        run: uv run --frozen pytest -q -rs

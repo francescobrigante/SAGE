@@ -1,21 +1,14 @@
 # ===============================================================
 # test_compute_clap.py — Unit tests for CLAP cosine similarity
-# evaluation logic. Tests cosine_sim edge cases, load_pooled_embedding,
-# and the per-pair scoring loop — no CLAP model weights required.
+# evaluation logic. Tests cosine_sim edge cases, the 10-s windowing of
+# embed_clap, the embedding cache and the CSV output — no CLAP weights required.
 # ===============================================================
-import sys
 import csv
 import pytest
 import numpy as np
-from pathlib import Path
-from unittest.mock import MagicMock
+import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "evaluation"))
-
-from compute_clap_score import cosine_sim
-from eval_dataloader import load_pooled_embedding
+from evaluation.metrics.clap import cosine_sim
 
 
 # ── T1: cosine_sim correctness ────────────────────────────────────────────────
@@ -63,125 +56,64 @@ def test_cosine_high_dimensional():
     assert cosine_sim(a, b) == pytest.approx(expected, abs=1e-6)
 
 
-# ── T2: load_pooled_embedding ─────────────────────────────────────────────────
+# ── T2: embed_clap — 10-s windows, 1-s hop, one embedding per window ────────
 
-def test_load_pooled_embedding_mean_pool(tmp_path):
-    """Multi-chunk (T, D) embedding should be mean-pooled to (D,)."""
-    emb = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])  # (3, 2)
-    path = tmp_path / "emb.npy"
-    np.save(path, emb)
+class _MockCLAP:
+    """Stands in for laion_clap.CLAP_Module: embedding = first D samples of each window."""
+    sr = 48000
 
-    pooled = load_pooled_embedding(path)
-    expected = emb.mean(axis=0)  # [3.0, 4.0]
-    assert pooled.shape == (2,)
-    assert np.allclose(pooled, expected)
+    def __init__(self, D=8):
+        self.D = D
+        self.model = self
+        self.calls = []
 
-
-def test_load_pooled_embedding_single_chunk(tmp_path):
-    """Single-chunk (1, D) embedding should pass through (still mean-pooled, same result)."""
-    emb = np.array([[7.0, 8.0, 9.0]])  # (1, 3)
-    path = tmp_path / "single.npy"
-    np.save(path, emb)
-
-    pooled = load_pooled_embedding(path)
-    assert pooled.shape == (3,)
-    assert np.allclose(pooled, [7.0, 8.0, 9.0])
+    def get_audio_embedding_from_data(self, x, use_tensor=True):
+        self.calls.append(tuple(x.shape))
+        return x[:, : self.D]
 
 
-def test_load_pooled_embedding_1d_array(tmp_path):
-    """1-D array (D,) saved as .npy should be handled via atleast_2d → (1, D) → mean → (D,)."""
-    emb = np.array([1.0, 2.0, 3.0, 4.0])  # (4,)
-    path = tmp_path / "flat.npy"
-    np.save(path, emb)
+def test_embed_clap_windows_and_dtype():
+    pytest.importorskip("laion_clap")
+    from evaluation.metrics.clap import embed_clap
+    ml = _MockCLAP()
+    wav = 0.1 * torch.randn(2, 12 * ml.sr)                    # 12 s stereo at the model rate
+    emb = embed_clap(ml, wav, ml.sr, "cpu")
+    assert ml.calls == [(12, 10 * ml.sr)]                     # 12 windows (1-s hop), each 10 s (zero-padded)
+    assert emb.shape == (12, ml.D) and emb.dtype == np.float16
 
-    pooled = load_pooled_embedding(path)
-    assert pooled.shape == (4,)
-    assert np.allclose(pooled, emb)
+
+# ── T3: cache + paper scoring (cosine of the window-averaged embeddings) ─────
+
+def test_load_or_embed_computes_once_then_reads_cache(tmp_path):
+    from evaluation.common import load_or_embed, target_cache_path
+    calls = []
+
+    def embed_fn(ml, wav, sr, device):
+        calls.append(1)
+        return np.arange(6, dtype=np.float16).reshape(3, 2)
+
+    cache = target_cache_path(tmp_path, "clap-music", "track_000")
+    first = load_or_embed(None, embed_fn, torch.zeros(2, 10), 44100, "cpu", cache)
+    second = load_or_embed(None, embed_fn, torch.zeros(2, 10), 44100, "cpu", cache)
+    assert len(calls) == 1 and cache.is_file()
+    assert first.dtype == np.float32 and np.array_equal(first, second)
 
 
-# ── T3: end-to-end scoring loop (mocked CLAP) ────────────────────────────────
-
-def test_clap_scoring_loop_correct_scores(tmp_path):
-    """
-    Simulate the per-pair scoring loop from compute_clap_score.py:
-    load cached embeddings → pool → cosine_sim → aggregate.
-    """
-    D = 512
+def test_clap_score_is_cosine_of_window_means():
     rng = np.random.RandomState(0)
-    n_pairs = 5
-
-    # Create cached target and pred embeddings
-    target_embs = []
-    pred_embs = []
-    target_cache_dir = tmp_path / "model_name" / "target"
-    pred_cache_dir = tmp_path / "model_name" / "preds_ckpt"
-    target_cache_dir.mkdir(parents=True)
-    pred_cache_dir.mkdir(parents=True)
-
-    expected_scores = []
-    for i in range(n_pairs):
-        # Random embeddings (n_chunks, D)
-        t_emb = rng.randn(3, D).astype(np.float32)
-        p_emb = rng.randn(3, D).astype(np.float32)
-        target_embs.append(t_emb)
-        pred_embs.append(p_emb)
-
-        t_path = target_cache_dir / f"track_{i:03d}.npy"
-        p_path = pred_cache_dir / f"track_{i:03d}.npy"
-        np.save(t_path, t_emb)
-        np.save(p_path, p_emb)
-
-        # Expected: pooled cosine
-        t_pooled = t_emb.mean(axis=0)
-        p_pooled = p_emb.mean(axis=0)
-        expected_scores.append(cosine_sim(t_pooled, p_pooled))
-
-    # Simulate the scoring loop
-    actual_scores = []
-    for i in range(n_pairs):
-        t_path = target_cache_dir / f"track_{i:03d}.npy"
-        p_path = pred_cache_dir / f"track_{i:03d}.npy"
-        s = cosine_sim(load_pooled_embedding(t_path), load_pooled_embedding(p_path))
-        actual_scores.append(s)
-
-    for i, (exp, act) in enumerate(zip(expected_scores, actual_scores)):
-        assert act == pytest.approx(exp, abs=1e-6), (
-            f"Pair {i}: expected {exp:.6f}, got {act:.6f}"
-        )
+    t, p = rng.randn(3, 512).astype(np.float32), rng.randn(3, 512).astype(np.float32)
+    expected = np.dot(t.mean(0), p.mean(0)) / (np.linalg.norm(t.mean(0)) * np.linalg.norm(p.mean(0)))
+    assert cosine_sim(t.mean(0), p.mean(0)) == pytest.approx(expected, abs=1e-6)
+    assert cosine_sim(t.mean(0), t.mean(0)) == pytest.approx(1.0, abs=1e-6)
 
 
-def test_clap_identical_embeddings_score_one(tmp_path):
-    """Identical target and pred embeddings should produce cosine = 1.0."""
-    D = 512
-    emb = np.random.RandomState(42).randn(4, D).astype(np.float32)
+# ── T4: CSV output ────────────────────────────────────────────────────────────
 
-    t_path = tmp_path / "same_t.npy"
-    p_path = tmp_path / "same_p.npy"
-    np.save(t_path, emb)
-    np.save(p_path, emb)
-
-    s = cosine_sim(load_pooled_embedding(t_path), load_pooled_embedding(p_path))
-    assert s == pytest.approx(1.0, abs=1e-6)
-
-
-# ── T4: CSV round-trip ────────────────────────────────────────────────────────
-
-def test_clap_csv_output(tmp_path):
-    """Verify CLAP results can be written and read back from CSV correctly."""
-    results = [
-        {"target_file": "track_001.wav", "pred_file": "track_001.wav", "clap_music": 0.85, "clap_audio": 0.72},
-        {"target_file": "track_002.wav", "pred_file": "track_002.wav", "clap_music": 0.91, "clap_audio": 0.88},
-    ]
-    csv_path = tmp_path / "clap_scores.csv"
-    fieldnames = ["target_file", "pred_file", "clap_music", "clap_audio"]
-
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(results)
-
-    rows = list(csv.DictReader(open(csv_path)))
-    assert len(rows) == 2
-    assert set(rows[0].keys()) == set(fieldnames)
-    assert float(rows[0]["clap_music"]) == pytest.approx(0.85)
-    assert float(rows[1]["clap_audio"]) == pytest.approx(0.88)
+def test_write_csv_round_trip_ignores_extra_keys(tmp_path):
+    from evaluation.common import write_csv
+    rows = [{"file": "a.wav", "cosine": 0.85, "debug": "x"}, {"file": "b.wav", "cosine": 0.91}]
+    path = tmp_path / "sub" / "clap_music.csv"
+    write_csv(path, ["file", "cosine"], rows)
+    back = list(csv.DictReader(open(path)))
+    assert [r["file"] for r in back] == ["a.wav", "b.wav"] and set(back[0]) == {"file", "cosine"}
+    assert float(back[1]["cosine"]) == pytest.approx(0.91)

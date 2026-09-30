@@ -1,36 +1,18 @@
 # ===============================================================
 # test_compute_cdpam.py — Unit tests for CDPAM evaluation fixes.
-# Tests amplitude scaling, sample-rate conversion, and file-by-file
-# processing logic WITHOUT loading the real CDPAM model (mocked).
+# Tests amplitude scaling, sample-rate conversion and metrics.signal.cdpam_score
+# WITHOUT loading the real CDPAM model (mocked).
 # ===============================================================
-import sys
-import csv
 import pytest
 import numpy as np
 import torch
 import torchaudio
-from pathlib import Path
 from unittest.mock import MagicMock
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "evaluation"))
-
-from ar_spectra.utils.audio import load_waveform
-
-# Constants mirroring compute_cdpam.py
+# Constants mirroring evaluation/metrics/signal.py::cdpam_score
 INPUT_SR    = 44100
 CDPAM_SR    = 22050
 CDPAM_SCALE = 32768.0
-
-
-# ── helpers ──────────────────────────────────────────────────────────────────
-
-def _write_wav(path: Path, sr: int = INPUT_SR, duration: float = 1.0, channels: int = 1):
-    """Write a deterministic random WAV file."""
-    torch.manual_seed(hash(path.name) % 2**31)
-    wav = torch.randn(channels, int(sr * duration)) * 0.3
-    torchaudio.save(str(path), wav, sr)
 
 
 # ── T1: resampling ────────────────────────────────────────────────────────────
@@ -91,78 +73,25 @@ def test_batchnorm_collapses_without_int16_scaling():
     )
 
 
-# ── T4: end-to-end file loop (mocked CDPAM) ──────────────────────────────────
+# ── T4: cdpam_score end to end (mocked CDPAM) ─────────────────────────────────
 
-def test_file_by_file_loop_correct_scale_and_sr(tmp_path):
-    """
-    End-to-end: the processing loop resamples to CDPAM_SR and scales by CDPAM_SCALE
-    before calling loss_fn.forward, and writes a valid CSV.
-    Uses a mocked CDPAM so no model weights are loaded.
-    """
-    target_dir = tmp_path / "targets"
-    pred_dir   = tmp_path / "preds"
-    target_dir.mkdir()
-    pred_dir.mkdir()
+def test_cdpam_score_feeds_mono_22k_int16_scale(monkeypatch):
+    """cdpam_score resamples to CDPAM_SR, downmixes to mid, scales by CDPAM_SCALE, trims to the
+    shorter signal and returns the model's scalar. Uses a mocked CDPAM: no weights are loaded."""
+    from evaluation.metrics import signal as losses
+    mock = MagicMock()
+    mock.forward.return_value = torch.tensor(0.35)
+    monkeypatch.setattr(losses, "_cdpam_model", mock)
 
-    stems = ["track_a", "track_b", "track_c"]
-    for stem in stems:
-        _write_wav(target_dir / f"{stem}.wav")
-        _write_wav(pred_dir   / f"{stem}.wav")
+    torch.manual_seed(0)
+    target = 0.3 * torch.randn(2, INPUT_SR)                     # 1 s stereo
+    pred = 0.3 * torch.randn(2, INPUT_SR + 441)                 # 10 ms longer
+    score = losses.cdpam_score(target, pred, INPUT_SR, device="cpu")
 
-    # Mock CDPAM: returns a realistic scalar score
-    mock_loss_fn = MagicMock()
-    mock_loss_fn.forward.return_value = torch.tensor(0.35)
-
-    from eval_dataloader import PairedEvalDataset
-
-    dataset = PairedEvalDataset(
-        target_dir=str(target_dir),
-        preds_dir=str(pred_dir),
-        extensions=[".wav"],
-        max_files=0,
-        fma_csv_path=None,
-    )
-
-    resampler = torchaudio.transforms.Resample(INPUT_SR, CDPAM_SR)
-    per_file_results = []
-
-    for target_path, pred_path in dataset.pairs:
-        t_wav, _, _, _ = load_waveform(target_path, target_sample_rate=INPUT_SR, expected_channels=1)
-        p_wav, _, _, _ = load_waveform(pred_path,   target_sample_rate=INPUT_SR, expected_channels=1)
-
-        t = resampler(t_wav) * CDPAM_SCALE   # [1, T_22k]
-        p = resampler(p_wav) * CDPAM_SCALE   # [1, T_22k]
-        min_len = min(t.shape[-1], p.shape[-1])
-        t, p = t[..., :min_len], p[..., :min_len]
-
-        score = mock_loss_fn.forward(t, p).item()
-        per_file_results.append({"track": target_path.stem, "cdpam": score})
-
-    # Correct number of results
-    assert len(per_file_results) == len(stems), (
-        f"Expected {len(stems)} results, got {len(per_file_results)}"
-    )
-
-    # All mock scores preserved
-    assert all(r["cdpam"] == pytest.approx(0.35) for r in per_file_results)
-
-    # Verify the audio passed to forward was at CDPAM_SR and int16-scale
-    first_call = mock_loss_fn.forward.call_args_list[0]
-    t_passed = first_call[0][0]
-    assert abs(t_passed.shape[-1] - CDPAM_SR) <= 2, (
-        f"forward() should receive audio at ~{CDPAM_SR} samples, got {t_passed.shape[-1]}"
-    )
-    assert t_passed.abs().max().item() > 100, (
-        "forward() should receive int16-scaled audio (> 100), got near-zero amplitude"
-    )
-
-    # Write and verify CSV
-    csv_path = tmp_path / "cdpam.csv"
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["track", "cdpam"])
-        writer.writeheader()
-        writer.writerows(per_file_results)
-
-    rows = list(csv.DictReader(open(csv_path)))
-    assert len(rows) == len(stems)
-    assert set(rows[0].keys()) == {"track", "cdpam"}
+    assert score == pytest.approx(0.35)
+    t_passed, p_passed = mock.forward.call_args[0]
+    assert t_passed.shape == p_passed.shape                     # trimmed to the shorter signal
+    assert t_passed.shape[0] == 1 and abs(t_passed.shape[-1] - CDPAM_SR) <= 2
+    assert t_passed.abs().max().item() > 100                    # int16 scale, not [-1, 1]
+    expected = torchaudio.transforms.Resample(INPUT_SR, CDPAM_SR)(target).mean(0) * CDPAM_SCALE
+    assert torch.allclose(t_passed[0], expected[: t_passed.shape[-1]], atol=1e-2)

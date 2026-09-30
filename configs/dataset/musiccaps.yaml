@@ -1,0 +1,9 @@
+# Evaluation set of evaluation.reconstruction / build_references (training data is the `data` group).
+# MusicCaps, 964 clips of 10 s (44.1 kHz stereo): a flat folder of .wav clips whose references
+# (embeddings/, stats_ours/) are written into it once by evaluation.build_references.
+name: musiccaps
+protocol: clips
+data_dir: ${paths.musiccaps}
+fma_csv: null
+extensions: null
+cache_dir: null

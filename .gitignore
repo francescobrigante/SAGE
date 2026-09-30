@@ -1,38 +1,35 @@
+# Python and environments
 .venv/
-.env
 __pycache__/
 *.pyc
+*.egg-info/
 .pytest_cache/
-logs/
-
-CLAUDE.md
-*.ipynb
-*.md
-*.csv
-plots/
-Swin-Transformer-main/
-*.sh
-*.ps1
-tests/
-runs/
-stable_audio_baseline/
-papers/
-.run_ids/
-listening_tests/
-evaluation/stereo_diagnosis/plots
-evaluation/maeb/figures/
-
-src/c_vae/swin/cuda_kernels/build/
-src/c_vae/swin/cuda_kernels/swin_window_process.egg-info/
-src/c_vae/swin/others/
+.ruff_cache/
+.env
 .DS_Store
-.wandb/
+
+# Runs, logs and outputs
+runs/
+logs/
+.run_ids/
 wandb/
-.lightning_logs/
+.wandb/
+lightning_logs/
 .lightning_profiler/
 
-
+# Weights, data and machine-specific paths (configs/paths/default.yaml)
 *.ckpt
-# monitor state files + stereo ablation data cache
-.mon_*
-evaluation/stereo_diagnosis/ablation/
+configs/paths/local.yaml
+/models/
+/results/
+/eval_cache/
+/filelist_cache/
+
+# Build of the optional fused CUDA kernels
+src/sage/model/swin/cuda_kernels/build/
+src/sage/model/swin/cuda_kernels/*.so
+src/sage/model/swin/cuda_kernels/dist/
+
+# Local working notes
+CLAUDE.md
+REFACTOR_PLAN.md

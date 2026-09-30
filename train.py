@@ -30,31 +30,31 @@ from rich.console import Console
 
 console = Console()
 
-from ar_spectra.models.autoencoder import AutoEncoder
-from ar_spectra.training.autoencoders import AutoencoderTrainingWrapper, AutoencoderValDemoCallback
-from ar_spectra.training.initialization import collate_stft
-from ar_spectra.utils.reproducibility import configure_reproducibility
-from ar_spectra.utils.run_config import _is_rank0, get_rank, get_world_size, get_checkpoint_dir, resolve_run_name
-from ar_spectra.utils.console import ok, warn, err
+from sage.model.autoencoder import SAGEAutoencoder
+from sage.training.lightning_module import SAGELightningModule, AutoencoderValDemoCallback
+from sage.training.initialization import collate_stft
+from sage.utils.reproducibility import configure_reproducibility
+from sage.utils.run_config import _is_rank0, get_rank, get_world_size, get_checkpoint_dir, resolve_run_name
+from sage.utils.console import ok, warn, err
+from sage.constants import DEFAULT_DATALOADER_TIMEOUT
 
 import logging
 logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 
-import config
-OmegaConf.register_new_resolver("config", lambda key: getattr(config, key))
 OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
-from ar_spectra.training.callbacks import DatasetEpochSetter, MultiCorpusEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger, ValFADCallback
-from dataloader import MultiCorpusDataset
-from ar_spectra.utils.sampling import MultiCorpusRotatingSampler
-from ar_spectra.utils.model_info import extract_model_config
-from ar_spectra.utils.config_guards import check_cac_consistency
+from sage.training.callbacks import DatasetEpochSetter, MultiCorpusEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger
+from sage.training.resume import (find_resume_checkpoint, is_slurm_requeue, read_run_id, resume_run_dir,
+                                  should_auto_resume)
+from sage.training.data.dataset import MultiCorpusDataset
+from sage.training.data.sampling import MultiCorpusRotatingSampler
+from sage.utils.model_info import extract_model_config
+from sage.utils.config_guards import check_cac_consistency
 
 class WandbConfigLogger:
-    """Utility per caricare l'intera cartella di configurazione Hydra su W&B.
-    - Non crea copie locali dei file
-    - Può loggare i contenuti testuali oppure caricare i file come artifact
-    - Di default usa un artifact (più pulito nel pannello W&B)
+    """Uploads the whole Hydra config folder to W&B.
+    - makes no local copies of the files
+    - logs them either as an artifact (default: cleaner in the W&B panel) or as text
     """
     def __init__(self, conf_root: Path, extensions: tuple = (".yaml", ".yml"), use_artifact: bool = True, log_text: bool = False):
         self.conf_root = conf_root
@@ -84,10 +84,10 @@ class WandbConfigLogger:
             return
         data = self.load_contents()
         if not data:
-            warn("Nessun file di configurazione trovato da loggare su W&B.", prefix="TRAINER")
+            warn("No config file found to log to W&B.", prefix="TRAINER")
             return
         rel_paths = list(data.keys())
-        # Aggiorna config con la lista dei file (non con il contenuto completo)
+        # Record the list of files in the run config (not their content)
         try:
             run.config.update({"hydra_conf_files": rel_paths}, allow_val_change=True)
         except Exception:
@@ -95,32 +95,33 @@ class WandbConfigLogger:
         if self.use_artifact:
             try:
                 artifact = wandb.Artifact("hydra-conf", type="config")
-                # Aggiunge i file originali senza copiarli altrove
+                # Add the original files, without copying them; named by their path under
+                # configs/ (data/fma.yaml and dataset/fma.yaml share a basename)
                 for f in self.list_files():
-                    artifact.add_file(str(f))
+                    artifact.add_file(str(f), name=f.relative_to(self.conf_root).as_posix())
                 run.log_artifact(artifact)
-                ok(f"Caricata cartella conf come artifact W&B ({len(data)} files).", prefix="TRAINER")
+                ok(f"Config folder uploaded as a W&B artifact ({len(data)} files).", prefix="TRAINER")
             except Exception as e:
-                warn(f"Artifact upload fallito ({type(e).__name__}: {e}); provo fallback testuale.", prefix="TRAINER")
+                warn(f"Artifact upload failed ({type(e).__name__}: {e}); logging the configs as text.", prefix="TRAINER")
                 self._fallback_text(run, data)
         elif self.log_text:
             self._fallback_text(run, data)
         else:
-            # Se nessuna modalità è attiva logga solo la lista
+            # Neither mode enabled: log only the number of files
             run.log({"hydra/num_conf_files": len(data)}, commit=True)
-            ok("Loggata lista file di configurazione in W&B.", prefix="TRAINER")
+            ok("Config file list logged to W&B.", prefix="TRAINER")
 
     def _fallback_text(self, run, data: Dict[str, str]):
-        # Log dei contenuti come testo (potrebbe generare molte chiavi)
-        # Per evitare step fantasma usiamo un singolo dict + commit=True
+        # Log the contents as text (can create many keys)
+        # A single dict with commit=True avoids phantom steps
         text_payload = {f"conf_text/{k}": v for k, v in data.items()}
-        # Riduci dimensione se molto grande (evita saturare UI)
+        # Truncate large files (keeps the UI responsive)
         MAX_LEN = 4000
         for k, v in list(text_payload.items()):
             if len(v) > MAX_LEN:
                 text_payload[k] = v[:MAX_LEN] + "\n... [TRUNCATED]"
         run.log(text_payload, commit=True)
-        ok(f"Loggati contenuti YAML (fallback) su W&B ({len(data)} files).", prefix="TRAINER")
+        ok(f"YAML contents logged to W&B as text ({len(data)} files).", prefix="TRAINER")
 
 class TableOnlyModelSummary(pl.Callback):
     """Custom model summary that only prints the parameters table, discarding verbose stats."""
@@ -151,7 +152,7 @@ def _load_autoencoder_weights(wrapper, ckpt_file: str, use_ema: bool = True) -> 
     ``wrapper.engine.autoencoder`` with ``strict=False``.
 
     Args:
-        wrapper:   The AutoencoderTrainingWrapper whose autoencoder receives weights.
+        wrapper:   The SAGELightningModule whose autoencoder receives weights.
         ckpt_file: Path to the source checkpoint (e.g. M5's last.ckpt).
         use_ema:   If True, prefer EMA weights; else the live training weights.
     """
@@ -165,8 +166,13 @@ def _load_autoencoder_weights(wrapper, ckpt_file: str, use_ema: bool = True) -> 
         warn(f"init_from: '{prefix}' weights absent; fell back to '{alt}'.", prefix="TRAINER")
     if not weights:
         raise ValueError(f"init_from: no autoencoder weights found in {ckpt_file}.")
-    missing, unexpected = wrapper.engine.autoencoder.load_state_dict(weights, strict=False)
-    ok(f"init_from: loaded {len(weights)} autoencoder weights from {ckpt_file} "
+    target = getattr(wrapper.engine.autoencoder, "_orig_mod", wrapper.engine.autoencoder)  # unwrap torch.compile
+    missing, unexpected = target.load_state_dict(weights, strict=False)
+    loaded = len(weights) - len(unexpected)
+    if loaded == 0:
+        raise ValueError(f"init_from: none of the {len(weights)} weights in {ckpt_file} match the model "
+                         f"(first keys: {list(weights)[:3]} vs expected {missing[:3]}).")
+    ok(f"init_from: loaded {loaded} autoencoder weights from {ckpt_file} "
        f"(ema={use_ema}); missing={len(missing)} unexpected={len(unexpected)}.", prefix="TRAINER")
     if missing:
         warn(f"init_from missing keys (first 5): {missing[:5]}", prefix="TRAINER")
@@ -183,7 +189,7 @@ def _load_discriminator_weights(wrapper, ckpt_file: str) -> None:
     a previously-trained discriminator rather than re-initialising it.
 
     Args:
-        wrapper:   The AutoencoderTrainingWrapper whose discriminator receives weights.
+        wrapper:   The SAGELightningModule whose discriminator receives weights.
         ckpt_file: Path to the source checkpoint (e.g. N6's last.ckpt).
     """
     prefix = "engine.loss_manager.discriminator."
@@ -204,7 +210,7 @@ def _load_discriminator_weights(wrapper, ckpt_file: str) -> None:
         warn(f"init_from_disc unexpected keys (first 5): {unexpected[:5]}", prefix="TRAINER")
 
 
-@hydra.main(version_base=None, config_path="config", config_name="main")
+@hydra.main(version_base=None, config_path="configs", config_name="main")
 def main(cfg: DictConfig):
     """Hydra entrypoint using native instantiate API.
     
@@ -236,15 +242,32 @@ def main(cfg: DictConfig):
     
     # 1) Get the run name (user provided via wandb.name or resolved)
     user_run_name = cfg.trainer.get("wandb", {}).get("name") if cfg.get("trainer") else None
-    if not user_run_name or user_run_name == "FMA_autoencoder_KL":
-        run_name = resolve_run_name(cfg)
-    else:
-        run_name = user_run_name
+    run_name = user_run_name or resolve_run_name(cfg)
         
     ok(f"Resolved run name: {run_name}", prefix="MODEL")
     
-    # 2) Create unique, nested run directory
-    run_dir = Path(get_original_cwd()) / "runs" / run_name / now
+    # 2) Resume: an explicit +ckpt_path, else the newest checkpoint of this run name after a
+    #    SLURM requeue, or on relaunching a chosen name (auto_resume; sage/training/resume.py).
+    #    A resumed run continues in its own folder.
+    run_root = Path(get_original_cwd()) / "runs" / run_name
+    ckpt_path = OmegaConf.select(cfg, "ckpt_path", default=None)
+    requeued = is_slurm_requeue()
+    if not ckpt_path and (requeued or bool(OmegaConf.select(cfg, "auto_resume", default=True))):
+        found = find_resume_checkpoint(run_root)
+        if found is not None:
+            if should_auto_resume(found, requeued=requeued, chosen_name=bool(user_run_name),
+                                  init_from=OmegaConf.select(cfg, "init_from", default=None)):
+                ckpt_path = str(found)
+                ok(f"auto_resume: continuing {found} (auto_resume=false or another trainer.wandb.name "
+                   "starts over)", prefix="TRAINER")
+            else:
+                warn(f"{run_root} holds checkpoints of an earlier run, not resumed: the run name is derived "
+                     "from the config (set trainer.wandb.name to resume by name, or +ckpt_path=).",
+                     prefix="TRAINER")
+
+    # 3) Run directory: the resumed run's, or a new dated one
+    resumed_dir = resume_run_dir(run_root, ckpt_path)
+    run_dir = resumed_dir or run_root / now
     run_dir.mkdir(parents=True, exist_ok=True)
     
     ckpt_dir = run_dir / "checkpoints"
@@ -301,8 +324,8 @@ def main(cfg: DictConfig):
     
     if _is_rank0():
         if global_batch_size % num_devices != 0:
-            warn(f"Global batch size {global_batch_size} non divisibile per {num_devices} device. Batch size per-device arrotondato a {per_device_batch_size}.", prefix="DATA")
-        ok(f"Batch Size -> Globale: {global_batch_size} | Devices: {num_devices} | Per-Device: {per_device_batch_size}", prefix="DATA")
+            warn(f"Global batch size {global_batch_size} is not divisible by {num_devices} devices; per-device batch size rounded to {per_device_batch_size}.", prefix="DATA")
+        ok(f"Batch Size -> Global: {global_batch_size} | Devices: {num_devices} | Per-Device: {per_device_batch_size}", prefix="DATA")
 
     # Multi-corpus: our rotating sampler owns ordering + DDP sharding (read rank/world
     # from SLURM/dist now, since the process group isn't up yet at build time). It is
@@ -335,7 +358,7 @@ def main(cfg: DictConfig):
         persistent_workers=(dl_cfg.get("persistent_workers", False) if num_workers > 0 else False),
         prefetch_factor=int(dl_cfg.get("prefetch_factor", 8)) if num_workers > 0 else None,
         collate_fn=collate_stft,
-        timeout=0 if dl_cfg.get("num_workers", 0) == 0 else config.DEFAULT_DATALOADER_TIMEOUT,
+        timeout=0 if dl_cfg.get("num_workers", 0) == 0 else DEFAULT_DATALOADER_TIMEOUT,
     )
 
     eval_dl = None
@@ -370,7 +393,7 @@ def main(cfg: DictConfig):
     # Model instantiation via Hydra
     # ─────────────────────────────────────────────────────────────────────────
     model_cfg = OmegaConf.to_container(cfg.models.model, resolve=True)
-    autoencoder = AutoEncoder.from_config(model_cfg)
+    autoencoder = SAGEAutoencoder.from_config(model_cfg)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Config guard: complex model + cac=True is a silent training failure
@@ -422,7 +445,7 @@ def main(cfg: DictConfig):
     loss_config_dict = OmegaConf.to_container(trainer_cfg.get("loss_config", {}), resolve=True) or {}
     kl_beta_target = float((loss_config_dict.get("bottleneck") or {}).get("weights", {}).get("kl", 0.0))
 
-    wrapper = AutoencoderTrainingWrapper(
+    wrapper = SAGELightningModule(
         autoencoder=autoencoder,
         sample_rate=sample_rate,
         audio_channels=audio_channels,
@@ -458,28 +481,34 @@ def main(cfg: DictConfig):
     logger = None
     if use_wandb:
         if _is_rank0():
+            # A run resumed in its own folder keeps logging to the W&B run of its first launch
+            # (a checkpoint of another run starts a new folder and a new W&B run)
+            run_id = read_run_id(Path(get_original_cwd()) / ".run_ids", run_name) if resumed_dir else None
+            if run_id:
+                ok(f"W&B: continuing run {run_id}", prefix="TRAINER")
             logger = WandbLogger(
-                project=wandb_cfg.get("project", config.DEFAULT_WANDB_PROJECT),
+                project=wandb_cfg.get("project", "sage"),
                 name=run_name,
                 save_dir=str(run_dir),
                 log_model=wandb_cfg.get("log_model", "all"),
                 config=OmegaConf.to_container(cfg, resolve=True),
                 settings=wandb.Settings(_service_wait=7),
+                **({"id": run_id, "resume": "allow"} if run_id else {}),
             )
             try:
                 run = logger.experiment
-                conf_root = Path(get_original_cwd()) / "config"
+                conf_root = Path(get_original_cwd()) / "configs"
                 WandbConfigLogger(conf_root, use_artifact=True, log_text=False).log_to_wandb(run)
             except Exception as e:
                 warn(f"Upload dir conf on W&B failed ({type(e).__name__}: {e})", prefix="TRAINER")
             try:
-                run_id_file = config.PROJECT_ROOT / ".run_ids" / run_name
+                run_id_file = Path(get_original_cwd()) / ".run_ids" / run_name
                 run_id_file.parent.mkdir(parents=True, exist_ok=True)
                 run_id_file.write_text(logger.experiment.id)
             except Exception as e:
                 warn(f"Could not persist W&B run_id ({e})", prefix="TRAINER")
         else:
-            # Evita l'inizializzazione di run W&B sugli altri rank, ma mantieni un logger compatibile
+            # No W&B run on the other ranks, but keep a compatible logger
             logger = TensorBoardLogger(save_dir=str(run_dir), name="lightning_logs", version=None)
     else:
         logger = TensorBoardLogger(save_dir=str(run_dir), name="lightning_logs", version=None)
@@ -512,25 +541,8 @@ def main(cfg: DictConfig):
         CompressionStatsLogger(train_dl=train_dl, console=console),
     ]
 
-    # Validation FAD (CLAP) on a fixed test corpus — appended BEFORE EMACallback so
-    # its on_validation_epoch_end runs while EMA weights are still swapped in.
-    _vf_cfg = pl_trainer_cfg.get("val_fad", None)
-    fad_cfg = OmegaConf.to_container(_vf_cfg, resolve=True) if _vf_cfg is not None else {}
-    if bool(fad_cfg.get("enabled", False)):
-        callbacks.append(
-            ValFADCallback(
-                cache_dir=str(fad_cfg["cache_dir"]),
-                fma_csv_path=str(fad_cfg.get("fma_csv_path") or ""),
-                audio_root=str(fad_cfg["audio_root"]),
-                num_files=int(fad_cfg.get("num_files", 2000)),
-                fad_model=str(fad_cfg.get("fad_model", "clap-laion-music")),
-                num_downsamples=fad_cfg.get("num_downsamples", None),
-                enabled=True,
-            )
-        )
-
     use_ema = bool(pl_trainer_cfg.get("use_ema", True))
-    ema_decay = float(pl_trainer_cfg.get("ema_decay", 0.9999))
+    ema_decay = float(pl_trainer_cfg["ema_decay"])       # configs/trainer.yaml: 0.9998 (Table 6)
     if use_ema and ema_decay > 0:
         callbacks.append(EMACallback(decay=ema_decay))
 
@@ -577,6 +589,23 @@ def main(cfg: DictConfig):
         has_complex_params = False
     if is_bf16 and has_complex_params:
         warn("bf16 + complex detected: convolutions will use torch.complex64 (complex-bfloat16 not supported).", prefix="TRAINER")
+
+    init_from = OmegaConf.select(cfg, "init_from", default=None)
+    init_from_ema = bool(OmegaConf.select(cfg, "init_from_ema", default=True))
+    init_from_disc = bool(OmegaConf.select(cfg, "init_from_disc", default=False))
+    if ckpt_path:
+        # Full resume takes precedence: the run's own checkpoint already holds the
+        # fine-tuned weights + discriminator + optimizer/step state.
+        ok(f"Resuming from checkpoint: {ckpt_path}", prefix="TRAINER")
+        if init_from:
+            warn(f"init_from={init_from} IGNORED: ckpt_path resume takes precedence.", prefix="TRAINER")
+    elif init_from:
+        # Cold start of a fine-tune run: load only the autoencoder weights, fresh
+        # step/optimizer (decoder fine-tuning from the phase-1 EMA, new discriminator).
+        # Done BEFORE torch.compile, whose wrapper renames every key to _orig_mod.* (bug B1).
+        _load_autoencoder_weights(wrapper, str(init_from), use_ema=init_from_ema)
+        if init_from_disc:
+            _load_discriminator_weights(wrapper, str(init_from))
 
     # ─────────────────────────────────────────────────────────────────────────
     # Optional torch.compile (off by default; opt-in via trainer.trainer.compile=true).
@@ -632,23 +661,6 @@ def main(cfg: DictConfig):
 
     ok(f"{req_accelerator}", prefix="DEVICE")
     
-    ckpt_path = OmegaConf.select(cfg, "ckpt_path", default=None)
-    init_from = OmegaConf.select(cfg, "init_from", default=None)
-    init_from_ema = bool(OmegaConf.select(cfg, "init_from_ema", default=True))
-    init_from_disc = bool(OmegaConf.select(cfg, "init_from_disc", default=False))
-    if ckpt_path:
-        # Full resume takes precedence: the run's own checkpoint already holds the
-        # fine-tuned weights + discriminator + optimizer/step state.
-        ok(f"Resuming from checkpoint: {ckpt_path}", prefix="TRAINER")
-        if init_from:
-            warn(f"init_from={init_from} IGNORED: ckpt_path resume takes precedence.", prefix="TRAINER")
-    elif init_from:
-        # Cold start of a fine-tune run: load only the autoencoder weights, fresh
-        # step/optimizer (e.g. decoder-finetune from M5 with a new discriminator).
-        _load_autoencoder_weights(wrapper, str(init_from), use_ema=init_from_ema)
-        if init_from_disc:
-            _load_discriminator_weights(wrapper, str(init_from))
-
     try:
         trainer.fit(wrapper, train_dataloaders=train_dl, val_dataloaders=eval_dl, ckpt_path=ckpt_path)
     except KeyboardInterrupt:
@@ -662,7 +674,7 @@ def main(cfg: DictConfig):
             err(f"Error details: {e}", prefix="TRAINER")
             err("To fix this, you can:", prefix="TRAINER")
             err("1. Decrease batch size (e.g., `data.train_dataloader.batch_size=8` instead of 32)", prefix="TRAINER")
-            err("2. Decrease model size (e.g., lower `block_out_channels` in `conf/model/hf_autoencoder_kl.yaml`)", prefix="TRAINER")
+            err("2. Decrease model size (e.g., lower `models.model.swin.embed_dim`)", prefix="TRAINER")
             err("3. Use a smaller dataset or shorter audio segments", prefix="TRAINER")
             err("4. Disable profilers or decrease `accumulate_grad_batches`", prefix="TRAINER")
             err("="*80 + "\n", prefix="TRAINER")

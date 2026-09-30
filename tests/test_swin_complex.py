@@ -1,5 +1,5 @@
 # ===============================================================
-# Phase 6b test suite — SwinEncoder / SwinDecoder (complex path).
+# Phase 6b test suite — SAGEEncoder / SAGEDecoder (complex path).
 # Mirrors test_swin_real.py but with complex64 inputs and
 # is_complex=True throughout.
 #
@@ -12,8 +12,8 @@
 #   CU6  SwinBlock:       gradient flow
 #   CU7  SwinStage:       no downsample — shape + dtype preserved
 #   CU8  SwinStage:       with PatchMerging — shape + dtype correct
-#   CU9  SwinEncoder:     (B,2,1024,128)ℂ → (B, dim, 128)ℂ, no NaN
-#   CU10 SwinDecoder:     (B, lat, 128)ℂ → (B,2,1024,128)ℂ, no NaN
+#   CU9  SAGEEncoder:     (B,2,1024,128)ℂ → (B, dim, 128)ℂ, no NaN
+#   CU10 SAGEDecoder:     (B, lat, 128)ℂ → (B,2,1024,128)ℂ, no NaN
 #   CU11 gradient flow:   end-to-end encoder + decoder
 #   CU12 DropPath:        ComplexSafeDropPath mask is real, output complex
 # ===============================================================
@@ -23,17 +23,14 @@ import pytest
 import torch
 import torch.nn as nn
 
-_SRC = "/Users/francesco/Desktop/C-VAE/src"
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
 
-from c_vae.swin.patches import PatchEmbed, PatchMerging, PatchExpand
-from c_vae.swin.attention import WindowAttention
-from c_vae.swin.swin_block import SwinTransformerBlock
-from c_vae.swin.swin_stage import SwinStage as BasicLayer
-from c_vae.swin.encoder import SwinEncoder
-from c_vae.swin.decoder import SwinDecoder
-from c_vae.swin.utils import ComplexSafeDropPath
+from sage.model.swin.patches import PatchEmbed, PatchMerging, PatchExpand
+from sage.model.swin.attention import WindowAttention
+from sage.model.swin.block import SwinTransformerBlock
+from sage.model.swin.stage import SwinStage as BasicLayer
+from sage.model.encoder import SAGEEncoder
+from sage.model.decoder import SAGEDecoder
+from sage.model.swin.utils import ComplexSafeDropPath
 
 
 # ---------------------------------------------------------------------------
@@ -51,8 +48,8 @@ DIMENSION  = 24     # parameters_to_predict(3) × latent_channels(8)
 
 @pytest.fixture(scope="module")
 def enc_cplx_mini():
-    """Mini complex SwinEncoder (embed_dim=8, depths=[1,1,1,1])."""
-    return SwinEncoder(
+    """Mini complex SAGEEncoder (embed_dim=8, depths=[1,1,1,1])."""
+    return SAGEEncoder(
         in_channels=2,          # stereo complex STFT (cac=false)
         embed_dim=8,
         depths=[1, 1, 1, 1],
@@ -66,8 +63,8 @@ def enc_cplx_mini():
 
 @pytest.fixture(scope="module")
 def dec_cplx_mini():
-    """Mini complex SwinDecoder (embed_dim=8, depths=[1,1,1,1])."""
-    return SwinDecoder(
+    """Mini complex SAGEDecoder (embed_dim=8, depths=[1,1,1,1])."""
+    return SAGEDecoder(
         channels=LATENT_CH,
         in_channels=2,
         embed_dim=8,
@@ -218,7 +215,7 @@ def test_cu7_swin_stage_no_downsample_complex():
 
 def test_cu8_swin_stage_with_merging_complex():
     """SwinStage(is_complex=True) + PatchMerging: (B,H*W,C)ℂ → (B,H/2*W/2,2C)ℂ."""
-    from c_vae.swin.patches import PatchMerging
+    from sage.model.swin.patches import PatchMerging
     H, W, C = 64, 8, 8
     stage = BasicLayer(
         dim=C, input_resolution=(H, W), depth=1, num_heads=1,
@@ -236,7 +233,7 @@ def test_cu8_swin_stage_with_merging_complex():
 # ---------------------------------------------------------------------------
 
 def test_cu9_encoder_complex(enc_cplx_mini):
-    """SwinEncoder(is_complex=True): correct output shape, complex dtype, no NaN."""
+    """SAGEEncoder(is_complex=True): correct output shape, complex dtype, no NaN."""
     x = cplx((B, 2, 1024, 128))
     with torch.no_grad():
         latents, info = enc_cplx_mini(x)
@@ -251,7 +248,7 @@ def test_cu9_encoder_complex(enc_cplx_mini):
 # ---------------------------------------------------------------------------
 
 def test_cu10_decoder_complex(dec_cplx_mini):
-    """SwinDecoder(is_complex=True): correct output shape, complex dtype, no NaN."""
+    """SAGEDecoder(is_complex=True): correct output shape, complex dtype, no NaN."""
     z = cplx((B, LATENT_CH, 128))
     with torch.no_grad():
         out = dec_cplx_mini(z)
@@ -266,12 +263,12 @@ def test_cu10_decoder_complex(dec_cplx_mini):
 
 def test_cu11_gradient_flow_complex():
     """loss.backward() propagates non-None gradients to all complex enc+dec params."""
-    enc = SwinEncoder(
+    enc = SAGEEncoder(
         in_channels=2, embed_dim=8, depths=[1, 1, 1, 1],
         num_heads=[1, 2, 4, 8], window_size=4, patch_size=4,
         dimension=DIMENSION, is_complex=True,
     )
-    dec = SwinDecoder(
+    dec = SAGEDecoder(
         channels=LATENT_CH, in_channels=2, embed_dim=8,
         depths=[1, 1, 1, 1], num_heads=[8, 4, 2, 1],
         window_size=4, patch_size=4, is_complex=True,

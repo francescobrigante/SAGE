@@ -1,0 +1,81 @@
+# @package _global_
+# =============================================================================
+# SAGE — phase 2: decoder fine-tuning (paper Section 2.3, Table 6).
+#
+#   python train.py +experiment=decoder_ft +init_from=<phase-1 checkpoint> \
+#       trainer.trainer.num_gpus=4 ++trainer.trainer.num_nodes=4
+#
+# Reloads the EMA weights of phase 1 and freezes the encoder, so the latent stays
+# exactly as pretraining left it. KL and semantic terms are off, a zero-initialised
+# post-net is attached to the decoder, and the discriminator restarts from scratch;
+# learning rate 1e-4, with schedule and warm-up restarted. Only the decoder trains.
+# The released checkpoint is epoch 992 of this phase. Differences from phase 1 are
+# checked by tests/test_recipes.py; everything else is the trainer.yaml default.
+# =============================================================================
+defaults:
+  - override /models: swin_real_swiglu_xsa
+  - override /data: multicorpus
+
+init_from_ema: true                   # initialise from the EMA weights of phase 1 ...
+init_from_disc: false                 # ... but not the discriminator (re-initialised)
+
+models:
+  model:
+    decoder:
+      use_postnet: true               # 2 convs, 7x3 kernels, 64 channels, zero-initialised
+
+data:
+  train_dataloader:
+    batch_size: 128                   # global batch
+  eval_dataloader:
+    batch_size: 128
+
+trainer:
+  wandb:
+    name: sage_decoder_ft
+  trainer:
+    epochs: 992
+    freeze_encoder: true
+    warmup_steps: 0
+    save_every_n_epochs: 25
+    check_val_every_n_epoch: 2
+    strategy: ddp_find_unused_parameters_true
+    precision: "32"
+    compile: false
+
+  optimizer:
+    lr: 1e-4
+  scheduler:
+    inv_gamma: 200000
+
+  disc_optimizer:
+    _target_: torch.optim.AdamW
+    lr: 2e-4
+    betas: [0.8, 0.99]
+    weight_decay: 1e-3
+
+  # Loss: lambda_KL = lambda_sem = 0, lambda_SD = 1 (no semantic_distill block: no CLAP teacher).
+  loss_config:
+    spectral:
+      weights:
+        stft_mse: 1.0
+    mrmel:
+      weights:
+        mrmel: 0.5
+    mrstft_sd:
+      weights:
+        mrstft_sd: 1.0
+    bottleneck:
+      weights:
+        kl: 0.0
+    discriminator:
+      type: wavtokenizer
+      config:
+        loss_type: rpgan
+        periods: [2, 3, 5, 7, 11]
+        fft_sizes: [2048, 1024, 512]
+        preprocess: true
+        fold_lrms: true
+      weights:
+        adversarial: 0.1
+        feature_matching: 0.2

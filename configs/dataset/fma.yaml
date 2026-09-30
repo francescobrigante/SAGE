@@ -1,0 +1,8 @@
+# Evaluation set of evaluation.reconstruction (training data is the `data` group).
+# FMA test split, 11,263 full-length clips of 30 s; the split comes from tracks.csv.
+name: fma
+protocol: fma                       # target embeddings computed on the fly and cached in cache_dir
+data_dir: ${paths.fma_audio}
+fma_csv: ${paths.fma_metadata}
+extensions: .wav,.flac,.mp3,.ogg
+cache_dir: ${paths.eval_cache}/fma  # shared by every model, so their FADs use the same targets

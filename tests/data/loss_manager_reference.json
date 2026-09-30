@@ -1,0 +1,66 @@
+{
+ "_note": "written by tests/test_loss_manager.py::_reference_record on the Phase 3 code (see the test)",
+ "pretrain": {
+  "0": {
+   "total": 8.737278938293457,
+   "loss_adv": 0.07000000029802322,
+   "feature_matching_loss": 0.25999999046325684,
+   "pwc_mse_loss": 4.003592014312744,
+   "mrmel_loss": 0.6525062322616577,
+   "mrstft_sd_loss": 2.7797446250915527,
+   "distill_loss": 0.9709360599517822,
+   "kl_loss": 0.0004999999655410647,
+   "grad_norm_decoded": 0.11872370541095734,
+   "grad_norm_sp_decoded": 0.01548106037080288
+  },
+  "10000": {
+   "total": 8.737278938293457,
+   "loss_adv": 0.07000000029802322,
+   "feature_matching_loss": 0.25999999046325684,
+   "pwc_mse_loss": 4.003592014312744,
+   "mrmel_loss": 0.6525062322616577,
+   "mrstft_sd_loss": 2.7797446250915527,
+   "distill_loss": 0.9709360599517822,
+   "kl_loss": 0.0004999999655410647,
+   "grad_norm_decoded": 0.11872370541095734,
+   "grad_norm_sp_decoded": 0.01548106037080288,
+   "grad_norm_latents": 0.0273741427809
+  },
+  "disc": {
+   "loss_dis": 0.6933042407035828,
+   "loss_adv": 0.6930764317512512,
+   "feature_matching": 0.266899049282074
+  },
+  "disc_param_sum": 9749.412844788629
+ },
+ "decoder_ft": {
+  "0": {
+   "total": 7.765842914581299,
+   "loss_adv": 0.07000000029802322,
+   "feature_matching_loss": 0.25999999046325684,
+   "pwc_mse_loss": 4.003592014312744,
+   "mrmel_loss": 0.6525062322616577,
+   "mrstft_sd_loss": 2.7797446250915527,
+   "kl_loss": 0.0,
+   "grad_norm_decoded": 0.11872370541095734,
+   "grad_norm_sp_decoded": 0.01548106037080288
+  },
+  "10000": {
+   "total": 7.765842914581299,
+   "loss_adv": 0.07000000029802322,
+   "feature_matching_loss": 0.25999999046325684,
+   "pwc_mse_loss": 4.003592014312744,
+   "mrmel_loss": 0.6525062322616577,
+   "mrstft_sd_loss": 2.7797446250915527,
+   "kl_loss": 0.0,
+   "grad_norm_decoded": 0.11872370541095734,
+   "grad_norm_sp_decoded": 0.01548106037080288
+  },
+  "disc": {
+   "loss_dis": 0.6933042407035828,
+   "loss_adv": 0.6930764317512512,
+   "feature_matching": 0.266899049282074
+  },
+  "disc_param_sum": 9749.412844788629
+ }
+}

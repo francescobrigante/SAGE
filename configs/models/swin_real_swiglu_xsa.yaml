@@ -1,0 +1,107 @@
+# @package _global_
+#
+# Final combo: Swin V2 Real VAE with SwiGLU FFNs and XSA attention.
+
+models:
+  model:
+    latent_channels: 16
+    parameters_to_predict: 2
+
+    autoencoder:
+      return_latent: false
+      pre_transform:
+        type: power_norm
+        apply_target: true
+        apply_inverse: true
+        config:
+          eps: 1.0e-8
+          alpha: 0.65
+          beta: 0.35
+
+    bottleneck:
+      _target_: sage.nn.bottleneck.VAEBottleneck
+      parameters_to_predict: ${models.model.parameters_to_predict}
+
+    swin:
+      embed_dim: 256
+      window_size: [4, 32]
+      patch_size: [64, 1]
+      mlp_ratio: 4.0
+      mlp_type: swiglu
+      swiglu_hidden_ratio: 3.0
+      swiglu_multiple_of: null
+      complex_swiglu_gate: magnitude_silu
+      attention_variant: xsa
+      xsa_eps: 1.0e-6
+      xsa_strength: 1.0
+      attention_diagnostics: false
+      norm_placement: res_post
+      drop_rate: 0.0
+      attn_drop_rate: 0.0
+      drop_path_rate: 0.1
+      use_checkpoint: false
+
+    encoder:
+      _target_: sage.model.encoder.SAGEEncoder
+      in_channels: 4
+      is_complex: false
+      embed_dim: ${models.model.swin.embed_dim}
+      depths: [2, 6, 2]
+      num_heads: [8, 16, 32]
+      window_size: ${models.model.swin.window_size}
+      patch_size: ${models.model.swin.patch_size}
+      dimension: ${mul:${models.model.parameters_to_predict},${models.model.latent_channels}}
+      mlp_ratio: ${models.model.swin.mlp_ratio}
+      mlp_type: ${models.model.swin.mlp_type}
+      swiglu_hidden_ratio: ${models.model.swin.swiglu_hidden_ratio}
+      swiglu_multiple_of: ${models.model.swin.swiglu_multiple_of}
+      complex_swiglu_gate: ${models.model.swin.complex_swiglu_gate}
+      attention_variant: ${models.model.swin.attention_variant}
+      xsa_eps: ${models.model.swin.xsa_eps}
+      xsa_strength: ${models.model.swin.xsa_strength}
+      norm_placement: ${models.model.swin.norm_placement}
+      drop_rate: ${models.model.swin.drop_rate}
+      attn_drop_rate: ${models.model.swin.attn_drop_rate}
+      drop_path_rate: ${models.model.swin.drop_path_rate}
+      use_checkpoint: ${models.model.swin.use_checkpoint}
+      fused_window_process: true
+      time_frames: 128
+      use_smooth_convs: false
+
+    decoder:
+      _target_: sage.model.decoder.SAGEDecoder
+      is_complex: false
+      channels: ${models.model.latent_channels}
+      in_channels: 4
+      embed_dim: ${models.model.swin.embed_dim}
+      depths: [2, 6, 2]
+      num_heads: [32, 16, 8]
+      window_size: ${models.model.swin.window_size}
+      patch_size: ${models.model.swin.patch_size}
+      mlp_ratio: ${models.model.swin.mlp_ratio}
+      mlp_type: ${models.model.swin.mlp_type}
+      swiglu_hidden_ratio: ${models.model.swin.swiglu_hidden_ratio}
+      swiglu_multiple_of: ${models.model.swin.swiglu_multiple_of}
+      complex_swiglu_gate: ${models.model.swin.complex_swiglu_gate}
+      attention_variant: ${models.model.swin.attention_variant}
+      xsa_eps: ${models.model.swin.xsa_eps}
+      xsa_strength: ${models.model.swin.xsa_strength}
+      norm_placement: ${models.model.swin.norm_placement}
+      drop_rate: ${models.model.swin.drop_rate}
+      attn_drop_rate: ${models.model.swin.attn_drop_rate}
+      drop_path_rate: ${models.model.swin.drop_path_rate}
+      use_checkpoint: ${models.model.swin.use_checkpoint}
+      time_frames: 128
+      use_smooth_convs: false
+      use_postnet: false
+      postnet_hidden: 64
+
+data:
+  train_dataset:
+    cac: true
+  eval_dataset:
+    cac: true
+  demo:
+    istft_params:
+      cac: true
+  model_channels: 4

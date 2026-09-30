@@ -1,34 +1,22 @@
 # ===============================================================
-# test_compute_spectral.py — Integration tests for per-file
-# SI-SDR and STFT loss computation (compute_spectral.py).
-# Uses synthetic WAV files — no real checkpoints required.
+# test_compute_spectral.py — Tests of the per-file reconstruction metrics of
+# the paper evaluator (evaluation/metrics/signal.py: SDR/SI-SDR, multi-resolution
+# STFT and mel L1) and of the helpers around them (evaluation/common.py:
+# write_csv, atomic_save_npy). Synthetic signals, no checkpoints.
 # ===============================================================
-import sys
 import csv
+
+import numpy as np
 import pytest
 import torch
-import torchaudio
-import numpy as np
-from pathlib import Path
-from torchmetrics.audio.sdr import SignalDistortionRatio as SISDRMetric
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "evaluation"))
-
-from eval_dataloader import PairedEvalDataset, batch_align, atomic_save_npy
-from ar_spectra.utils.audio import load_waveform
-from ar_spectra.training.losses.signal import STFTLoss
+from evaluation.common import atomic_save_npy, write_csv
+from evaluation.metrics.signal import compute_sdr_and_sisdr, si_sdr, spectral_losses, stft_loss
 
 SR = 44100
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
-
-def _write_wav(path: Path, wav: torch.Tensor, sr: int = SR):
-    """Save a tensor [C, T] as WAV."""
-    torchaudio.save(str(path), wav.float(), sr)
-
 
 def _sine_wav(duration: float = 1.0, freq: float = 440.0, sr: int = SR) -> torch.Tensor:
     """Generate a clean mono sine wave → [1, T]."""
@@ -37,25 +25,10 @@ def _sine_wav(duration: float = 1.0, freq: float = 440.0, sr: int = SR) -> torch
 
 
 def _compute_pair(target: torch.Tensor, pred: torch.Tensor):
-    """Run alignment + SI-SDR + STFT on a single [1, T] pair. Returns (stft, sisdr)."""
-    device = torch.device("cpu")
-    dtype  = torch.float64
-
-    sisdr_metric = SISDRMetric().to(device)
-    stft_loss_fn = STFTLoss(
-        fft_size=2048, hop_size=512, win_length=2048,
-        perceptual_weighting=True, w_log_mag=1.0, sample_rate=SR, reduction="none",
-    ).to(device=device, dtype=dtype)
-
-    t = target.unsqueeze(0).to(device=device, dtype=dtype)  # [1, 1, T]
-    p = pred.unsqueeze(0).to(device=device, dtype=dtype)    # [1, 1, T]
-
-    t_al, p_al, _ = batch_align(t, p, sr=SR)  # [1, 1, T]
-
-    with torch.no_grad():
-        stft  = stft_loss_fn(p_al, t_al).flatten().mean().item()
-        sisdr = sisdr_metric(p_al.squeeze(1), t_al.squeeze(1)).item()
-
+    """Min-trim → metrics on a single [C, T] pair, as the evaluator does. Returns (stft, sisdr)."""
+    T = min(target.shape[-1], pred.shape[-1])
+    stft = spectral_losses(target[..., :T], pred[..., :T], sample_rate=SR)["stft_loss"]
+    _, sisdr = compute_sdr_and_sisdr(target[..., :T], pred[..., :T])
     return stft, sisdr
 
 
@@ -78,263 +51,102 @@ def test_identical_signals_near_zero_stft():
 # ── T2: corrupted signal degrades metrics ─────────────────────────────────────
 
 def test_corrupted_signal_lower_sisdr():
-    """Adding noise should decrease SI-SDR compared to identical signals."""
-    wav  = _sine_wav()
-    _, sisdr_clean   = _compute_pair(wav, wav.clone())
-
+    wav = _sine_wav()
+    _, sisdr_clean = _compute_pair(wav, wav.clone())
     torch.manual_seed(42)
-    noisy = wav + torch.randn_like(wav) * 0.3
-    _, sisdr_noisy = _compute_pair(wav, noisy)
-
-    assert sisdr_noisy < sisdr_clean, (
-        f"Noisy pred (SI-SDR={sisdr_noisy:.1f}) should be worse than clean ({sisdr_clean:.1f})"
-    )
+    _, sisdr_noisy = _compute_pair(wav, wav + torch.randn_like(wav) * 0.3)
+    assert sisdr_noisy < sisdr_clean
 
 
 def test_corrupted_signal_higher_stft():
-    """Adding noise should increase STFT loss compared to identical signals."""
     wav = _sine_wav()
     stft_clean, _ = _compute_pair(wav, wav.clone())
-
     torch.manual_seed(42)
-    noisy = wav + torch.randn_like(wav) * 0.3
-    stft_noisy, _ = _compute_pair(wav, noisy)
-
-    assert stft_noisy > stft_clean, (
-        f"Noisy pred (STFT={stft_noisy:.4f}) should be worse than clean ({stft_clean:.4f})"
-    )
+    stft_noisy, _ = _compute_pair(wav, wav + torch.randn_like(wav) * 0.3)
+    assert stft_noisy > stft_clean
 
 
-# ── T3: end-to-end CSV output ─────────────────────────────────────────────────
+# ── T3: the fused metrics agree with the single-metric functions ──────────────
 
-def test_per_file_csv_correct_columns_and_count(tmp_path):
-    """
-    Full pipeline: write synthetic pairs → process file-by-file → verify CSV.
-    Uses 4 pairs: 2 clean (pred=target) and 2 noisy, checks ordering of quality.
-    """
-    target_dir = tmp_path / "targets"
-    pred_dir   = tmp_path / "preds"
-    target_dir.mkdir()
-    pred_dir.mkdir()
-
+def test_fused_metrics_match_reference_functions():
     torch.manual_seed(0)
+    target = 0.3 * torch.randn(2, SR)
+    pred = target + 0.1 * torch.randn(2, SR)
+    _, sisdr = compute_sdr_and_sisdr(target, pred)
+    assert sisdr == pytest.approx(si_sdr(target, pred), abs=1e-3)
+    assert spectral_losses(target, pred)["stft_loss"] == pytest.approx(stft_loss(target, pred), rel=1e-6)
 
-    # Two clean pairs (pred ≈ target) and two noisy pairs
-    clean_stems = ["clean_001", "clean_002"]
-    noisy_stems = ["noisy_001", "noisy_002"]
 
-    for stem in clean_stems:
+def test_sisdr_is_scale_invariant_sdr_is_not():
+    torch.manual_seed(1)
+    target = 0.3 * torch.randn(2, SR)
+    pred = target + 0.05 * torch.randn(2, SR)
+    sdr1, sisdr1 = compute_sdr_and_sisdr(target, pred)
+    sdr2, sisdr2 = compute_sdr_and_sisdr(target, 0.5 * pred)
+    assert sisdr2 == pytest.approx(sisdr1, abs=1e-3)
+    assert sdr2 < sdr1 - 1.0
+
+
+# ── T4: end-to-end per-file CSV (as written by the evaluators) ────────────────
+
+def test_per_file_csv_correct_columns_and_ordering(tmp_path):
+    torch.manual_seed(0)
+    pairs = {}
+    for stem in ("clean_001", "clean_002"):
         w = _sine_wav(freq=440.0)
-        _write_wav(target_dir / f"{stem}.wav", w)
-        _write_wav(pred_dir   / f"{stem}.wav", w.clone())          # identical
-
-    for stem in noisy_stems:
+        pairs[stem] = (w, w.clone())
+    for stem in ("noisy_001", "noisy_002"):
         w = _sine_wav(freq=660.0)
-        _write_wav(target_dir / f"{stem}.wav", w)
-        _write_wav(pred_dir   / f"{stem}.wav", w + torch.randn_like(w) * 0.5)  # noisy
+        pairs[stem] = (w, w + torch.randn_like(w) * 0.5)
 
-    device     = torch.device("cpu")
-    dtype      = torch.float64
-    sisdr_fn   = SISDRMetric().to(device)
-    stft_fn    = STFTLoss(
-        fft_size=2048, hop_size=512, win_length=2048,
-        perceptual_weighting=True, w_log_mag=1.0, sample_rate=SR, reduction="none",
-    ).to(device=device, dtype=dtype)
+    rows = []
+    for stem, (t, p) in pairs.items():
+        stft, sisdr = _compute_pair(t, p)
+        rows.append({"file": stem, "stft_loss": stft, "si_sdr": sisdr})
+    path = tmp_path / "metrics" / "spectral.csv"
+    write_csv(path, ["file", "stft_loss", "si_sdr"], rows)
 
-    dataset = PairedEvalDataset(
-        target_dir=str(target_dir),
-        preds_dir=str(pred_dir),
-        extensions=[".wav"],
-        max_files=0,
-        fma_csv_path=None,
-    )
-
-    results = []
-    for target_path, pred_path in dataset.pairs:
-        t_wav, _, _, _ = load_waveform(target_path, target_sample_rate=SR, expected_channels=1)
-        p_wav, _, _, _ = load_waveform(pred_path,   target_sample_rate=SR, expected_channels=1)
-
-        t = t_wav.unsqueeze(0).to(device=device, dtype=dtype)
-        p = p_wav.unsqueeze(0).to(device=device, dtype=dtype)
-        t_al, p_al, _ = batch_align(t, p, sr=SR)
-
-        with torch.no_grad():
-            stft  = stft_fn(p_al, t_al).flatten().mean().item()
-            sisdr = sisdr_fn(p_al.squeeze(1), t_al.squeeze(1)).item()
-
-        results.append({"target_file": target_path.stem, "stft_loss": stft, "si_sdr": sisdr})
-
-    # --- structural checks ---
-    assert len(results) == len(clean_stems) + len(noisy_stems)
-    assert set(results[0].keys()) == {"target_file", "stft_loss", "si_sdr"}
-
-    # --- quality ordering ---
-    by_stem = {r["target_file"]: r for r in results}
-
-    for stem in clean_stems:
-        assert by_stem[stem]["si_sdr"] > 30.0, (
-            f"{stem}: expected SI-SDR > 30 dB for identical pair, got {by_stem[stem]['si_sdr']:.1f}"
-        )
-        assert by_stem[stem]["stft_loss"] < 0.05, (
-            f"{stem}: expected STFT < 0.05 for identical pair, got {by_stem[stem]['stft_loss']:.4f}"
-        )
-
-    for stem in noisy_stems:
-        assert by_stem[stem]["si_sdr"] < 20.0, (
-            f"{stem}: expected SI-SDR < 20 dB for noisy pair, got {by_stem[stem]['si_sdr']:.1f}"
-        )
-
-    # --- CSV round-trip ---
-    csv_path = tmp_path / "spectral.csv"
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["target_file", "stft_loss", "si_sdr"])
-        writer.writeheader()
-        writer.writerows(results)
-
-    rows = list(csv.DictReader(open(csv_path)))
-    assert len(rows) == 4
-    assert set(rows[0].keys()) == {"target_file", "stft_loss", "si_sdr"}
+    back = {r["file"]: r for r in csv.DictReader(open(path))}
+    assert len(back) == 4 and set(next(iter(back.values()))) == {"file", "stft_loss", "si_sdr"}
+    for stem in ("clean_001", "clean_002"):
+        assert float(back[stem]["si_sdr"]) > 30.0 and float(back[stem]["stft_loss"]) < 0.05
+    for stem in ("noisy_001", "noisy_002"):
+        assert float(back[stem]["si_sdr"]) < 20.0
 
 
-# ── T4: batch_align correctness ───────────────────────────────────────────────
-
-def test_batch_align_self_lag_zero():
-    """batch_align(x, x) should report lag=0 — no spurious shift on identical signals."""
-    wav = _sine_wav(duration=2.0)
-    t = wav.unsqueeze(0).to(torch.float64)  # [1, 1, T]
-    _, _, lags = batch_align(t, t.clone(), sr=SR)
-    assert int(lags[0].item()) == 0, (
-        f"Expected lag=0 for identical signals, got {lags[0].item()}"
-    )
-
-
-def test_batch_align_recovers_known_lag():
-    """batch_align should recover a known integer-sample delay in the prediction."""
-    delay_samples = 512
-    wav = _sine_wav(duration=2.0, freq=440.0)
-    T = wav.shape[-1]
-    # Prepend zeros and drop from the end to keep the same length
-    delayed = torch.cat([torch.zeros(1, delay_samples), wav[..., :-delay_samples]], dim=-1)
-
-    t = wav.unsqueeze(0).to(torch.float64)      # [1, 1, T]
-    p = delayed.unsqueeze(0).to(torch.float64)  # [1, 1, T]
-    _, _, lags = batch_align(t, p, sr=SR)
-    lag = int(lags[0].item())
-    # A delayed pred → positive lag (pred must be advanced to align with target)
-    assert abs(lag) == delay_samples, (
-        f"Expected lag={delay_samples} for {delay_samples}-sample delay, got {lag}"
-    )
-
-
-def test_batch_align_after_lag_signals_align():
-    """After batch_align, aligned identical-content signals should score near-perfect."""
-    delay_samples = 256
-    wav = _sine_wav(duration=2.0, freq=660.0)
-    delayed = torch.cat([torch.zeros(1, delay_samples), wav[..., :-delay_samples]], dim=-1)
-
-    t = wav.unsqueeze(0).to(torch.float64)
-    p = delayed.unsqueeze(0).to(torch.float64)
-    t_al, p_al, _ = batch_align(t, p, sr=SR)
-
-    device = torch.device("cpu")
-    dtype  = torch.float64
-    sisdr_fn = SISDRMetric().to(device)
-    with torch.no_grad():
-        sisdr = sisdr_fn(p_al.squeeze(1), t_al.squeeze(1)).item()
-    assert sisdr > 20.0, (
-        f"After lag correction, SI-SDR should be high; got {sisdr:.2f} dB"
-    )
-
-
-# ── T5: min-trim handles length mismatch (mirrors compute_spectral.py) ────────
-
-def _compute_pair_mintrim(target: torch.Tensor, pred: torch.Tensor):
-    """Mirror of compute_spectral.py: batch_align → min-trim → metrics."""
-    device = torch.device("cpu")
-    dtype  = torch.float64
-
-    sisdr_metric = SISDRMetric().to(device)
-    stft_loss_fn = STFTLoss(
-        fft_size=2048, hop_size=512, win_length=2048,
-        perceptual_weighting=True, w_log_mag=1.0, sample_rate=SR, reduction="none",
-    ).to(device=device, dtype=dtype)
-
-    t = target.unsqueeze(0).to(device=device, dtype=dtype)  # [1, 1, T_t]
-    p = pred.unsqueeze(0).to(device=device, dtype=dtype)    # [1, 1, T_p]
-
-    t_al, p_al, _ = batch_align(t, p, sr=SR)
-
-    T_min = min(t_al.shape[-1], p_al.shape[-1])
-    t_al = t_al[..., :T_min]
-    p_al = p_al[..., :T_min]
-
-    with torch.no_grad():
-        stft  = stft_loss_fn(p_al, t_al).flatten().mean().item()
-        sisdr = sisdr_metric(p_al.squeeze(1), t_al.squeeze(1)).item()
-
-    return stft, sisdr
-
+# ── T6: min-trim handles length mismatch ──────────────────────────────────────
 
 def test_min_trim_one_sample_mismatch():
     """Pred 1 sample shorter (MP3 off-by-one): min-trim should still yield near-perfect metrics."""
-    wav    = _sine_wav(duration=1.5)
-    target = wav
-    pred   = wav[..., :-1]  # T - 1
-
-    stft, sisdr = _compute_pair_mintrim(target, pred)
-    assert sisdr > 30.0, f"1-sample mismatch: expected SI-SDR > 30 dB, got {sisdr:.2f}"
-    assert stft  < 0.05, f"1-sample mismatch: expected STFT < 0.05, got {stft:.4f}"
+    wav = _sine_wav(duration=1.5)
+    stft, sisdr = _compute_pair(wav, wav[..., :-1])
+    assert sisdr > 30.0 and stft < 0.05
 
 
 def test_min_trim_large_mismatch():
-    """
-    Pred ~1024 samples shorter (SAO downsampling_ratio=2048 rounding scenario).
-    After min-trim, metrics should still indicate high quality for identical content.
-    """
-    sao_trim = 1024
-    wav    = _sine_wav(duration=2.0)
-    target = wav
-    pred   = wav[..., :-sao_trim]  # SAO encoder may shorten output by up to ratio samples
-
-    stft, sisdr = _compute_pair_mintrim(target, pred)
-    assert sisdr > 20.0, f"SAO-scale mismatch: expected SI-SDR > 20 dB, got {sisdr:.2f}"
-    assert stft  < 0.5,  f"SAO-scale mismatch: expected STFT < 0.5, got {stft:.4f}"
+    """Pred ~1024 samples shorter (codec hop rounding): metrics still indicate high quality."""
+    wav = _sine_wav(duration=2.0)
+    stft, sisdr = _compute_pair(wav, wav[..., :-1024])
+    assert sisdr > 20.0 and stft < 0.5
 
 
-# ── T6: atomic_save_npy data integrity ───────────────────────────────────────
+# ── T7: atomic_save_npy data integrity ───────────────────────────────────────
 
 def test_atomic_save_npy_roundtrip(tmp_path):
-    """atomic_save_npy should write a valid .npy file with byte-identical contents."""
-    rng  = np.random.default_rng(42)
-    data = rng.random((512,)).astype(np.float32)
+    data = np.random.default_rng(42).random((512,)).astype(np.float32)
     save_path = tmp_path / "emb.npy"
-
     atomic_save_npy(save_path, data)
-
-    assert save_path.exists(), "Expected .npy file after atomic_save_npy"
-    loaded = np.load(save_path)
-    np.testing.assert_array_equal(loaded, data)
+    np.testing.assert_array_equal(np.load(save_path), data)
 
 
 def test_atomic_save_npy_no_leftover_tmp(tmp_path):
-    """No .tmp file should remain after a successful atomic_save_npy call."""
-    data      = np.zeros((64,), dtype=np.float32)
-    save_path = tmp_path / "emb.npy"
-
-    atomic_save_npy(save_path, data)
-
-    tmp_files = list(tmp_path.glob("*.tmp"))
-    assert not tmp_files, f"Leftover .tmp files after save: {tmp_files}"
+    save_path = tmp_path / "sub" / "emb.npy"
+    atomic_save_npy(save_path, np.zeros((64,), dtype=np.float32))
+    assert [p.name for p in save_path.parent.iterdir()] == ["emb.npy"]
 
 
 def test_atomic_save_npy_overwrites_existing(tmp_path):
-    """Calling atomic_save_npy twice on the same path should update the file."""
     save_path = tmp_path / "emb.npy"
-    data_v1   = np.ones((32,), dtype=np.float32)
-    data_v2   = np.zeros((32,), dtype=np.float32)
-
-    atomic_save_npy(save_path, data_v1)
-    atomic_save_npy(save_path, data_v2)
-
-    loaded = np.load(save_path)
-    np.testing.assert_array_equal(loaded, data_v2)
+    atomic_save_npy(save_path, np.ones((32,), dtype=np.float32))
+    atomic_save_npy(save_path, np.zeros((32,), dtype=np.float32))
+    np.testing.assert_array_equal(np.load(save_path), np.zeros((32,), dtype=np.float32))

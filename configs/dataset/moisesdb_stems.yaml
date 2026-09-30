@@ -1,0 +1,9 @@
+# Evaluation set of evaluation.reconstruction / build_references (training data is the `data` group).
+# MoisesDB stems, 1,546 windows of 10 s: a flat folder of .wav clips whose references
+# (embeddings/, stats_ours/) are written into it once by evaluation.build_references.
+name: moisesdb_stems
+protocol: clips
+data_dir: ${paths.moisesdb_stems}
+fma_csv: null
+extensions: null
+cache_dir: null

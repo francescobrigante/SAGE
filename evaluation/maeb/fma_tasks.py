@@ -2,13 +2,13 @@
 # =============================================================================
 # evaluation/maeb/fma_tasks.py
 # MAEB(audio-only) task definitions backed by the LOCAL FMA large test set.
-# Music-semantic tasks (genre / artist) that load from tracks.csv + mp3 paths
-# on $FAST, bypassing the HuggingFace hub via a custom load_data override.
+# Music-semantic tasks (genre / artist) that load from tracks.csv + the local
+# mp3 files, bypassing the HuggingFace hub via a custom load_data override.
 # =============================================================================
 """FMA-local MAEB tasks.
 
 Six tasks evaluated entirely on the FMA *large test set* (11 263 clips, 30 s,
-44.1 kHz stereo, already on ``$FAST``):
+44.1 kHz stereo, on local disk):
 
 * ``FMAGenreClassification``    — 16-class genre (K-fold cross-validation)
 * ``FMAGenreClustering``        — 16-class genre clustering
@@ -17,16 +17,15 @@ Six tasks evaluated entirely on the FMA *large test set* (11 263 clips, 30 s,
 * ``FMAGenreAudioReranking``    — per-query candidate reranking by genre
 * ``FMAArtistPairClassification`` — same-artist pair classification
 
-Paths come from ``config.py`` (``FMA_METADATA`` → tracks.csv) with the audio
-directory derived as ``<fma>/fma_large`` (override via env ``FMA_LARGE_DIR``).
-A per-task ``max_files`` cap mirrors ``evaluate_swin_varT.collect_fma_files``:
+Paths come from ``configs/paths`` (``paths.fma_metadata`` → tracks.csv,
+``paths.fma_audio`` → fma_large/), set by the entry point ``evaluation.maeb``.
+A per-task ``max_files`` cap mirrors ``evaluation.common.collect_fma_files``:
 each task uses ``min(task_samples, max_files)`` (``0`` = all), sampled
 deterministically while preserving label / qrel structure.
 """
 from __future__ import annotations
 
 import logging
-import os
 import random
 from functools import lru_cache
 from pathlib import Path
@@ -40,7 +39,7 @@ _ARTIST_MIN_TRACKS_RETRIEVAL = 5                 # query pool: artists with ≥5
 _ARTIST_MIN_TRACKS_CLUSTER = 2                   # artist clusters need ≥2 members
 _N_PAIRS = 4000                                  # pair-classification: 2k pos + 2k neg
 _RERANK_N_POS, _RERANK_N_NEG = 3, 10             # candidates/query (like GTZANAudioReranking)
-_SEED = 94                                       # config.DEFAULT_SEED
+_SEED = 94                                       # sage.constants.DEFAULT_SEED
 _SR = 44100                                      # FMA native sample rate
 
 
@@ -48,13 +47,13 @@ _SR = 44100                                      # FMA native sample rate
 # Path resolution + CSV loading (single source of truth)
 # ---------------------------------------------------------------------------
 
-# Repo root (…/C-VAE) holds config.py. Inject it here so `import config` works
-# regardless of which encoder is loaded (SAO does not put it on sys.path).
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+# Set by evaluation.maeb from configs/paths (paths.fma_metadata, paths.fma_audio).
+FMA_METADATA: str | None = None
+FMA_AUDIO: str | None = None
 
 
 def _fma_paths() -> tuple[Path, Path]:
-    """Resolve (tracks.csv, fma_large audio dir) without hardcoding.
+    """(tracks.csv, fma_large audio dir) from FMA_METADATA and FMA_AUDIO.
 
     Returns:
         (metadata_csv, audio_dir): both verified to exist.
@@ -62,14 +61,10 @@ def _fma_paths() -> tuple[Path, Path]:
     Raises:
         FileNotFoundError: if either path is missing.
     """
-    import sys
-
-    if str(_REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(_REPO_ROOT))
-    import config
-
-    csv = Path(os.getenv("FMA_METADATA") or config.FMA_METADATA)
-    audio = Path(os.getenv("FMA_LARGE_DIR") or (csv.parent.parent / "fma_large"))
+    if not FMA_METADATA or not FMA_AUDIO:
+        raise FileNotFoundError("FMA paths not set: set paths.fma_metadata and paths.fma_audio "
+                                "(env FMA_METADATA, FMA_AUDIO)")
+    csv, audio = Path(FMA_METADATA), Path(FMA_AUDIO)
     if not csv.exists():
         raise FileNotFoundError(f"FMA tracks.csv not found: {csv}")
     if not audio.is_dir():

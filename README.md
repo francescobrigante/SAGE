@@ -1,489 +1,251 @@
-# 🎵 ℂ-VAE: end-to-end Complex-Valued Variational Autoencoder for Audio
-
-![Python](https://img.shields.io/badge/Python-%3E%3D3.10-blue?logo=python&logoColor=white)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.7.1-ee4c2c?logo=pytorch&logoColor=white)
-![Lightning](https://img.shields.io/badge/Lightning-2.6.0-792ee5?logo=lightning&logoColor=white)
-![Hydra](https://img.shields.io/badge/Hydra-Config-89b8cd)
-![License](https://img.shields.io/badge/License-TBD-lightgrey)
+<h1 align="center">SAGE: Semantic Audio Generative Encoder</h1>
 
 <p align="center">
-  <img src="resources/vae.jpg" alt="VAE Architecture" width="80%">
+Francesco Brigante<sup>1</sup> · Luca Cerovaz<sup>1,3</sup> · Davide Marincione<sup>1</sup> ·
+Giorgio Strano<sup>1</sup> · Luca Zhou<sup>1</sup> · Emanuele Rodolà<sup>1,3</sup> ·
+Michele Mancusi<sup>1,2</sup><br>
+<sup>1</sup>Sapienza University of Rome · <sup>2</sup>Moises Systems · <sup>3</sup>Paradigma
 </p>
 
-> [!IMPORTANT]
-> 🚧 **This project is under active development as part of my Master's Thesis.** Feel free to star ⭐️ the repo to stay updated!
+<p align="center">
+  <a href="https://arxiv.org/abs/2609.32755"><img src="https://img.shields.io/badge/arXiv-2609.32755-b31b1b.svg" alt="arXiv"></a>
+  <a href="https://sage-music.pages.dev/"><img src="https://img.shields.io/badge/Project-page-6d4aff.svg" alt="Project page"></a>
+  <!-- <a href="https://huggingface.co/TBD"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-weights-ffcc4d.svg" alt="Weights"></a> -->
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+  <a href="https://github.com/francescobrigante/SAGE/actions/workflows/tests.yml"><img src="https://github.com/francescobrigante/SAGE/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+</p>
 
----
+<p align="center">
+  <img src="docs/assets/teaser.png" width="600" alt="FAD-MERT on the MoisesDB mixtures against real-time factor: SAGE has the lowest FAD-MERT at the real-time factor of Stable Audio Open">
+  <br><em>Distributional fidelity against inference cost on the MoisesDB mixtures; marker area is the parameter count.</em>
+</p>
 
-## 📋 Objective
+SAGE is a compact variational autoencoder for stereo music at 44.1 kHz. A Swin
+Transformer V2 encoder and decoder operate on the STFT, and the latent is shaped by
+distilling the embeddings of a pretrained audio-text model (LAION-CLAP). The released
+model has 104.6M parameters and compresses a stereo waveform ×64 into a 16-channel
+latent at 86 frames per second (one latent frame per 512 samples).
 
-This repository explores **complex-valued Variational Autoencoders (VAEs)** for high-fidelity music reconstruction. The core hypothesis is that operating directly on complex-valued spectrograms, with and end-to-end complex architecture, yields higher reconstruction quality and better latent space properties.
+- **Fast:** it runs at the inference cost of Stable Audio Open.
+- **High fidelity:** its listening-test score matches SAME-L, an autoencoder 8× larger and 4×
+  slower, and it surpasses both on objective perceptual and distributional reconstruction metrics.
+- **Semantic latent:** it sets the state of the art on all nineteen probing tasks of latent
+  semantics, in domain and out of domain.
+- **Open data:** it is trained solely on publicly available music.
 
-The codebase provides:
+This repository contains the model, the two training phases, the evaluation code of
+the paper and the released checkpoint's loader.
 
-- **`ar_spectra:`** A modular library of encoder/decoder architectures based on complex-valued neural network building blocks, with training infrastructure (PyTorch Lightning) and loss functions (spectral, perceptual, adversarial). Developed by [Luca Cerovaz](https://github.com/CerovazS) and refactored by me.
+## Results
 
-- **`c_vae:`** A module implementing the **Complex-Valued VAE bottleneck** (`ComplexVAEBottleneck`), supporting proper (circular), improper, and Cholesky-parameterized complex Gaussian posteriors.
+Listening test (MUSHRA, 21 raters after filtering; paper Table 3) and average probing score
+per block of tasks (paper Table 4):
 
-Training is fully configured via [Hydra](https://hydra.cc/) YAML files, logged through [Weights & Biases](https://wandb.ai/), and evaluated with standard audio quality metrics (SI-SDR, spectral convergence, CDPAM, FAD).
+| Model | Params | RTF ↓ | MUSHRA ↑ | FMA (6) ↑ | MoisesDB (7) ↑ | Upstream MAEB (6) ↑ |
+|---|---|---|---|---|---|---|
+| **SAGE** | 105M | 0.0045 | 81.6 ± 2.7 | **0.563** | **0.544** | **0.622** |
+| SAME-L | 852M | 0.0192 | **81.8 ± 2.6** | 0.470 | 0.493 | 0.473 |
+| Stable Audio Open | 156M | 0.0045 | 64.6 ± 3.7 | 0.490 | 0.469 | 0.481 |
+| CoDiCodec | 150M | 0.0237 | 66.4 ± 3.5 | 0.474 | 0.456 | 0.471 |
 
----
+SAGE and SAME-L are statistically indistinguishable in the listening test. Reconstruction
+metrics on the five evaluation sets, the per-task probing scores and the other baselines
+(SAME-S, Music2Latent) are in the paper; [docs/paper_runs.md](docs/paper_runs.md) gives the
+command that reproduces each of them.
 
-## 📁 Project Structure
+## Installation
 
-```bash
-C-VAE/
-├── config.py                             # Centralized constants: paths, sample rate, device, seeds
-├── train.py                              # Hydra training entrypoint (PyTorch Lightning)
-├── evaluate.py                           # Inference script
-├── dataloader.py                         # OnTheFlySTFTDataset that loads audio, computes STFT on-the-fly
-├── test_eulero_inference.py              # Quick smoke test for EuleroDec inference
-├── pyproject.toml                        # Package metadata, dependencies, build config (hatchling)
-├── .gitignore
-│
-├── config/                               # Hydra YAML configuration hierarchy
-│   ├── main.yaml                         # Top-level composition: selects model, data, trainer groups
-│   ├── data.yaml                         # Dataset & dataloader config (STFT params, splits, channels)
-│   ├── trainer.yaml                      # Optimizer, scheduler, losses, WandB, training hyperparams
-│   └── models/                           # Model architecture configs (one per architecture)
-│       ├── SEANet_real_model.yaml         # Real-valued SEANet encoder/decoder (ELU, weight_norm)
-│       ├── SEANet_cplx_model.yaml         # Complex-valued SEANet (CReLU, is_complex: true)
-│       ├── hf_autoencoder_kl.yaml         # HuggingFace AutoencoderKL (diffusers)
-│       ├── hf_autoencoder_dc.yaml         # HuggingFace AutoencoderDC (DCAE, pixel_unshuffle)
-│       └── simple_transformer_AE.yaml     # Complex-valued Transformer AE with patch embeddings
-│
-├── tests/                                # Evaluation metric scripts
-│   ├── compute_all.py                    # Orchestrator — runs inference + all metrics end-to-end
-│   ├── compute_all.sh                    # Bash equivalent of compute_all.py with virtualenv support
-│   ├── compute_spectral.py               # SI-SDR + multi-resolution STFT loss (per-file CSV output)
-│   ├── compute_cdpam.py                  # Contrastive Deep Perceptual Audio Metric (CDPAM)
-│   └── compute_fad.py                    # Fréchet Audio Distance via VGGish embeddings
-│
-├── checkpoints/                          # Trained model checkpoints (.ckpt files)
-├──  runs/                                 # Training run outputs (logs, profiler, TensorBoard)
-│
-│
-└── src/
-    ├── ar_spectra/                       # Core complex framework
-    │   ├── models/                       # Model architectures
-    │   │   ├── autoencoder.py            # AutoEncoder container: wires encoder + decoder + bottleneck
-    │   │   ├── bottlenecks.py            # VAEBottleneck (KL reparametrization), SkipBottleneck (passthrough)
-    │   │   ├── inference.py              # Standalone inference wrapper for checkpoints
-    │   │   ├── implementations/          # Concrete encoder/decoder implementations
-    │   │   │   ├── abstract_ae.py        # AbstractAutoEncoder base class (interface contract)
-    │   │   │   ├── SeaNET_AE.py          # SEANetEncoder2d / SEANetDecoder2d (real & complex)
-    │   │   │   ├── autoencoder_kl.py     # HFAutoencoderKLEncoder / Decoder (diffusers wrapper)
-    │   │   │   ├── autoencoder_dc.py     # HFAutoencoderDCEncoder / Decoder (DCAE wrapper)
-    │   │   │   └── simple_transformer_AE.py  # SimpleTransformerEncoder / Decoder (patch + ViT)
-    │   │   └── discriminators/           # GAN discriminator zoo
-    │   │       ├── __init__.py           # EncodecDiscriminator, OobleckDiscriminator, DACGANLoss, etc.
-    │   │       ├── encodec.py            # MS-STFT discriminator (DiscriminatorSTFT, MultiScaleSTFTDiscriminator)
-    │   │       ├── oobleck.py            # MPD / MSD / MRD discriminators
-    │   │       ├── dac.py                # Descript Audio Codec discriminator
-    │   │       ├── bigvgan.py            # BigVGAN discriminator
-    │   │       ├── multi.py              # MultiScale and MultiPeriod discriminators
-    │   │       ├── subband.py            # Subband CQT discriminator
-    │   │       └── types.py              # Shared discriminator type definitions
-    │   │
-    │   ├── training/                     # Training infrastructure (PyTorch Lightning)
-    │   │   ├── __init__.py
-    │   │   ├── engine.py                 # AutoencoderEngine: core training/validation step logic
-    │   │   ├── autoencoders.py           # AutoencoderTrainingWrapper (LightningModule) + ValDemoCallback
-    │   │   ├── loss_manager.py           # LossManager: orchestrates weighted multi-loss computation
-    │   │   ├── schedulers.py             # InverseLR learning rate scheduler
-    │   │   ├── losses/                   # Loss function implementations
-    │   │   │   ├── base.py               # BaseLoss: abstract loss interface
-    │   │   │   ├── spectral.py           # ComplexMSE, MultiResSpectralConvergence, MelSpectrogramLoss, etc.
-    │   │   │   ├── signal.py             # STFTLoss, L1/MSE time-domain losses
-    │   │   │   └── perceptual.py         # HubertLoss, PhaseCosineDistance
-    │   │   ├── callbacks.py              # DatasetEpochSetter, ModelInfoLogger (PL callbacks)
-    │   │   ├── initialization.py         # collate_stft and weight initialization utilities
-    │   │   └── pre_transform.py          # Spectrogram normalization: power_norm, log_mag, none
-    │   │
-    │   ├── blocks/                       # Modular neural network building blocks
-    │   │   ├── activations/              # Activation functions
-    │   │   │   ├── snake.py              # Snake activation (periodic, for audio)
-    │   │   │   ├── silu.py               # SiLU / Swish (real & complex variants)
-    │   │   │   ├── gelu.py               # GELU (real & complex variants)
-    │   │   │   ├── relu.py               # ReLU, CReLU (split complex activation)
-    │   │   │   └── misc.py               # Miscellaneous activations
-    │   │   ├── attention/                # Attention mechanisms
-    │   │   │   ├── complex.py            # Complex-valued multi-head attention
-    │   │   │   └── standard.py           # Standard real-valued attention
-    │   │   ├── conv/                     # Convolution layers
-    │   │   │   ├── variants.py           # Conv1d/2d variants (complex, real, transposed)
-    │   │   │   ├── causal.py             # Causal convolutions (for autoregressive models)
-    │   │   │   └── normed.py             # Weight-normalized convs
-    │   │   ├── embeddings/               # Embedding layers
-    │   │   │   ├── positional.py         # Sinusoidal and learnable positional embeddings
-    │   │   │   └── complex.py            # Complex-valued patch embeddings
-    │   │   ├── normalization/            # Normalization layers
-    │   │   │   ├── real.py               # LayerNorm, GroupNorm, RMSNorm
-    │   │   │   └── complex.py            # Complex-valued normalization layers
-    │   │   ├── subsampling/              # Downsampling / upsampling ops
-    │   │   │   ├── conv1d.py             # Strided conv1d downsampling
-    │   │   │   ├── conv2d.py             # Strided conv2d downsampling
-    │   │   │   └── helpers.py            # Padding and shape utilities
-    │   │   ├── transformer.py            # Transformer blocks (encoder/decoder layers)
-    │   │   ├── layers.py                 # Residual blocks, FeedForward, and generic layers
-    │   │   ├── rnn.py                    # LSTM / GRU wrappers
-    │   │   └── complex_patch_merging.py  # Complex-valued patch merging for hierarchical models
-    │   │
-    │   └── utils/                        # Utility modules
-    │       ├── audio.py                  # Audio I/O, resampling, channel matching
-    │       ├── audio_probe.py            # Probe audio files for sample rate, channels, duration
-    │       ├── audio_validation.py       # Validate audio integrity (silence, clipping, corruption)
-    │       ├── console.py                # Rich console logging + WandB/CometML log helpers
-    │       ├── distributions.py          # Probability distributions for VAE sampling
-    │       ├── file_scanning.py          # Recursive file discovery with extension filtering
-    │       ├── run_config.py             # Distributed rank helpers, run-name builders, checkpoint dir
-    │       ├── metadata/
-    │       │   ├── fma.py                # FMA dataset metadata reader (track splits, genre labels)
-    │       │   └── providers.py          # Generic metadata provider interface
-    │       ├── model_factory.py          # Dynamic model instantiation from config dicts
-    │       ├── model_info.py             # Extract and log model parameter counts and structure
-    │       ├── regenerate_checkpoint.py  # Re-save checkpoints with updated model keys
-    │       ├── reproducibility.py        # Seed management and deterministic flag configuration
-    │       ├── scan_corrupt_audio.py     # Batch scan for corrupt/unreadable audio files
-    │       ├── spectral.py               # STFT / iSTFT helpers, spectral feature computation
-    │       ├── tensors.py                # Tensor shape utilities, complex ↔ real conversion
-    │       └── aeiou.py                  # Audio-to-STFT pipeline and channel format helpers
-    │
-    └── c_vae/                            # Complex-valued VAE generative model
-        └── bottleneck.py                 # ComplexVAEBottleneck: proper, improper, Cholesky modes
-
-```
-
----
-
-## ⚙️ Installation
-
-### Prerequisites
-
-- **Python** ≥ 3.10
-- **[uv](https://docs.astral.sh/uv/)** (recommended) or `pip`
-- **CUDA 12.6** (for GPU training on Linux) or **MPS** (macOS Apple Silicon)
-
-### Setup
+Python 3.11 and [uv](https://docs.astral.sh/uv/). PyTorch 2.7.1 is installed with CUDA
+12.6 wheels on Linux and the default wheels elsewhere.
 
 ```bash
-# Clone the repository
-git clone https://github.com/francescobrigante/C-VAE.git
-cd C-VAE
-
-# Install with uv (recommended)
-uv sync
+git clone https://github.com/francescobrigante/SAGE.git && cd SAGE
+uv sync                                   # inference only
+uv sync --extra train                     # + training
+uv sync --extra train --extra eval        # + evaluation (FAD, CLAP, CDPAM, MAEB)
+uv sync --all-extras                      # + baselines of the paper (SAME, SAO VAE, CoDiCodec, Music2Latent)
 ```
 
-> [!NOTE]
-> On Linux, PyTorch is automatically sourced from the `cu126` wheel index. On macOS (`darwin`), the default PyPI wheels are used (MPS backend). The `deepspeed` and `nvitop` packages are Linux-only dependencies.
+`pip install .` (or `pip install ".[train,eval]"`) works too, without the lock file.
 
----
-
-## 🔧 Configuration
-
-All configuration is managed through [Hydra](https://hydra.cc/) with a hierarchical YAML structure. Global constants live in `config.py` and are referenced in YAML files via custom resolvers:
-
-```yaml
-# config.py constants
-sample_rate: ${config:DEFAULT_SAMPLE_RATE}    # resolves to 44100
-device: ${config:DEFAULT_DEVICE}              # resolves to mps / cuda:0 / cpu
-
-# Inline integer arithmetic (registered in train.py)
-dimension: ${mul:${model.parameters_to_predict},${model.latent_channels}}
-```
-
-### Configuration Hierarchy
-
-| File | Purpose |
-|------|---------|
-| `config.py` | Global constants: paths, sample rate (44100), device auto-detection, seed (94), audio extensions |
-| `config/main.yaml` | Top-level Hydra composition: selects which model, data, and trainer configs to load |
-| `config/data.yaml` | Dataset (OnTheFlySTFTDataset) and dataloader settings: STFT params, batch size, workers, channel mapping |
-| `config/trainer.yaml` | Optimizer (AdamW), scheduler (InverseLR), loss config, WandB settings, training hyperparameters |
-| `config/models/*.yaml` | One file per model architecture (see [Architecture Overview](#-architecture-overview)) |
-
-#### Latent Space Configuration
-
-Model YAMLs define `latent_channels` and `parameters_to_predict` as a **single source of truth** — encoder/decoder channel dimensions are derived automatically:
-
-```yaml
-model:
-  latent_channels: 64         # decoder input dim = latent space size
-  parameters_to_predict: 3    # 2 = proper (C=0),  3 = improper (full complex Gaussian)
-
-  encoder:
-    dimension: ${mul:${model.parameters_to_predict},${model.latent_channels}}   # 192
-  decoder:
-    input_size: ${model.latent_channels}                                         # 64
-```
-
-> [!NOTE]
-> `parameters_to_predict` must match the bottleneck mode: `2` for `proper: true` (circular), `3` for improper or Cholesky modes.
-
-### Selecting a Model
-
-Edit `config/main.yaml` to switch the active model:
-
-```yaml
-defaults:
-  - data@data
-  - models: seanet_real_model      # ← change this line
-  # - models: seanet_cplx_model
-  # - models: hf_autoencoder_kl
-  # - models: hf_autoencoder_dc
-  # - models: simple_transformer_AE
-  - trainer@trainer
-  - _self_
-```
-
-Or override from the CLI:
+Optional, Linux with an NVIDIA GPU: fused CUDA kernels for the Swin window shift/partition
+(NVIDIA, see Acknowledgements). They give the same outputs and speed up training and
+inference, and are used automatically on GPU once importable. Building them needs the CUDA
+toolkit of the PyTorch wheels (`nvcc`, `CUDA_HOME`) and gcc ≥ 9:
 
 ```bash
-uv run train.py models=hf_autoencoder_kl
+cd src/sage/model/swin/cuda_kernels
+python setup.py build_ext --inplace            # with the environment active; writes swin_window_process*.so
+export PYTHONPATH=$PWD:$PYTHONPATH              # make it importable (`uv sync` leaves it in place)
 ```
 
-### Channel Configuration
+## Checkpoint
 
-Channel settings in `config/data.yaml` must match the model config:
-
-```yaml
-# stereo=true, cac=true  → audio_channels=2, model_channels=4
-# stereo=true, cac=false  → audio_channels=2, model_channels=2
-# stereo=false, cac=true  → audio_channels=1, model_channels=2
-# stereo=false, cac=false → audio_channels=1, model_channels=1
-audio_channels: 2
-model_channels: 4
-```
-
-> [!NOTE]
-> The `input_size` (encoder) and `channels` (decoder) in each model YAML **must** match `data.model_channels`. Mismatches will cause shape errors at runtime.
-
-### Pre-Transforms
-
-Spectrogram normalization applied before the encoder and inverted after the decoder:
-
-| Type | Description |
-|------|-------------|
-| `none` | Raw STFT (no normalization) |
-| `log_mag` | Log-magnitude scaling |
-| `power_norm` | Power-law compression with configurable α / β |
-
----
-
-## 🚀 Usage
-
-### Training
-
-Training uses Hydra's `@hydra.main` entrypoint, all configuration is resolved from YAML files:
-
-```bash
-# Train with default config
-uv run train.py
-
-# Train with a specific model
-uv run train.py models=hf_autoencoder_kl
-
-# Override training hyperparameters
-uv run train.py models=seanet_cplx_model \
-  trainer.trainer.epochs=100 \
-  data.train_dataloader.batch_size=4 \
-  trainer.optimizer.lr=1e-4
-
-# Enable Weights & Biases logging
-uv run train.py trainer.wandb.use_wandb=true \
-  trainer.wandb.name=my_experiment
-
-# Use specific precision
-uv run train.py trainer.trainer.precision=bf16-mixed
-```
-
-### Inference
-
-Reconstruct audio through a trained checkpoint using `evaluate.py`:
-
-```bash
-uv run evaluate.py \
-  --model-checkpoint checkpoints/eulerodec.ckpt \
-  --target-dir /path/to/audio \
-  --output-dir /path/to/reconstructions \
-  --device cuda:0 \
-  --max-files 100
-```
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--model-checkpoint` | `checkpoints/eulerodec.ckpt` | Path to the trained `.ckpt` file |
-| `--target-dir` | `DATA_PATH` from `config.py` | Directory containing input audio files |
-| `--output-dir` | *(required)* | Where to save reconstructed `.wav` files |
-| `--device` | Auto-detected (mps/cuda/cpu) | Compute device |
-| `--extensions` | `.wav,.flac,.mp3,.ogg,.m4a,.opus` | Comma-separated audio file extensions |
-| `--max-files` | `0` (all) | Limit number of files to process |
-
-### Full Evaluation Pipeline
-
-Run inference + all metrics in a single command:
-
-```bash
-# Python orchestrator (cross-platform)
-uv run tests/compute_all.py \
-  --output-dir results/my_run \
-  --checkpoint checkpoints/eulerodec.ckpt \
-  --target-dir /path/to/reference/audio
-
-# Bash script (with virtualenv support)
-uv run tests/compute_all.sh \
-  --output-dir results/my_run \
-  --checkpoint checkpoints/eulerodec.ckpt \
-  --target-dir /path/to/reference/audio \
-  --main-env .venv \
-  --metrics-env .venv_metrics
-```
-
-Both support `--skip-cdpam`, `--skip-fad`, `--max-files`, separate `--infer-device` / `--cdpam-device`, and `--csv-dir` for metric output.
-
----
-
-## 📊 Experiment Tracking
-
-### Weights & Biases
-
-Enable W&B logging in `config/trainer.yaml`:
-
-```yaml
-wandb:
-  project: C-VAE
-  name: my_experiment_name
-  use_wandb: true         # set to false for TensorBoard-only
-```
-
-When enabled, the training script logs:
-
-| What | W&B Key |
-|------|---------|
-| Training losses (per step) | `train/loss_*` |
-| Validation losses | `val/loss_*` |
-| Audio reconstructions | `val/recon` |
-| Mel spectrograms | `val/recon_melspec_left` |
-| Latent space embeddings (3D PCA) | `val/embeddings_3dpca` |
-| Latent space spectrogram | `val/embeddings_spec` |
-| Learning rate schedule | `lr-AdamW` |
-| Hydra config files | Uploaded as W&B artifact (`hydra-conf`) |
-| Model structure | `model_info.json` |
-
-### TensorBoard (Fallback)
-
-When `use_wandb: false`, logs are written to `runs/lightning_logs/` and viewable with:
-
-```bash
-tensorboard --logdir runs/lightning_logs
-```
-
----
-
-## 🏗 Architecture Overview
-
-The system follows a modular **Encoder → Bottleneck → Decoder** architecture. All components are interchangeable via Hydra configs.
-
-### Encoder / Decoder Implementations
-
-| Architecture | Config | Domain | Key Features |
-|---|---|---|---|
-| **SEANet (Real)** | `SEANet_real_model.yaml` | Real | 2D conv encoder/decoder, ELU activation, weight normalization, configurable dilation |
-| **SEANet (Complex)** | `SEANet_cplx_model.yaml` | Complex | Same architecture with `is_complex: true`, CReLU activation, operates on complex-valued tensors |
-| **AutoencoderKL** | `hf_autoencoder_kl.yaml` | Real | HuggingFace diffusers `AutoencoderKL`, UNet-style down/up blocks, mid-block attention |
-| **AutoencoderDC** | `hf_autoencoder_dc.yaml` | Real | HuggingFace `AutoencoderDC` (DCAE), pixel-unshuffle downsampling, RMS normalization |
-| **Transformer AE** | `simple_transformer_AE.yaml` | Complex | Vision Transformer style, patch embeddings, complex-valued attention and FFN |
-
-### Bottleneck Types
-
-| Bottleneck | Class | Description |
+| File | Size | SHA-256 |
 |---|---|---|
-| **VAE** | `VAEBottleneck` | Reparametrization trick: μ/σ → z ~ N(μ, σ²), KL divergence regularization |
-| **Complex VAE (Proper)** | `ComplexVAEBottleneck(proper=True)` | Circular complex Gaussian CN(μ, diag(γ), 0); `parameters_to_predict=2` |
-| **Complex VAE (Improper)** | `ComplexVAEBottleneck(proper=False)` | Full complex Gaussian CN(μ, diag(σ), diag(c)); σ > \|c\| enforced via KL barrier; `parameters_to_predict=3` |
-| **Complex VAE (Cholesky)** | `ComplexVAEBottleneck(apply_cholesky_constraints=True)` | Same posterior as improper, but σ > \|c\| guaranteed by construction via Cholesky factorization; `parameters_to_predict=3` |
-| **Skip** | `SkipBottleneck` | Passthrough: no compression or regularization (deterministic AE) |
+| `SAGE_FTe992.ckpt` (EMA weights, epoch 992) | 402 MiB | `dd87d01eaee88ca92f96c80ffe0e504a1d7cbc02e4271d8c48033df591d6ac99` |
 
-### Discriminator Zoo
+Download: Hugging Face, *link to be added*. Put the file in `models/` (the default location, see
+[Paths](#paths)). It holds the model configuration and the EMA weights only; it was
+exported from the training checkpoint with `scripts/export_checkpoint.py`.
 
-Available for adversarial training (configured via `loss_config` when GAN losses are enabled):
+## Usage
 
-| Discriminator | Source |
-|---|---|
-| `EncodecDiscriminator` | Meta's Encodec |
-| `OobleckDiscriminator` | MPD / MSD / MRD combination |
-| `DACGANLoss` | Descript Audio Codec |
-| `BigVGANDiscriminator` | BigVGAN multi-period |
-| `MultiScaleDiscriminator` | Multi-scale waveform |
-| `MultiPeriodDiscriminator` | Multi-period waveform |
-| `SubbandCQTDiscriminator` | Subband Constant-Q Transform |
+```python
+import torch
+from sage import SAGE
 
-### Training Losses
+codec = SAGE.from_checkpoint("models/SAGE_FTe992.ckpt")          # CUDA if available
+wav = torch.randn(1, 2, 10 * codec.sample_rate)                  # (B, 2, N) at 44.1 kHz
 
-| Category | Losses |
-|---|---|
-| **Spectral** | `ComplexMSE` (stft_mse), `MultiResSpectralConvergence`, `MultiResolutionSpectrogramLoss`, `MelSpectrogramLoss` |
-| **Signal** | `STFTLoss`, L1, MSE (time-domain) |
-| **Perceptual** | `HubertLoss` (HuBERT feature matching), `PhaseCosineDistance` |
-| **Regularization** | KL divergence (from VAEBottleneck) |
-| **Adversarial** | GAN generator + feature matching losses (from discriminators) |
+rec = codec.reconstruct(wav)                                     # encode + decode, same length as the input
 
-Losses are orchestrated by `LossManager`, which applies per-loss weights defined in `trainer.yaml`:
-
-```yaml
-loss_config:
-  spectral:
-    stft_mse:
-      config:
-        reduction: mean
-    weights: {stft_mse: 1.0}
-  bottleneck:
-    weights:
-      kl: 1e-3
+padded, n = codec.pad(wav)                                       # right-pad to the model's frame grid
+z = codec.encode(padded, deterministic=True)                     # posterior mean, (B, 16, frames)
+y = codec.decode(z, target_length=padded.shape[-1])[..., :n]     # back to audio, input length
 ```
 
-### Data Pipeline
+`reconstruct` pads, encodes and decodes exactly as the paper's evaluation does; the last
+three lines do the same by hand. `encode` samples the latent unless `deterministic=True`
+(the paper's reconstruction metrics use a sampled latent). From the command line, for any audio file (resampled to
+44.1 kHz, mono duplicated to stereo):
 
-1. **`OnTheFlySTFTDataset`** loads raw audio files from disk
-2. Computes STFT on-the-fly (n_fft=2048, hop_length=512, stereo, complex-as-channels)
-3. Optional **pre-transform** normalizes spectrograms (`power_norm`, `log_mag`, or `none`)
-4. **`collate_stft`** handles batching with padding and masking
-5. During validation, **`AutoencoderValDemoCallback`** reconstructs audio via iSTFT and logs spectrograms + waveforms
+```bash
+python scripts/encode_decode.py reconstruct song.wav song_rec.wav --ckpt models/SAGE_FTe992.ckpt
+python scripts/encode_decode.py encode      song.wav song.pt      --ckpt models/SAGE_FTe992.ckpt
+python scripts/encode_decode.py decode      song.pt  song_rec.wav --ckpt models/SAGE_FTe992.ckpt
+```
 
----
+## Paths
 
-## 🧮 C-VAE Module
+Every machine-specific location (datasets, weights, outputs) is set in one file,
+[`configs/paths/default.yaml`](configs/paths/default.yaml). Each entry reads an environment
+variable and falls back to a default:
 
-`src/c_vae/bottleneck.py` implements the **Complex Gaussian VAE bottleneck**, supporting three posterior families:
+| Variable | Used for |
+|---|---|
+| `SAGE_MODELS` (default `models/`) | the SAGE checkpoint, the LAION-CLAP teacher and the PANN weights of FAD-PANN |
+| `SAGE_CHECKPOINT`, `CLAP_TEACHER_CKPT`, `PANN_CKPT`, `CLAP_FAD_CKPT`, `SAO_VAE_DIR` | single weight files, instead of their place under `SAGE_MODELS` |
+| `FMA_AUDIO`, `FMA_METADATA` | FMA audio (`fma_large/`) and `fma_metadata/tracks.csv` |
+| `FMA_FULL_AUDIO`, `JAMENDO_AUDIO`, `JAMENDO_SPLIT_TSV`, `M4SINGER_AUDIO` | the pretraining corpora |
+| `MOISESDB_MIX`, `MOISESDB_STEMS`, `MUSICCAPS`, `SONG_DESCRIBER` | the 10 s clip sets of the reconstruction evaluation |
+| `MOISESDB_ROOT`, `MOISESDB_CHUNKS_ROOT` | MoisesDB metadata and 30 s chunks of the probing tasks |
+| `SAGE_EVAL_OUTPUT` (`results/`), `SAGE_EVAL_CACHE` (`eval_cache/`) | evaluation outputs and cache |
 
-| Mode | Config | Posterior | Constraint |
-|---|---|---|---|
-| **Proper (circular)** | `proper: true`, `parameters_to_predict: 2` | CN(μ, diag(γ), 0) | γ > 0 via Softplus |
-| **Improper (default)** | `proper: false`, `parameters_to_predict: 3` | CN(μ, diag(σ), diag(c)) | σ > \|c\| via KL barrier |
-| **Cholesky** | `apply_cholesky_constraints: true`, `parameters_to_predict: 3` | same as improper | σ > \|c\| by construction |
+Instead of environment variables, copy the file to `configs/paths/local.yaml` (ignored by
+git), edit it and add `paths=local` to the commands below. Any single entry can also be
+overridden on the command line, e.g. `paths.fma_audio=/data/fma_large`.
 
-The Cholesky mode expresses the sampling kernel via lower-triangular factors (l₁₁, l₂₁, l₂₂), yielding a numerically stable KL analogous to the real-VAE formula: `KL = ‖μ‖² + Σ[l₁₁² + l₂₁² + l₂₂² − 1 − log(2·l₁₁·l₂₂)]`.
+The weights under `SAGE_MODELS`: `SAGE_FTe992.ckpt`,
+`LAION_CLAP/music_audioset_epoch_15_esc_90.14.pt` (training teacher and probing oracle,
+from [LAION-CLAP](https://github.com/LAION-AI/CLAP)) and `PANN/Cnn14_16k_mAP=0.438.pth`
+(from [PANNs](https://zenodo.org/record/3987831)).
 
----
+## Training
 
-## 🙏 Credits
-Built on top of:
+Two phases (paper Section 2.3, Table 6), each a Hydra recipe in `configs/experiment/`:
 
-- [PyTorch](https://pytorch.org/) and [PyTorch Lightning](https://lightning.ai/)
-- [Hydra](https://hydra.cc/) by Facebook Research
-- [HuggingFace Diffusers](https://github.com/huggingface/diffusers) (AutoencoderKL, AutoencoderDC)
-- [Meta Encodec](https://github.com/facebookresearch/encodec)
-- [Descript Audio Codec](https://github.com/descriptinc/descript-audio-codec)
-- [complextorch](https://github.com/josiahwsmith10/complextorch) / [complexpytorch](https://github.com/wavefrontshaping/complexpytorch)
-- [fadtk](https://github.com/microsoft/fadtk) (Fréchet Audio Distance Toolkit)
-- [CDPAM](https://github.com/pranaymanocha/PerceptualAudio) (Contrastive Deep Perceptual Audio Metric)
-- [FMA Dataset](https://github.com/mdeff/fma) (Free Music Archive)
-- [EuleroDec](https://arxiv.org/pdf/2601.17517) a complex-valued RVQ-VAE for Audio coding
+```bash
+# phase 1: pretraining on FMA-full + MTG-Jamendo + M4Singer (500 epochs, 16 GPUs, global batch 128)
+python train.py +experiment=pretrain trainer.trainer.num_gpus=4 ++trainer.trainer.num_nodes=4
+# phase 2: decoder fine-tuning from the phase-1 checkpoint (encoder frozen)
+python train.py +experiment=decoder_ft +init_from=<phase-1 checkpoint> trainer.trainer.num_gpus=4 ++trainer.trainer.num_nodes=4
+```
 
----
+The batch size is global, so the recipes run unchanged on fewer GPUs. Runs are written
+to `runs/<name>/<date>/`; logging goes to Weights & Biases (`trainer.wandb.use_wandb=false`
+for TensorBoard only). A SLURM requeue, or launching a run name again (the recipe's or
+`trainer.wandb.name=`) after a crash, continues its newest checkpoint in its own folder and
+its W&B run; `+ckpt_path=<file>` resumes a given checkpoint, `auto_resume=false` or a new
+`trainer.wandb.name` starts over. A run that already has checkpoints refuses a new
+`+init_from` instead of resuming over it. For SLURM clusters, `scripts/slurm/train.sbatch <recipe>`
+runs a recipe with requeueing. On multi-node InfiniBand clusters where NCCL stops at the
+first collective with `Could not find NET with id 0` (NCCL 2.26 of the PyTorch wheels, seen
+with GPUDirect RDMA), `export NCCL_NET_GDR_LEVEL=LOC` before `sbatch` fixes it. Losses outside the paper are available for experiments in
+`sage/nn/losses/experimental/` (see its `__init__`).
 
-## 📄 License
+## Evaluation
 
-> [!WARNING]
-> A license file has not yet been added to this repository. All rights are reserved until a license is specified.
+```bash
+python -m evaluation.build_references dataset=musiccaps            # once per 10 s clip set
+python -m evaluation.reconstruction dataset=fma model=sage          # reconstruction metrics (Table 2)
+python -m evaluation.reconstruction dataset=musiccaps model=same-s  # a baseline
+python -m evaluation.maeb encoder=sage                              # 19 probing tasks (Tables 4, 9)
+python -m evaluation.tables --recon "FMA test=results/recon_fma" --maeb results/maeb/SAGE_FTe992
+```
+
+Evaluation sets: `fma`, `moisesdb_mix`, `moisesdb_stems`, `musiccaps`, `song_describer`
+(`configs/dataset/`). `build_references` writes the reference embeddings and statistics
+into the set's own folder (`embeddings/`, `stats_ours/`), where `reconstruction` reads
+them: it overwrites references already there, so use a copy of the folder (symlinks to the
+audio suffice) to keep existing ones. [docs/paper_runs.md](docs/paper_runs.md) lists every result of the
+paper with the command that reproduces it, how the random parts of the evaluation are
+seeded, and what this repository does not reproduce. `scripts/slurm/eval.sbatch` runs any
+of these commands on SLURM, sharding the reconstruction metrics over GPUs.
+
+## Tests
+
+```bash
+uv sync --all-extras
+uv run pytest                        # unit, smoke (tiny training, fine-tuning, evaluation) and CLI tests
+uv run pytest -m weights             # + tests that download real pretrained models
+```
+
+## Repository layout
+
+```
+src/sage/
+  inference.py        SAGE.from_checkpoint, encode / decode / reconstruct
+  model/              the SAGE architecture: Swin V2 encoder and decoder, variable-length attention
+  nn/                 building blocks: bottleneck, losses, discriminators, transformer layers
+  training/           Lightning module, loss manager, data pipeline, callbacks
+train.py              training entry point (Hydra)
+configs/              Hydra configs: training recipes, evaluation, paths
+evaluation/           reconstruction metrics, reference statistics, MAEB probing, tables, baselines
+scripts/              encode_decode.py, export_checkpoint.py, SLURM templates
+tests/                test suite
+```
+
+## Acknowledgements and third-party code
+
+We acknowledge ISCRA for awarding this project access to the LEONARDO supercomputer, owned
+by the EuroHPC Joint Undertaking, hosted by CINECA (Italy).
+
+The codebase started from [EuleroDec](https://github.com/CerovazS/EuleroDec) by Luca Cerovaz
+([@CerovazS](https://github.com/CerovazS)).
+
+SAGE builds on [PyTorch](https://pytorch.org/), [Lightning](https://lightning.ai/),
+[Hydra](https://hydra.cc/) and the [Swin Transformer V2](https://github.com/microsoft/Swin-Transformer)
+architecture; the mel loss and a discriminator layer come from
+[Descript Audio Codec](https://github.com/descriptinc/descript-audio-codec). Parts of the code are
+adapted from other projects, under their licenses, as noted in the file headers:
+
+- fused Swin window kernels by NVIDIA (Apache 2.0 / MIT): `sage/model/swin/cuda_kernels/`
+- [auraloss](https://github.com/csteinmetz1/auraloss) (Apache 2.0): spectral losses in `sage/nn/losses/signal.py`
+- [stable-audio-tools](https://github.com/Stability-AI/stable-audio-tools) (MIT): discriminators, transformer layers
+- [ESPnet](https://github.com/espnet/espnet) (Apache 2.0): `sage/nn/complex/layers.py`
+
+Evaluation uses [fadtk](https://github.com/microsoft/fadtk), [LAION-CLAP](https://github.com/LAION-AI/CLAP),
+[PANNs](https://github.com/qiuqiangkong/audioset_tagging_cnn), [CDPAM](https://github.com/pranaymanocha/PerceptualAudio)
+and [MTEB/MAEB](https://github.com/embeddings-benchmark/mteb), and the datasets FMA, MTG-Jamendo, M4Singer,
+MoisesDB, MusicCaps and Song Describer.
+
+## License
+
+The code is released under the [MIT License](LICENSE). Files adapted from other projects keep
+their original license, as noted in their headers (see above).
+
+## Citation
+
+```bibtex
+@misc{brigante2026sage,
+  title         = {{SAGE}: Semantic Audio Generative Encoder},
+  author        = {Brigante, Francesco and Cerovaz, Luca and Marincione, Davide and Strano, Giorgio and
+                   Zhou, Luca and Rodol{\`a}, Emanuele and Mancusi, Michele},
+  year          = {2026},
+  eprint        = {2609.32755},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.SD},
+  url           = {https://arxiv.org/abs/2609.32755}
+}
+```

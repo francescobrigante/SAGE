@@ -19,13 +19,8 @@ from tqdm.auto import tqdm
 
 from .audio_prep import AudioDecodeError, prepare_audio
 
-# sota_models/ holds the CodecAdapter factory (lazy model imports).
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-import sys
-_SOTA_DIR = _REPO_ROOT / "evaluation" / "sota_models"
-if str(_SOTA_DIR) not in sys.path:
-    sys.path.insert(0, str(_SOTA_DIR))
-from adapters import build_adapter  # noqa: E402
+# evaluation/codecs.py holds the CodecAdapter factory (lazy model imports).
+from evaluation.codecs import build_adapter
 
 from mteb.models.abs_encoder import AbsEncoder  # noqa: E402
 from mteb.models.model_meta import ModelMeta  # noqa: E402
@@ -54,6 +49,7 @@ class SOTACodecEncoder(AbsEncoder):
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         max_audio_length_seconds: float = 30.0,
         pooling: str = "mean",           # "mean" | "max"
+        adapter_kwargs: dict | None = None,   # e.g. {"model_dir": ...} for sao-vae
         **kwargs: Any,
     ):
         self.model_name = model_name                              # adapter key / unique id
@@ -63,7 +59,7 @@ class SOTACodecEncoder(AbsEncoder):
         self._cache: dict[str, np.ndarray] = {}                  # path -> embedding cache
 
         log.info("Building adapter '%s' on %s", model_name, device)
-        self.adapter = build_adapter(model_name, device=device)
+        self.adapter = build_adapter(model_name, device=device, **(adapter_kwargs or {}))
         self.sampling_rate = int(self.adapter.sample_rate)
         self.audio_channels = int(self.adapter.audio_channels)
 

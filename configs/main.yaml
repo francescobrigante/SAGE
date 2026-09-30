@@ -1,0 +1,22 @@
+# Top-level Hydra composition file
+# You can override any group from CLI, e.g.:
+#   python train.py trainer.epochs=10 data.train_dataloader.batch_size=4
+
+defaults:
+  - paths: default          # machine-specific paths (configs/paths/default.yaml)
+  - data: fma               # single-corpus FMA (default). Multi-corpus: data=multicorpus
+  - models: swin_real_swiglu_xsa   # SAGE architecture (paper)
+  - trainer@trainer
+  - _self_
+
+# Relaunching a chosen run name (trainer.wandb.name, set by the recipes) continues its newest
+# checkpoint in runs/<name>/ and its W&B run; +ckpt_path=<file> picks one. false: start over.
+# A SLURM requeue always continues its own run.
+auto_resume: true
+
+hydra:
+  run:
+    dir: runs                               # only 'runs' directory
+  output_subdir: null                       # no subdir added
+  job:
+    chdir: false                            # stay in the launch directory: relative paths resolve from it

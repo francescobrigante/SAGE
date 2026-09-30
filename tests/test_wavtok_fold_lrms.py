@@ -4,11 +4,10 @@
 # ===============
 import sys
 
-sys.path.insert(0, "/leonardo_work/IscrC_AHNetBio/C-VAE/src")
 
 import torch
 
-from ar_spectra.models.discriminators.wavtokenizer import (
+from sage.nn.discriminators.wavtokenizer import (
     WavTokenizerDiscriminator,
     WavTokenizerGANLoss,
 )

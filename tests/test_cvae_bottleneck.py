@@ -10,12 +10,9 @@ import sys
 import pytest
 import torch
 
-_SRC = "/Users/francesco/Desktop/C-VAE/src"
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
 
-from c_vae.bottleneck import reparametrize, get_kl, get_cholesky_kl, get_proper_kl, ComplexVAEBottleneck
-from ar_spectra.models.bottlenecks import VAEBottleneck
+from sage.nn.complex.bottleneck import reparametrize, get_kl, get_cholesky_kl, get_proper_kl, ComplexVAEBottleneck
+from sage.nn.bottleneck import VAEBottleneck
 
 
 # ---------------------------------------------------------------------------
