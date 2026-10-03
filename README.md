@@ -112,9 +112,9 @@ cannot be used to resume training.
 
 | Model | Params | Speed (RTF ↓) | Listening test (MUSHRA ↑) | Probing: FMA ↑ | Probing: MoisesDB ↑ | Probing: MAEB music ↑ |
 |---|---|---|---|---|---|---|
-| **SAGE** | 105M | 0.0045 | 81.6 ± 2.7 | **0.563** | **0.544** | **0.622** |
+| **SAGE** | **105M** | **0.0045** | **81.6 ± 2.7** | **0.563** | **0.544** | **0.622** |
 | SAME-L | 852M | 0.0192 | **81.8 ± 2.6** | 0.470 | 0.493 | 0.473 |
-| Stable Audio Open | 156M | 0.0045 | 64.6 ± 3.7 | 0.490 | 0.469 | 0.481 |
+| Stable Audio Open | 156M | **0.0045** | 64.6 ± 3.7 | 0.490 | 0.469 | 0.481 |
 | CoDiCodec | 150M | 0.0237 | 66.4 ± 3.5 | 0.474 | 0.456 | 0.471 |
 
 How to read the table:
