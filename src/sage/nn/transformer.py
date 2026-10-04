@@ -127,7 +127,7 @@ class RMSNorm(nn.Module):
         self.force_fp32 = force_fp32
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # F.rms_norm requires PyTorch >= 2.4; use manual impl for compat with cineca-ai 2.2.0a0
+        # Manual implementation rather than F.rms_norm, kept unchanged from training
         if self.force_fp32:
             x_f = x.float()
             out = x_f * torch.rsqrt(x_f.pow(2).mean(-1, keepdim=True) + self.eps) * self.gamma.float()

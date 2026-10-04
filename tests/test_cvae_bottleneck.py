@@ -1,5 +1,6 @@
 # ==============================================
-# Pytest tests for src/c-vae/bottleneck.py
+# Pytest tests for the VAE bottlenecks
+# (sage.nn.bottleneck, sage.nn.complex.bottleneck).
 # Covers shape, correctness, KL properties, 
 # gradients, and both encoding modes.
 # ==============================================

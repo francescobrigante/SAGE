@@ -8,12 +8,13 @@
 varlen:
 
   # Project default, applied by SAGE.from_checkpoint to every checkpoint it loads.
+  # tri2 is the final SAGE model: every metric of the paper is computed with it.
   # Chosen 2026-09-22 on n=100 MoisesDB 30 s: tri2 removes the seam (dip -1.689
   # -> -0.081 dB) and is the only candidate that also improves quality on every
   # single file (SI-SDR better on 100/100 vs baseline), for +5% inference time.
   #
-  # "off" = original single-phase attention, bit-identical to every result
-  # produced before this fix existed. Pass varlen="off" (CLI: --varlen off) to reproduce them.
+  # "off" = original single-phase attention, used only by the paper's ablations.
+  # Pass varlen="off" (CLI: --varlen off) to reproduce them.
   mode: tri2
 
   # phases:  grid offsets in time tokens, over a 32-token window.
