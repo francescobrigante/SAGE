@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from sage.model.swin.sdpa import refresh_cpb, sdpa_forward
 from sage.nn.conv.normed import NormLinear
 
 
@@ -34,6 +35,10 @@ class WindowAttention(nn.Module):
             normalisation. None or [0, 0] falls back to window_size.
         is_complex: If True, uses NormLinear with complex64 dtype and hermitian cosine attention.
     """
+
+    # Opt-in inference path through F.scaled_dot_product_attention (sage/model/swin/sdpa.py, set per
+    # instance by enable_sdpa): same formula, fused kernel. False = the forward below, unchanged.
+    sdpa: bool = False
 
     def __init__(
         self,
@@ -151,8 +156,19 @@ class WindowAttention(nn.Module):
         coeff = (y * v_unit).sum(dim=-1, keepdim=True)
         return y - self.xsa_strength * coeff * v_unit
 
+    def _apply(self, fn, recurse=True):
+        """nn.Module._apply (.to(), .cuda(), .half(), ...); with SDPA on, the cached CPB bias is then
+        recomputed from the converted weights (also for an already compiled model)."""
+        module = super()._apply(fn, recurse)
+        if self.sdpa:
+            refresh_cpb(self)
+        return module
+
     def forward(self, x: torch.Tensor, mask=None) -> torch.Tensor:
         """Compute windowed cosine self-attention with Log-CPB relative position bias.
+
+        With ``sdpa`` on (see sage/model/swin/sdpa.py), eval-mode calls without autograd go
+        through F.scaled_dot_product_attention instead; training always runs the code below.
 
         Args:
             x: (num_windows * B, N, C) flattened window tokens.
@@ -161,6 +177,8 @@ class WindowAttention(nn.Module):
         Returns:
             (num_windows * B, N, C)
         """
+        if self.sdpa and not (self.training or torch.is_grad_enabled()):
+            return sdpa_forward(self, x, mask)                         # (num_windows * B, N,  C)
         B_, N, C = x.shape                                             # (num_windows * B, N,  C)
 
         # Build combined Q/V bias (K bias = 0 per Swin V2 convention).

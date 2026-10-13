@@ -90,6 +90,10 @@ wav = torch.randn(1, 2, 10 * codec.sample_rate)          # (batch, 2 channels, s
 rec = codec.reconstruct(wav)  # encode + decode; same shape as the input
 ```
 
+For faster inference, `SAGE.from_checkpoint(..., sdpa=True)` (or `--sdpa` in `encode_decode.py`) computes the
+window attention with PyTorch's fused `scaled_dot_product_attention`. The formula is the same, so the output
+matches the default up to floating-point rounding, but not bit for bit. The default keeps the original attention.
+
 To work with the latents directly:
 
 ```python

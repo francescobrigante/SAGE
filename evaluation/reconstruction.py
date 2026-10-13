@@ -78,8 +78,9 @@ def _load_done(parts: Path) -> set[str]:
 
 
 # Run settings that change the numbers: a run resumed into the same folder must keep them.
-_MANIFEST_KEYS = ("model", "checkpoint", "varlen", "deterministic", "protocol", "data_dir", "fma_csv",
+_MANIFEST_KEYS = ("model", "checkpoint", "varlen", "deterministic", "sdpa", "protocol", "data_dir", "fma_csv",
                   "max_files", "skip_cdpam", "sdr_only", "compute_ms_metrics", "seed")
+_MANIFEST_DEFAULTS = {"sdpa": False}      # keys added later: a manifest without them ran with this value
 
 
 def _check_manifest(parts: Path, args: SimpleNamespace, rank: int = 0, timeout: float = 600.0) -> None:
@@ -100,7 +101,8 @@ def _check_manifest(parts: Path, args: SimpleNamespace, rank: int = 0, timeout: 
             raise SystemExit(f"{path} was not written by rank 0 within {timeout:.0f} s")
         time.sleep(1.0)
     saved = json.loads(path.read_text())
-    diff = {k: (saved.get(k), current[k]) for k in current if saved.get(k) != current[k]}
+    saved = {k: saved.get(k, _MANIFEST_DEFAULTS.get(k)) for k in current}
+    diff = {k: (saved[k], current[k]) for k in current if saved[k] != current[k]}
     if diff:
         raise SystemExit(f"{path.parent.parent} holds a run with other settings {diff} (saved, requested); "
                          "use another output_dir or name.")
@@ -128,12 +130,13 @@ def _args_from_cfg(cfg: DictConfig) -> SimpleNamespace:
         checkpoint = Path(cfg.checkpoint or cfg.paths.sage_checkpoint)
         if not checkpoint.is_file():
             raise SystemExit(f"SAGE checkpoint not found: {checkpoint} (set checkpoint=... or paths.sage_checkpoint)")
-    elif cfg.checkpoint or cfg.varlen or cfg.deterministic:
-        raise SystemExit("checkpoint, varlen and deterministic apply to model=sage only")
+    elif cfg.checkpoint or cfg.varlen or cfg.deterministic or cfg.sdpa:
+        raise SystemExit("checkpoint, varlen, deterministic and sdpa apply to model=sage only")
     else:
         checkpoint = None
     return SimpleNamespace(
         model=cfg.model, checkpoint=checkpoint, varlen=cfg.varlen, deterministic=bool(cfg.deterministic),
+        sdpa=bool(cfg.sdpa),
         adapter_kwargs={"model_dir": cfg.paths.sao_vae} if cfg.model == "sao-vae" else {},
         protocol=ds.protocol, data_dir=Path(ds.data_dir), fma_csv=ds.fma_csv,
         extensions=ds.extensions or ".wav,.flac,.mp3,.ogg",
@@ -249,7 +252,8 @@ def run(cfg: DictConfig) -> None:
          f"(skip {len(audio_files[rank::world]) - len(my_files)} done)", prefix="EVAL")
 
     adapter = build_adapter(args.model, device=str(device), checkpoint=args.checkpoint,
-                            varlen=args.varlen, deterministic=args.deterministic, **args.adapter_kwargs)
+                            varlen=args.varlen, deterministic=args.deterministic, sdpa=args.sdpa,
+                            **args.adapter_kwargs)
     sr, ch = adapter.sample_rate, adapter.audio_channels
     ok(f"Model '{args.model}' ready: sr={sr} ch={ch}", prefix="EVAL")
 

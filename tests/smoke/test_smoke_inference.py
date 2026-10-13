@@ -196,6 +196,18 @@ def test_readme_usage_pad_encode_decode_equals_reconstruct(tiny_pretrain_ckpt):
     assert torch.equal(y, codec.reconstruct(wav, deterministic=True))
 
 
+def test_sdpa_flag_routes_the_attention_and_matches_the_default(tiny_pretrain_ckpt):
+    """SAGE.from_checkpoint(sdpa=True): every real attention module routed, same output up to rounding."""
+    from sage import SAGE
+    default = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu")
+    fast = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu", sdpa=True)
+    assert (default.sdpa, default.sdpa_blocks) == (False, 0) and fast.sdpa and fast.sdpa_blocks > 0
+    wav = 0.1 * torch.randn(2, 3 * 44100 + 123, generator=torch.Generator().manual_seed(0))
+    a, b = default.reconstruct(wav, deterministic=True), fast.reconstruct(wav, deterministic=True)
+    snr = 10 * torch.log10(a.pow(2).sum() / (a - b).pow(2).sum().clamp_min(1e-30))
+    assert a.shape == b.shape and snr > 80, snr
+
+
 def test_encode_decode_script(tiny_pretrain_ckpt, audio_dir, tmp_path):
     """scripts/encode_decode.py: encode + decode restores the input length and equals reconstruct."""
     import subprocess, sys

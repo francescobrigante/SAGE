@@ -271,6 +271,14 @@ def test_ranks_starting_together_wait_for_the_manifest_of_rank_0(tmp_path):
         reconstruction._check_manifest(tmp_path / "nothing", args, rank=1, timeout=0)
 
 
+def test_a_manifest_written_before_the_sdpa_key_is_a_run_without_sdpa(tmp_path):
+    from types import SimpleNamespace
+    (tmp_path / "run.json").write_text(json.dumps({"model": "sage", "seed": 0}))   # no "sdpa" key
+    reconstruction._check_manifest(tmp_path, SimpleNamespace(model="sage", seed=0, sdpa=False), rank=0)
+    with pytest.raises(SystemExit, match="other settings"):
+        reconstruction._check_manifest(tmp_path, SimpleNamespace(model="sage", seed=0, sdpa=True), rank=0)
+
+
 def test_a_file_whose_embedding_fails_is_retried(clips, tmp_path, monkeypatch, noisy):
     _fake_embedders(monkeypatch)
     real = reconstruction.embed_pann
@@ -285,7 +293,8 @@ def test_a_file_whose_embedding_fails_is_retried(clips, tmp_path, monkeypatch, n
 
 
 def test_model_settings_are_validated(clips, tmp_path):
-    for bad in (["model=sam-s"], ["model=same-s", "deterministic=true"], ["model=same-s", f"checkpoint={clips}"]):
+    for bad in (["model=sam-s"], ["model=same-s", "deterministic=true"], ["model=same-s", f"checkpoint={clips}"],
+                ["model=same-s", "sdpa=true"]):
         with pytest.raises(SystemExit):
             reconstruction._args_from_cfg(_cfg([*bad, *_clips(clips)]))
 

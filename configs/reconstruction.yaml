@@ -19,6 +19,8 @@ model: ???                  # sage | same | same-s | sao-vae | codicodec | music
 checkpoint: null            # sage only; null = paths.sage_checkpoint
 varlen: null                # sage only: variable-length attention preset (sage/model/swin/varlen.yaml); null = tri2
 deterministic: false        # sage only: decode the posterior mean instead of a sampled z (the paper samples z)
+sdpa: false                 # sage only: attention through F.scaled_dot_product_attention (same formula, faster;
+                            # equal up to rounding, not bit-exact)
 seed: 0                     # the random parts (SAGE's z, SAME's noise, the CLAP crop of FAD-CLAP), re-seeded
                             # for every file from this value and the file name
 output_dir: ${paths.eval_output}/recon_${dataset.name}
