@@ -15,7 +15,7 @@ defaults:
   - override hydra/job_logging: none
   - override hydra/hydra_logging: none
 
-encoder: ???                # sage | clap | codicodec | music2latent | sao-vae | same | same-s
+encoder: ???                # sage | clap | codicodec | music2latent | sao-vae | same | same-s | ear-vae2
 checkpoint: null            # sage: null = paths.sage_checkpoint; clap: null = paths.clap_teacher
 suite: paper                # paper (19) | fma (6) | moisesdb (7) | fma_moisesdb (13) | maeb_music (6, upstream MAEB)
 tasks: null                 # explicit list of task names, overrides suite

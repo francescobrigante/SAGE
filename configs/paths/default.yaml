@@ -20,6 +20,9 @@ clap_fad: ${oc.env:CLAP_FAD_CKPT,null}
 pann: ${oc.env:PANN_CKPT,'${.models_dir}/PANN/Cnn14_16k_mAP=0.438.pth'}
 # local snapshot of stabilityai/stable-audio-open-1.0 (baseline sao-vae); null = the gated HF repo
 sao_vae: ${oc.env:SAO_VAE_DIR,null}
+# EarVAE2 (baseline ear-vae2): weights/ear_vae2.pt + config.json of HF earlab/EAR_VAE2, code/ = clone of
+# github.com/Eps-Acoustic-Revolution-Lab/EAR_VAE2 (inference code, not a package)
+ear_vae2: ${oc.env:EAR_VAE2_DIR,${.models_dir}/EAR_VAE2}
 
 # ── Training data ────────────────────────────────────────────────────────────
 fma_audio: ${oc.env:FMA_AUDIO,null}                 # fma_large/: FMA training (data=fma), validation, FMA evaluation

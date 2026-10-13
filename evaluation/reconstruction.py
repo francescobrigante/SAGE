@@ -39,7 +39,7 @@ from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from evaluation.codecs import ADAPTERS, build_adapter
+from evaluation.codecs import ADAPTERS, adapter_kwargs, build_adapter
 from evaluation.common import (CLAP_AUDIO_NAME, CLAP_GUD_NAME, CLAP_MUSIC_NAME, MERT_NAME, AudioDataset, append_csv,
                                atomic_save_npy, collect_clip_files, collect_fma_files, file_seed, first_item, load_or_embed,
                                seed_everything, set_metric_weights, silence_output, target_cache_path,
@@ -137,7 +137,7 @@ def _args_from_cfg(cfg: DictConfig) -> SimpleNamespace:
     return SimpleNamespace(
         model=cfg.model, checkpoint=checkpoint, varlen=cfg.varlen, deterministic=bool(cfg.deterministic),
         sdpa=bool(cfg.sdpa),
-        adapter_kwargs={"model_dir": cfg.paths.sao_vae} if cfg.model == "sao-vae" else {},
+        adapter_kwargs=adapter_kwargs(cfg.model, cfg.paths),
         protocol=ds.protocol, data_dir=Path(ds.data_dir), fma_csv=ds.fma_csv,
         extensions=ds.extensions or ".wav,.flac,.mp3,.ogg",
         cache_dir=Path(ds.cache_dir) if ds.cache_dir else None,

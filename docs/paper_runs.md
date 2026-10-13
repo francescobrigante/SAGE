@@ -70,6 +70,19 @@ the same output folder must keep its settings (they are recorded in `metrics/par
 `compute_ms_metrics=true` adds the stereo-image metrics (width bias, width distance, SI-SDR of
 Side and Mid) used in Table 7.
 
+EarVAE2 (`model=ear-vae2`, `encoder=ear-vae2` for probing) was added after the paper and is not
+in its tables. Its released weights are a retraining on public data with a smaller encoder, not
+the model of the EarVAE2 paper. The adapter reads one folder (`EAR_VAE2_DIR`, default
+`<SAGE_MODELS>/EAR_VAE2`):
+
+```bash
+uv run hf download earlab/EAR_VAE2 --local-dir models/EAR_VAE2      # config.json, weights/ear_vae2.pt
+git clone https://github.com/Eps-Acoustic-Revolution-Lab/EAR_VAE2 models/EAR_VAE2/code   # tested at a0a2f65
+```
+
+It follows the authors' `inference.py` (posterior mean, chunked encoding and decoding) without its
+output clipping and -14 LUFS normalisation, and runs at 44.1 kHz with resampling to 48 kHz inside.
+
 ## Semantic probing (Tables 4 and 9)
 
 ```bash
