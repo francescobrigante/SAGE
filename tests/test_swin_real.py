@@ -236,6 +236,97 @@ def test_fused_kernels_are_skipped_for_cpu_tensors(monkeypatch):
         assert torch.equal(fused(x), plain(x))
 
 
+def _fused_available() -> bool:
+    from sage.model.swin.cuda_kernels import FUSED_WINDOW_AVAILABLE
+    return FUSED_WINDOW_AVAILABLE
+
+
+def _recording_kernels(calls: list):
+    """Stand-ins for the fused CUDA window kernels: record each call, compute roll + partition."""
+    def partition(x, B, H, W, C, shift_h, shift_w, wh, ww):
+        calls.append("partition")
+        return window_partition(torch.roll(x, shifts=(shift_h, shift_w), dims=(1, 2)), (wh, ww))
+
+    def reverse(windows, B, H, W, C, shift_h, shift_w, wh, ww):
+        calls.append("reverse")
+        return torch.roll(window_reverse(windows, (wh, ww), H, W), shifts=(shift_h, shift_w), dims=(1, 2))
+
+    return (type("Partition", (), {"apply": staticmethod(partition)}),
+            type("Reverse", (), {"apply": staticmethod(reverse)}))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="the fused path runs on CUDA tensors only")
+def test_fused_kernels_stay_out_of_compiled_graphs(monkeypatch):
+    """torch.compile cannot trace the fused kernels (one graph break per call): a compiled graph takes
+    the plain roll + partition path. Eager calls keep using the kernels."""
+    import sage.model.swin.block as block_mod
+
+    calls: list = []
+    partition, reverse = _recording_kernels(calls)
+    monkeypatch.setattr(block_mod, "FUSED_WINDOW_AVAILABLE", True)
+    monkeypatch.setattr(block_mod, "WindowProcess", partition)
+    monkeypatch.setattr(block_mod, "WindowProcessReverse", reverse)
+    H, W, C = 16, 16, 48
+    blk = SwinTransformerBlock(dim=C, input_resolution=(H, W), num_heads=3, window_size=8, shift_size=4,
+                               fused_window_process=True).eval().cuda()
+    x = torch.randn(B, H * W, C, device="cuda")
+    with torch.no_grad():
+        ref = blk(x)
+        assert calls == ["partition", "reverse"]
+        calls.clear()
+        out = torch.compile(blk, backend="aot_eager", dynamic=False)(x)
+    torch._dynamo.reset()
+    assert calls == []
+    torch.testing.assert_close(out, ref, rtol=0.0, atol=1e-6)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="compares CPU and CUDA")
+def test_per_grid_constants_are_the_same_on_cpu_and_cuda():
+    """The shift masks and the multi-phase weights are built on the activations' device: same values."""
+    from sage.model.swin.block import shift_mask
+    from sage.model.swin.varlen import phase_weights, resolve
+    for grid, window, shift in [((8, 32), (4, 8), (2, 4)), ((4, 96), (4, 32), (0, 16)), ((16, 40), (8, 8), (4, 4))]:
+        cpu = shift_mask(*grid, window, shift, torch.device("cpu"))
+        assert torch.equal(shift_mask(*grid, window, shift, torch.device("cuda")).cpu(), cpu)
+    for variant in ("mean2", "tri2", "hard2", "mean4", "tri4", "hard4"):
+        for time_tokens in (33, 160, 2587):
+            cpu = phase_weights(time_tokens, 32, resolve(variant))
+            assert torch.equal(phase_weights(time_tokens, 32, resolve(variant), torch.device("cuda")).cpu(), cpu)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="the compiled graph builds the constants on the GPU")
+def test_compiled_block_on_cuda_before_any_eager_call_has_no_graph_break():
+    H, W, C = 16, 16, 48
+    blk = SwinTransformerBlock(dim=C, input_resolution=(H, W), num_heads=3, window_size=8, shift_size=4,
+                               fused_window_process=True).eval().cuda()
+    x = torch.randn(B, H * W, C, device="cuda")
+    with torch.no_grad():
+        explanation = torch._dynamo.explain(blk)(x)
+        out = torch.compile(blk, backend="aot_eager", dynamic=False)(x)
+        torch._dynamo.reset()
+        assert not blk._attn_mask_cache
+        ref = blk(x)
+    assert (explanation.graph_count, explanation.graph_break_count) == (1, 0), explanation.break_reasons
+    torch.testing.assert_close(out, ref, rtol=0.0, atol=1e-6)
+
+
+@pytest.mark.skipif(not (torch.cuda.is_available() and _fused_available()),
+                    reason="needs the compiled swin_window_process extension and a GPU")
+def test_compiled_block_with_real_fused_kernels_has_no_graph_break():
+    H, W, C = 16, 16, 48
+    blk = SwinTransformerBlock(dim=C, input_resolution=(H, W), num_heads=3, window_size=8, shift_size=4,
+                               fused_window_process=True).eval().cuda()
+    assert blk.fused_window_process
+    x = torch.randn(B, H * W, C, device="cuda")
+    with torch.no_grad():
+        ref = blk(x)                                       # eager: the fused kernels
+        explanation = torch._dynamo.explain(blk)(x)
+        out = torch.compile(blk, backend="aot_eager", dynamic=False)(x)
+    torch._dynamo.reset()
+    assert explanation.graph_break_count == 0, explanation.break_reasons
+    torch.testing.assert_close(out, ref, rtol=0.0, atol=1e-6)
+
+
 # ---------------------------------------------------------------------------
 # U7 — BasicLayer without PatchMerging: shape preserved
 # ---------------------------------------------------------------------------

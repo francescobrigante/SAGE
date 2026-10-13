@@ -1,6 +1,6 @@
 # ===============================================================
 # Swin Transformer V2: atomic computation block.
-# Contains Mlp (2-layer FFN) and SwinTransformerBlock
+# Contains Mlp (2-layer FFN), the SW-MSA shift mask and SwinTransformerBlock
 # (W-MSA / SW-MSA + FFN with configurable residual norm placement).
 # Optional fused CUDA window kernels are loaded at import time.
 # ===============================================================
@@ -137,6 +137,32 @@ class SwiGLU(nn.Module):
         x = self.fc2(x)
         x = self.drop(x)
         return x
+
+
+def shift_mask(Hp: int, Wp: int, window_size: Tuple[int, int], shift: Tuple[int, int],
+               device: torch.device) -> torch.Tensor:
+    """SW-MSA attention mask of a padded (Hp, Wp) grid: 0 between tokens of the same region, -100 across.
+
+    A per-grid constant, cached by the caller. Built on ``device`` with static shapes and small
+    integer values (exact in float32), so a torch.compile graph builds the same mask on the GPU.
+
+    Returns:
+        (nW, wh*ww, wh*ww) float32 on ``device``.
+    """
+    wh, ww = window_size
+    sh, sw = shift
+    img_mask = torch.zeros((1, Hp, Wp, 1), device=device)
+    h_slices = (slice(0, -wh), slice(-wh, -sh), slice(-sh, None))
+    w_slices = (slice(0, -ww), slice(-ww, -sw), slice(-sw, None))
+    cnt = 0
+    for h in h_slices:
+        for w in w_slices:
+            img_mask[:, h, w, :] = cnt
+            cnt += 1
+    mask_windows = window_partition(img_mask, window_size)                 # (nW, wh, ww, 1)
+    mask_windows = mask_windows.view(-1, wh * ww)                          # (nW, wh*ww)
+    mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)           # (nW, wh*ww, wh*ww)
+    return mask.masked_fill(mask != 0, -100.0).masked_fill(mask == 0, 0.0)
 
 
 def _round_up_to_multiple(value: int, multiple_of: Optional[int]) -> int:
@@ -362,8 +388,9 @@ class SwinTransformerBlock(nn.Module):
         cache_key = (W, x.device, x.dtype)
         weights = self._varlen_weight_cache.get(cache_key)
         if weights is None:
-            weights = phase_weights(W, self.window_size[1], cfg).to(x.device, x.dtype)  # (P, W)
-            self._varlen_weight_cache[cache_key] = weights
+            weights = phase_weights(W, self.window_size[1], cfg, x.device).to(x.dtype)  # (P, W)
+            if not torch.compiler.is_compiling():   # a compiled graph rebuilds it (one graph per length)
+                self._varlen_weight_cache[cache_key] = weights
 
         acc = None
         for i, phase in enumerate(cfg.phases):
@@ -402,8 +429,10 @@ class SwinTransformerBlock(nn.Module):
 
         Hp = H + pad_b
         Wp = W + pad_r
-        # The fused kernels take CUDA tensors only: a block built on a GPU machine may run on CPU
-        fused = self.fused_window_process and x.is_cuda
+        # The fused kernels take CUDA tensors only (a block built on a GPU machine may run on CPU), and
+        # torch.compile cannot trace them (a graph break at every call): compiled graphs use roll + partition,
+        # which inductor fuses itself. Both are pure data movement, so the values are the same.
+        fused = self.fused_window_process and x.is_cuda and not torch.compiler.is_compiling()
 
         # cached attention mask uses -100.0 for cross-region pairs so softmax -> 0 after exp.
         if max(sh, sw) > 0:
@@ -418,23 +447,9 @@ class SwinTransformerBlock(nn.Module):
             cache_key = (Hp, Wp, sh, sw, x.device)
             attn_mask = self._attn_mask_cache.get(cache_key)
             if attn_mask is None:
-                img_mask = torch.zeros((1, Hp, Wp, 1))
-                h_slices = (slice(0, -wh), slice(-wh, -sh), slice(-sh, None))
-                w_slices = (slice(0, -ww), slice(-ww, -sw), slice(-sw, None))
-                cnt = 0
-                for h in h_slices:
-                    for w in w_slices:
-                        img_mask[:, h, w, :] = cnt
-                        cnt += 1
-                mask_windows = window_partition(img_mask, self.window_size)
-                mask_windows = mask_windows.view(-1, wh * ww)
-                mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-                attn_mask = (
-                    mask.masked_fill(mask != 0, -100.0)
-                        .masked_fill(mask == 0, 0.0)
-                        .to(x.device)
-                )
-                self._attn_mask_cache[cache_key] = attn_mask
+                attn_mask = shift_mask(Hp, Wp, self.window_size, (sh, sw), x.device)
+                if not torch.compiler.is_compiling():  # a compiled graph rebuilds it (one graph per grid)
+                    self._attn_mask_cache[cache_key] = attn_mask
         else:
             attn_mask = None
 

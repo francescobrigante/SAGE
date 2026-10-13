@@ -130,6 +130,31 @@ def test_group_bounds_stop_at_the_padding():
     assert (int(start[149]), int(end[149])) == (128, 150)
 
 
+def _group_bounds_reference(time_tokens: int, window: int, phase: int):
+    """The run-length formulation group_bounds had before (bincount): the reference."""
+    padded = (time_tokens + window - 1) // window * window
+    t = torch.arange(time_tokens, dtype=torch.int64)
+    rolled = (t - phase) % padded
+    group = rolled // window
+    if phase > 0:
+        group = group * 3 + (rolled >= padded - window).to(torch.int64) + (rolled >= padded - phase).to(torch.int64)
+    is_new = torch.ones(time_tokens, dtype=torch.bool)
+    is_new[1:] = group[1:] != group[:-1]
+    run = torch.cumsum(is_new.to(torch.int64), 0) - 1
+    counts = torch.bincount(run)
+    starts = torch.cumsum(counts, 0) - counts
+    return starts[run], (starts + counts)[run]
+
+
+@pytest.mark.parametrize("window", [1, 3, 8, 32])
+def test_group_bounds_equal_the_run_length_reference(window):
+    """Every length up to three windows past the training grid, every phase, plus long clips."""
+    for time_tokens in [*range(1, 3 * window + 6), 160, 1000, 2587]:
+        for phase in range(window):
+            got, ref = group_bounds(time_tokens, window, phase), _group_bounds_reference(time_tokens, window, phase)
+            assert all(torch.equal(g, r) for g, r in zip(got, ref)), (time_tokens, phase)
+
+
 def test_weights_are_a_partition_of_unity():
     for variant in ("mean2", "tri2", "hard2", "mean4", "tri4", "hard4"):
         w = phase_weights(200, 32, resolve(variant))
@@ -153,6 +178,36 @@ def test_no_phase_is_preferred_at_the_true_start_of_the_clip():
     """t=0 has no left context in any phase, so the wrapped phase must not win."""
     w = phase_weights(160, 32, resolve("hard4"))[:, 0]
     assert torch.allclose(w, torch.full((4,), 0.25))
+
+
+# --------------------------------------------------------------------------
+# torch.compile: the per-grid constants are built inside the graph
+# --------------------------------------------------------------------------
+
+def test_compiled_before_any_eager_call_matches_eager():
+    """torch.compile on a fresh block, before any eager call: the graph builds the phase weights and
+    the shift masks itself and leaves the caches to eager calls; same output."""
+    x = tokens(4 * WINDOW[1]).double()                         # 4x the training length: multi-phase
+    ref_blk, blk = make_block().double(), make_block().double()
+    for b in (ref_blk, blk):
+        enable_varlen(b, resolve("tri2"))
+    with torch.no_grad():
+        ref = ref_blk(x)
+        out = torch.compile(blk, backend="aot_eager", dynamic=False)(x)
+    torch._dynamo.reset()
+    assert not blk._varlen_weight_cache and not blk._attn_mask_cache
+    assert ref_blk._varlen_weight_cache and ref_blk._attn_mask_cache
+    assert torch.allclose(out, ref, rtol=0.0, atol=1e-12), (out - ref).abs().max()
+
+
+def test_compiled_block_has_no_graph_break_before_any_eager_call():
+    """Empty caches: one graph, no break — the per-grid constants are traced, not computed outside."""
+    blk = make_block()
+    enable_varlen(blk, resolve("tri2"))
+    with torch.no_grad():
+        explanation = torch._dynamo.explain(blk)(tokens(4 * WINDOW[1]))
+    torch._dynamo.reset()
+    assert (explanation.graph_count, explanation.graph_break_count) == (1, 0), explanation.break_reasons
 
 
 # --------------------------------------------------------------------------
