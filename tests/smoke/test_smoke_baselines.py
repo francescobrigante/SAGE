@@ -46,3 +46,34 @@ def test_adapter_round_trip_with_real_weights(name):
     wav = 0.1 * torch.randn(2, 44100 * 2)
     rec = ad.reconstruct(wav)
     assert rec.shape[0] == 2 and torch.isfinite(rec).all()
+
+
+def test_adapter_kwargs_from_paths():
+    from types import SimpleNamespace
+    from evaluation.codecs import adapter_kwargs
+    paths = SimpleNamespace(sao_vae="/w/sao", ear_vae2="/w/ear")
+    assert adapter_kwargs("sao-vae", paths) == {"model_dir": "/w/sao"}
+    assert adapter_kwargs("ear-vae2", paths) == {"model_dir": "/w/ear"}
+    assert adapter_kwargs("same", paths) == {}
+
+
+# EarVAE2 (added after the paper): released weights in paths.ear_vae2 (no download), 48 kHz model behind a 44.1 kHz I/O.
+@pytest.mark.weights
+def test_ear_vae2_round_trip_with_real_weights():
+    import importlib.util
+    import math
+    import os
+    from pathlib import Path
+    from evaluation.codecs import build_adapter
+    model_dir = Path(os.environ.get("EAR_VAE2_DIR") or Path(os.environ.get("SAGE_MODELS", "models")) / "EAR_VAE2")
+    has_code = (model_dir / "code" / "ear_vae2").is_dir() or importlib.util.find_spec("ear_vae2") is not None
+    if not ((model_dir / "weights" / "ear_vae2.pt").is_file() and has_code):
+        pytest.skip(f"EarVAE2 weights or code not found in {model_dir} (set EAR_VAE2_DIR)")
+    ad = build_adapter("ear-vae2", device="cpu", model_dir=str(model_dir))
+    assert (ad.sample_rate, ad.audio_channels) == (44100, 2)
+    wav = 0.1 * torch.randn(2, 44100 * 2 + 123)                 # 48 kHz length not a multiple of 1920
+    rec = ad.reconstruct(wav)
+    assert rec.shape == wav.shape and torch.isfinite(rec).all()
+    assert torch.equal(rec, ad.reconstruct(wav))                # posterior mean: deterministic
+    lat = ad.encode_latent(wav)
+    assert lat.shape == (128, math.ceil(math.ceil(wav.shape[-1] * 48000 / 44100) / 1920))

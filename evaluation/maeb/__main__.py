@@ -28,10 +28,11 @@ from omegaconf import DictConfig  # noqa: E402
 from evaluation.maeb import fma_tasks, moisesdb_tasks  # noqa: E402
 from evaluation.maeb import tasks as maeb_tasks  # noqa: E402
 from evaluation.maeb.runner import run_maeb  # noqa: E402
+from evaluation.codecs import adapter_kwargs  # noqa: E402
 
 log = logging.getLogger(__name__)
 
-BASELINES = ("codicodec", "music2latent", "sao-vae", "same", "same-s")
+BASELINES = ("codicodec", "music2latent", "sao-vae", "same", "same-s", "ear-vae2")
 
 
 def _args_from_cfg(cfg: DictConfig):
@@ -48,7 +49,7 @@ def _args_from_cfg(cfg: DictConfig):
     return SimpleNamespace(encoder=cfg.encoder, checkpoint=str(checkpoint) if checkpoint else None, device=device,
                            max_audio_sec=float(cfg.max_audio_sec), standardize_bottleneck=bool(cfg.standardize_bottleneck),
                            pooling=cfg.pooling, no_l2_normalize=not cfg.l2_normalize,
-                           adapter_kwargs={"model_dir": cfg.paths.sao_vae} if cfg.encoder == "sao-vae" else {})
+                           adapter_kwargs=adapter_kwargs(cfg.encoder, cfg.paths))
 
 
 def _build_encoder(args):

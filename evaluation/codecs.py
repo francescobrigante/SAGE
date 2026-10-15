@@ -1,9 +1,10 @@
 # =============================================================================
 # One interface over every codec of the paper's comparison: SAGE and the
-# baselines (SAME-L/S, Stable Audio Open VAE, CoDiCodec, Music2Latent). The
-# reconstruction evaluator scores all of them with the same code, which is what
-# makes the rows of Table 2 comparable. Model packages are imported lazily, so
-# only the package of the model being evaluated needs to be installed.
+# baselines (SAME-L/S, Stable Audio Open VAE, CoDiCodec, Music2Latent; EarVAE2
+# added after the paper). The reconstruction evaluator scores all of them with
+# the same code, which is what makes the rows of Table 2 comparable. Model
+# packages are imported lazily, so only the package of the model being
+# evaluated needs to be installed.
 # =============================================================================
 from __future__ import annotations
 
@@ -292,6 +293,86 @@ class StableAudioVAEAdapter(CodecAdapter):
 
 
 # ===========================================================================
+# EarVAE2 (EAR Lab, arXiv 2608.19843) — complex-STFT VAE, stereo 48 kHz, 128-d
+# continuous latent at 25 Hz (x30 total compression). The open-source weights
+# (HF earlab/EAR_VAE2, 178M) are a public-data retrain with a smaller encoder
+# (C0=64) than the paper model (692M): numbers are for the released model.
+# The repo is inference code only, not a package: model_dir holds
+# weights/ear_vae2.pt, config.json and code/ (a clone of the GitHub repo).
+# Protocol of the authors' inference.py minus its output post-processing
+# (clip to [-1, 1] and -14 LUFS normalisation, which would bias the metrics):
+# right-pad to a multiple of 1920 samples, posterior mean, chunked enc/dec
+# (512 latent frames, overlap 16), trim. The evaluation sets are 44.1 kHz, so
+# the adapter runs at 44.1 kHz and resamples to 48 kHz and back internally:
+# every metric is computed at the same rate and against the same references
+# as the other rows. MAEB: native 128-d latent (2x the x64-class width).
+# ===========================================================================
+class EarVAE2Adapter(CodecAdapter):
+    def __init__(self, device: str = "cuda", model_dir: str | None = None,
+                 sample_latent: bool = False, chunk_size: int = 512, overlap: int = 16, **_: Any):
+        import json
+        import sys
+        from pathlib import Path
+
+        if model_dir is None:
+            raise ValueError("model 'ear-vae2' needs model_dir (paths.ear_vae2)")
+        model_dir = Path(model_dir)
+        try:
+            from ear_vae2 import EarVAE2
+        except ImportError as exc:
+            code_dir = model_dir / "code"
+            if not (code_dir / "ear_vae2").is_dir():
+                raise ImportError(f"EarVAE2 code not found in {code_dir}: clone "
+                                  "github.com/Eps-Acoustic-Revolution-Lab/EAR_VAE2 there") from exc
+            sys.path.append(str(code_dir))          # appended: the clone root also holds inference.py, configs/, ...
+            from ear_vae2 import EarVAE2
+
+        cfg = json.loads((model_dir / "config.json").read_text())
+        if "gen" in cfg.get("model", {}):                                   # nested training-config layout,
+            cfg = cfg["model"]["gen"].get("config", cfg["model"]["gen"])    # read as the authors' load_config
+        ckpt = torch.load(model_dir / "weights" / "ear_vae2.pt", map_location="cpu", weights_only=True)
+        self.device = torch.device(device)          # model + I/O device
+        self.model = EarVAE2(cfg)
+        self.model.load_state_dict(ckpt.get("gen", ckpt), strict=True)
+        self.model.to(self.device).eval()
+        self.sample_latent = sample_latent          # sampled z instead of the posterior mean (authors: mean)
+        self.chunk_size = chunk_size                # latent frames per enc/dec chunk (authors: 512)
+        self.overlap = overlap                      # overlapping latent frames between chunks (authors: 16)
+        self.model_sample_rate = 48000              # native rate of EarVAE2
+        self.sample_rate = 44100                    # I/O rate: the rate of the evaluation sets
+        self.audio_channels = 2                     # stereo model
+
+    def _encode(self, wav: torch.Tensor) -> tuple[torch.Tensor, int]:
+        """[C, T] at 44.1 kHz -> (latent [1, 128, L], length of the 48 kHz waveform)."""
+        import torchaudio
+
+        x = torchaudio.functional.resample(wav.to(self.device).float(), self.sample_rate,
+                                           self.model_sample_rate).unsqueeze(0)     # [1, C, T48]
+        x, n48 = self.model.preprocess_audio(x)                             # right-pad to k*1920
+        lat = self.model.encode_audio(x, chunked=True, chunk_size=self.chunk_size,
+                                      overlap=self.overlap, deterministic=not self.sample_latent)
+        return lat, n48
+
+    @torch.no_grad()
+    def reconstruct(self, wav: torch.Tensor) -> torch.Tensor:
+        import torchaudio
+
+        _, T = wav.shape                                                    # [C, T]
+        lat, n48 = self._encode(wav)                                        # [1, 128, L]
+        rec = self.model.decode_audio(lat, chunked=True, chunk_size=self.chunk_size,
+                                      overlap=self.overlap)[0, :, :n48]     # [C, T48]
+        rec = torchaudio.functional.resample(rec, self.model_sample_rate, self.sample_rate)
+        rec = _to_channel_time(rec, self.audio_channels)                    # [C, T']
+        n = min(T, rec.shape[-1])
+        return rec[..., :n]                                                 # [C, T'<=T]
+
+    @torch.no_grad()
+    def encode_latent(self, wav: torch.Tensor) -> torch.Tensor:
+        lat, _ = self._encode(wav)                                          # [1, 128, L]
+        return lat[0].cpu().float()                                         # [128, L]
+
+
+# ===========================================================================
 # Factory
 # ===========================================================================
 ADAPTERS = {
@@ -302,7 +383,14 @@ ADAPTERS = {
     "same":         SAMEAdapter,        # SAME-L (852M)
     "same-s":       SAMESAdapter,       # SAME-S (108M)
     "sao-vae":      StableAudioVAEAdapter,
+    "ear-vae2":     EarVAE2Adapter,     # released weights (178M), not the paper model
 }
+
+
+def adapter_kwargs(name: str, paths: Any) -> dict:
+    """Constructor arguments read from configs/paths: the local weight folder of sao-vae / ear-vae2."""
+    key = {"sao-vae": "sao_vae", "ear-vae2": "ear_vae2"}.get(name)
+    return {"model_dir": getattr(paths, key)} if key else {}
 
 
 def build_adapter(name: str, device: str = "cuda", **kwargs: Any) -> CodecAdapter:

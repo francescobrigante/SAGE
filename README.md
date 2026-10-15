@@ -188,7 +188,7 @@ variable and falls back to a default:
 | Variable | Used for |
 |---|---|
 | `SAGE_MODELS` (default `models/`) | the SAGE checkpoint, the LAION-CLAP teacher and the PANN weights of FAD-PANN |
-| `SAGE_CHECKPOINT`, `CLAP_TEACHER_CKPT`, `PANN_CKPT`, `CLAP_FAD_CKPT`, `SAO_VAE_DIR` | single weight files, instead of their place under `SAGE_MODELS` |
+| `SAGE_CHECKPOINT`, `CLAP_TEACHER_CKPT`, `PANN_CKPT`, `CLAP_FAD_CKPT`, `SAO_VAE_DIR`, `EAR_VAE2_DIR` | single weight files and folders, instead of their place under `SAGE_MODELS` |
 | `FMA_AUDIO`, `FMA_METADATA` | FMA audio (`fma_large/`) and `fma_metadata/tracks.csv` |
 | `FMA_FULL_AUDIO`, `JAMENDO_AUDIO`, `JAMENDO_SPLIT_TSV`, `M4SINGER_AUDIO` | the training corpora |
 | `SAGE_FILELIST_CACHE` (`filelist_cache/`) | scanned file lists of the training corpora |
@@ -254,7 +254,10 @@ adapted from other projects, under their licenses, as noted in the file headers:
 Evaluation uses [fadtk](https://github.com/microsoft/fadtk), [LAION-CLAP](https://github.com/LAION-AI/CLAP),
 [PANNs](https://github.com/qiuqiangkong/audioset_tagging_cnn), [CDPAM](https://github.com/pranaymanocha/PerceptualAudio)
 and [MTEB/MAEB](https://github.com/embeddings-benchmark/mteb), and the datasets FMA, MTG-Jamendo, M4Singer,
-MoisesDB, MusicCaps and Song Describer.
+MoisesDB, MusicCaps and Song Describer. The EarVAE2 baseline (added after the paper) runs the authors'
+inference code ([EAR_VAE2](https://github.com/Eps-Acoustic-Revolution-Lab/EAR_VAE2), Apache 2.0) with their
+released weights ([earlab/EAR_VAE2](https://huggingface.co/earlab/EAR_VAE2), Apache 2.0) from a local copy;
+neither is redistributed here.
 
 ## License
 

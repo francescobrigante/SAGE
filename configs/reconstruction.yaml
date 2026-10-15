@@ -15,7 +15,7 @@ defaults:
   - override hydra/job_logging: none
   - override hydra/hydra_logging: none
 
-model: ???                  # sage | same | same-s | sao-vae | codicodec | music2latent | identity (self-test)
+model: ???                  # sage | same | same-s | sao-vae | codicodec | music2latent | ear-vae2 | identity (self-test)
 checkpoint: null            # sage only; null = paths.sage_checkpoint
 varlen: null                # sage only: variable-length attention preset (sage/model/swin/varlen.yaml); null = tri2
 deterministic: false        # sage only: decode the posterior mean instead of a sampled z (the paper samples z)
