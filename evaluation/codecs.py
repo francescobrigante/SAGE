@@ -75,14 +75,14 @@ class CodecAdapter(ABC):
 # ===========================================================================
 class SAGEAdapter(CodecAdapter):
     def __init__(self, device: str = "cuda", checkpoint: str | None = None,
-                 varlen: str | None = None, deterministic: bool = False, **_: Any):
+                 varlen: str | None = None, deterministic: bool = False, sdpa: bool = False, **_: Any):
         from sage.inference import SAGE
 
         if checkpoint is None:
             raise ValueError("model 'sage' needs a checkpoint")
         self.device = torch.device(device)          # model + I/O device
         self.deterministic = deterministic          # posterior mean instead of sampled z
-        self.codec = SAGE.from_checkpoint(checkpoint, device=self.device, varlen=varlen)
+        self.codec = SAGE.from_checkpoint(checkpoint, device=self.device, varlen=varlen, sdpa=sdpa)
         self.sample_rate = self.codec.sample_rate or 44100
         self.audio_channels = self.codec.audio_channels or 2
 
@@ -92,11 +92,15 @@ class SAGEAdapter(CodecAdapter):
         return rec.cpu().float()
 
     def provenance(self) -> dict:
-        """The variable-length attention mode that produced the numbers (metrics/varlen.json)."""
+        """The attention settings that produced the numbers (metrics/varlen.json): variable-length
+        mode, and the SDPA path when it was on (the key is absent otherwise, as in earlier runs)."""
         from sage.model.swin.varlen import resolve
         vl = resolve(self.codec.varlen_mode)
-        return {"mode": self.codec.varlen_mode, "blocks": self.codec.varlen_blocks,
-                "phases": list(vl.phases) if vl else [], "combine": vl.combine if vl else None}
+        out = {"mode": self.codec.varlen_mode, "blocks": self.codec.varlen_blocks,
+               "phases": list(vl.phases) if vl else [], "combine": vl.combine if vl else None}
+        if self.codec.sdpa:
+            out["sdpa"] = True
+        return out
 
 
 # ===========================================================================

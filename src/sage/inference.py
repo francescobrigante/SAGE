@@ -17,6 +17,7 @@ import torch.nn.functional as F
 from sage.model.autoencoder import SAGEAutoencoder
 from sage.utils.console import ok, warn
 from sage.compat import upgrade_model_config
+from sage.model.swin.sdpa import enable_sdpa
 from sage.model.swin.varlen import enable_varlen, load_config, resolve
 
 
@@ -275,6 +276,7 @@ class SAGE:
         device: Optional[Union[str, torch.device]] = None,
         strict: bool = False,
         varlen: Optional[str] = None,
+        sdpa: bool = False,
     ) -> "SAGE":
         """Load a SAGE checkpoint (EMA weights when present).
 
@@ -284,8 +286,11 @@ class SAGE:
             strict: Passed to ``load_state_dict``; missing/unexpected keys are warned about either way.
             varlen: Variable-length attention preset from ``sage/model/swin/varlen.yaml``
                 (``"off"`` = single-phase attention); ``None`` uses the default there (``tri2``).
+            sdpa: Run the window attention through ``F.scaled_dot_product_attention``: same
+                formula, fused kernel, faster; equal up to floating-point rounding, not bit-exact.
+                Off by default.
         """
-        return cls(checkpoint_path, device=device, strict=strict, varlen=varlen)
+        return cls(checkpoint_path, device=device, strict=strict, varlen=varlen, sdpa=sdpa)
 
     def __init__(
         self,
@@ -294,6 +299,7 @@ class SAGE:
         device: Optional[Union[str, torch.device]] = None,
         strict: bool = False,
         varlen: Optional[str] = None,
+        sdpa: bool = False,
     ) -> None:
         self.checkpoint_path = Path(checkpoint_path)
         if not self.checkpoint_path.is_file():
@@ -348,6 +354,7 @@ class SAGE:
         # Lightning modules build their SAGEAutoencoder directly. Inert at or below
         # the training length, so short-segment results are bit-identical.
         self._apply_varlen(varlen)
+        self._apply_sdpa(sdpa)
 
         ok(f"Loaded checkpoint: {self.checkpoint_path}", prefix="CHECKPOINT")
 
@@ -368,6 +375,19 @@ class SAGE:
         self.varlen_blocks = enable_varlen(self.autoencoder, resolve(self.varlen_mode))
         ok(f"varlen={self.varlen_mode} on {self.varlen_blocks} collapsed blocks",
            prefix="CHECKPOINT")
+
+    def _apply_sdpa(self, sdpa: bool) -> None:
+        """Route the window attention through ``F.scaled_dot_product_attention`` (opt-in).
+
+        Sets ``sdpa`` (what ran: False when no real-valued attention exists to route) and
+        ``sdpa_blocks`` (attention modules touched). See ``sage/model/swin/sdpa.py``.
+        """
+        self.sdpa_blocks = enable_sdpa(self.autoencoder) if sdpa else 0
+        self.sdpa = self.sdpa_blocks > 0
+        if self.sdpa:
+            ok(f"sdpa attention on {self.sdpa_blocks} attention modules", prefix="CHECKPOINT")
+        elif sdpa:
+            warn("sdpa=True ignored: the model has no real-valued window attention", prefix="CHECKPOINT")
 
     @staticmethod
     def _resolve_device(device: Optional[Union[str, torch.device]]) -> torch.device:

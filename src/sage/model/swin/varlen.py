@@ -54,7 +54,8 @@ class VarlenConfig:
 # Per-token combination weights
 # --------------------------------------------------------------------------
 
-def group_bounds(time_tokens: int, window: int, phase: int) -> Tuple[torch.Tensor, torch.Tensor]:
+def group_bounds(time_tokens: int, window: int, phase: int,
+                 device: Optional[torch.device] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """Attention-group bounds of every real token, for one grid phase.
 
     Reproduces exactly what ``SwinTransformerBlock._attention_branch`` does for a
@@ -70,6 +71,7 @@ def group_bounds(time_tokens: int, window: int, phase: int) -> Tuple[torch.Tenso
         time_tokens: Number of real time tokens W at this stage.
         window: Window size along time (ww).
         phase: Grid offset in tokens.
+        device: Where the bounds are computed (default CPU).
 
     Returns:
         (start, end) — two ``(W,)`` int64 tensors with the half-open bounds
@@ -77,7 +79,7 @@ def group_bounds(time_tokens: int, window: int, phase: int) -> Tuple[torch.Tenso
     """
     n_windows = (time_tokens + window - 1) // window
     padded = n_windows * window                                    # what the block partitions
-    t = torch.arange(time_tokens, dtype=torch.int64)
+    t = torch.arange(time_tokens, dtype=torch.int64, device=device)
     rolled = (t - phase) % padded                                  # position after torch.roll(-phase)
     win_idx = rolled // window                                     # window each token lands in
 
@@ -90,16 +92,20 @@ def group_bounds(time_tokens: int, window: int, phase: int) -> Tuple[torch.Tenso
         group = win_idx                                            # no roll, no mask, one group per window
 
     # Every group is a contiguous run in real-token coordinates; take maximal runs
-    # so a group truncated by the padding ends at the last real token.
-    is_new = torch.ones(time_tokens, dtype=torch.bool)
-    is_new[1:] = group[1:] != group[:-1]
-    run = torch.cumsum(is_new.to(torch.int64), 0) - 1              # run index of each token
-    counts = torch.bincount(run)
-    starts = torch.cumsum(counts, 0) - counts
-    return starts[run], (starts + counts)[run]
+    # so a group truncated by the padding ends at the last real token. Static
+    # shapes only (no bincount), so a torch.compile graph can build them on the GPU.
+    is_new = torch.ones(time_tokens, dtype=torch.bool, device=device)
+    is_new[1:] = group[1:] != group[:-1]                           # (W,) first token of a run
+    is_last = torch.ones_like(is_new)
+    is_last[:-1] = is_new[1:]                                      # (W,) last token of a run
+    start = torch.cummax(torch.where(is_new, t, 0), 0).values      # (W,) latest run start at or before t
+    end = torch.where(is_last, t + 1, time_tokens).flip(0)         # (W,) reversed: one past each run end
+    end = torch.cummin(end, 0).values.flip(0)                      # (W,) earliest run end at or after t, + 1
+    return start, end
 
 
-def phase_weights(time_tokens: int, window: int, cfg: VarlenConfig) -> torch.Tensor:
+def phase_weights(time_tokens: int, window: int, cfg: VarlenConfig,
+                  device: Optional[torch.device] = None) -> torch.Tensor:
     """Per-token, per-phase combination weights.
 
     The quantity that decides the weight is ``d``, the token's distance to the
@@ -107,19 +113,22 @@ def phase_weights(time_tokens: int, window: int, cfg: VarlenConfig) -> torch.Ten
     edge and is reconstructed as if the audio ended there — that is exactly the
     periodic "hole". The weights are a deterministic function of position only:
     no dependence on content, so they are computed once per sequence length.
+    Static shapes only: a torch.compile graph computes them on the GPU itself.
 
     Args:
         time_tokens: Number of real time tokens W at this stage.
         window: Window size along time (ww).
         cfg: Phases and combination mode.
+        device: Where the weights are computed (default CPU). The values are
+            integers until the final division, so they are the same everywhere.
 
     Returns:
         ``(P, W)`` float32 tensor summing to 1 over the phase axis.
     """
     dists = []
     for phase in cfg.phases:
-        start, end = group_bounds(time_tokens, window, phase)       # (W,), (W,)
-        t = torch.arange(time_tokens, dtype=torch.int64)
+        start, end = group_bounds(time_tokens, window, phase, device)  # (W,), (W,)
+        t = torch.arange(time_tokens, dtype=torch.int64, device=device)
         dists.append(torch.minimum(t - start, end - 1 - t))         # (W,) distance to group edge
     d = torch.stack(dists).to(torch.float32)                        # (P, W)
 
