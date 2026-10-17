@@ -276,7 +276,7 @@ class SAGE:
         device: Optional[Union[str, torch.device]] = None,
         strict: bool = False,
         varlen: Optional[str] = None,
-        sdpa: bool = False,
+        sdpa: bool = True,
     ) -> "SAGE":
         """Load a SAGE checkpoint (EMA weights when present).
 
@@ -287,8 +287,7 @@ class SAGE:
             varlen: Variable-length attention preset from ``sage/model/swin/varlen.yaml``
                 (``"off"`` = single-phase attention); ``None`` uses the default there (``tri2``).
             sdpa: Run the window attention through ``F.scaled_dot_product_attention``: same
-                formula, fused kernel, faster; equal up to floating-point rounding, not bit-exact.
-                Off by default.
+                formula, fused kernel, faster. On by default; ``False`` runs the original attention.
         """
         return cls(checkpoint_path, device=device, strict=strict, varlen=varlen, sdpa=sdpa)
 
@@ -299,7 +298,7 @@ class SAGE:
         device: Optional[Union[str, torch.device]] = None,
         strict: bool = False,
         varlen: Optional[str] = None,
-        sdpa: bool = False,
+        sdpa: bool = True,
     ) -> None:
         self.checkpoint_path = Path(checkpoint_path)
         if not self.checkpoint_path.is_file():
@@ -377,7 +376,7 @@ class SAGE:
            prefix="CHECKPOINT")
 
     def _apply_sdpa(self, sdpa: bool) -> None:
-        """Route the window attention through ``F.scaled_dot_product_attention`` (opt-in).
+        """Route the window attention through ``F.scaled_dot_product_attention`` (on by default).
 
         Sets ``sdpa`` (what ran: False when no real-valued attention exists to route) and
         ``sdpa_blocks`` (attention modules touched). See ``sage/model/swin/sdpa.py``.

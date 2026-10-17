@@ -40,9 +40,9 @@ def single_thread():
     torch.set_num_threads(n)
 
 
-def _load(varlen: str):
+def _load(varlen: str, sdpa: bool = False):
     from sage import SAGE
-    return SAGE.from_checkpoint(PAPER_CKPT, device="cpu", varlen=varlen)
+    return SAGE.from_checkpoint(PAPER_CKPT, device="cpu", varlen=varlen, sdpa=sdpa)   # original attention: bit-exact
 
 
 @needs_ckpt
@@ -108,6 +108,23 @@ def test_reconstruct_matches_the_evaluator_path(name, single_thread):
         assert t.shape == wav.shape and np.array_equal(t.numpy(), ref), f"{name}/{case}"
 
 
+@needs_ckpt
+@needs_golden
+@pytest.mark.parametrize("name", ["crop_train_len_128frames", "moises10s_mix"])
+def test_default_sdpa_matches_the_golden_up_to_rounding(name, single_thread):
+    """The default load (SDPA attention) reproduces the golden latents and reconstructions up to rounding."""
+    from sage import SAGE
+    codec = SAGE.from_checkpoint(PAPER_CKPT, device="cpu")
+    assert codec.sdpa and codec.sdpa_blocks > 0
+    wav = torch.from_numpy(np.load(GOLDEN_DIR / "inputs" / f"{name}.npy"))
+    mu = codec.encode(codec.pad(wav.unsqueeze(0))[0], deterministic=True)
+    cases = {"latent_mu": mu, "recon_mu": codec.reconstruct(wav, deterministic=True)}
+    for case, t in cases.items():
+        ref = torch.from_numpy(np.load(GOLDEN_REF / f"{name}__tri2__{case}.npy"))
+        snr = 10 * torch.log10(ref.pow(2).sum() / (t - ref).pow(2).sum().clamp_min(1e-30))
+        assert t.shape == ref.shape and snr > 80, f"{name}/{case}: SNR {snr:.1f} dB"
+
+
 # The padding of the three paper evaluators, verbatim from commit 4400ee9 (only renamed):
 # evaluation/evaluate_swin_10s.py (clip sets), evaluate_swin_varT.py (FMA, variable length),
 # maeb/swin_encoder.py (probing). SAGE.pad must match all of them for any input length.
@@ -170,11 +187,12 @@ def test_pad_matches_the_paper_evaluators_for_any_length(tiny_pretrain_ckpt):
         assert torch.equal(codec.pad(x)[0], _pad_eval_fma(x, hop, n_down)[0])   # same values, zeros appended
 
 
+@pytest.mark.parametrize("sdpa", [False, True])
 @pytest.mark.parametrize("n", [1, 100, 511, 512, 513, 2047, 2049, 44100 + 7, 3 * 44100 + 123])
-def test_reconstruct_and_encode_any_length(tiny_pretrain_ckpt, n):
+def test_reconstruct_and_encode_any_length(tiny_pretrain_ckpt, n, sdpa):
     """Any input length encodes (after pad) and reconstructs to the same length, batched or not."""
     from sage import SAGE
-    codec = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu")
+    codec = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu", sdpa=sdpa)
     wav = 0.1 * torch.randn(2, n, generator=torch.Generator().manual_seed(n))
     padded, orig = codec.pad(wav.unsqueeze(0))
     z = codec.encode(padded, deterministic=True)
@@ -184,10 +202,11 @@ def test_reconstruct_and_encode_any_length(tiny_pretrain_ckpt, n):
     assert torch.equal(codec.reconstruct(wav.unsqueeze(0), deterministic=True)[0], rec)
 
 
-def test_readme_usage_pad_encode_decode_equals_reconstruct(tiny_pretrain_ckpt):
+@pytest.mark.parametrize("sdpa", [False, True])
+def test_readme_usage_pad_encode_decode_equals_reconstruct(tiny_pretrain_ckpt, sdpa):
     """The README example: pad -> encode -> decode by hand is reconstruct(deterministic=True)."""
     from sage import SAGE
-    codec = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu")
+    codec = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu", sdpa=sdpa)
     wav = 0.1 * torch.randn(1, 2, 3 * codec.sample_rate + 123, generator=torch.Generator().manual_seed(0))
     padded, n = codec.pad(wav)
     z = codec.encode(padded, deterministic=True)
@@ -196,11 +215,12 @@ def test_readme_usage_pad_encode_decode_equals_reconstruct(tiny_pretrain_ckpt):
     assert torch.equal(y, codec.reconstruct(wav, deterministic=True))
 
 
-def test_sdpa_flag_routes_the_attention_and_matches_the_default(tiny_pretrain_ckpt):
-    """SAGE.from_checkpoint(sdpa=True): every real attention module routed, same output up to rounding."""
+def test_sdpa_is_the_default_and_matches_the_original_attention(tiny_pretrain_ckpt):
+    """SAGE.from_checkpoint routes every real attention module through SDPA by default (sdpa=False opts out),
+    with the same output as the original attention up to rounding."""
     from sage import SAGE
-    default = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu")
-    fast = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu", sdpa=True)
+    default = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu", sdpa=False)
+    fast = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu")
     assert (default.sdpa, default.sdpa_blocks) == (False, 0) and fast.sdpa and fast.sdpa_blocks > 0
     wav = 0.1 * torch.randn(2, 3 * 44100 + 123, generator=torch.Generator().manual_seed(0))
     a, b = default.reconstruct(wav, deterministic=True), fast.reconstruct(wav, deterministic=True)
@@ -220,6 +240,9 @@ def test_encode_decode_script(tiny_pretrain_ckpt, audio_dir, tmp_path):
     run("encode", wav_in, tmp_path / "z.pt")
     run("decode", tmp_path / "z.pt", tmp_path / "a.wav")
     run("reconstruct", wav_in, tmp_path / "b.wav")
+    run("reconstruct", wav_in, tmp_path / "c.wav", "--no-sdpa")                 # the original attention
     a, sr = sf.read(tmp_path / "a.wav")
     b, _ = sf.read(tmp_path / "b.wav")
+    c, _ = sf.read(tmp_path / "c.wav")
     assert sr == 44100 and a.shape == sf.read(wav_in)[0].shape and np.array_equal(a, b)
+    assert c.shape == b.shape and np.abs(c - b).max() <= 2 / 32768                # equal up to rounding (16-bit)

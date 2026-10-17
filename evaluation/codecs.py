@@ -76,7 +76,7 @@ class CodecAdapter(ABC):
 # ===========================================================================
 class SAGEAdapter(CodecAdapter):
     def __init__(self, device: str = "cuda", checkpoint: str | None = None,
-                 varlen: str | None = None, deterministic: bool = False, sdpa: bool = False, **_: Any):
+                 varlen: str | None = None, deterministic: bool = False, sdpa: bool = True, **_: Any):
         from sage.inference import SAGE
 
         if checkpoint is None:

@@ -44,8 +44,9 @@ def main() -> None:
     ap.add_argument("--ckpt", type=Path, required=True, help="SAGE checkpoint (e.g. SAGE_FTe992.ckpt)")
     ap.add_argument("--device", default=None, help="cpu, cuda, mps (default: cuda if available)")
     ap.add_argument("--varlen", default=None, help="variable-length attention preset; 'off' disables it (default: tri2)")
-    ap.add_argument("--sdpa", action="store_true",
-                    help="attention through F.scaled_dot_product_attention: same formula, faster, not bit-exact")
+    ap.add_argument("--sdpa", action=argparse.BooleanOptionalAction, default=True,
+                    help="attention through F.scaled_dot_product_attention (same formula, faster; default on); "
+                         "--no-sdpa runs the original attention")
     ap.add_argument("--deterministic", action="store_true",
                     help="use the posterior mean instead of a sampled latent (the paper metrics use sampled z)")
     args = ap.parse_args()

@@ -1,8 +1,9 @@
 # ===============================================================
-# Opt-in SDPA path of WindowAttention (inference only). Same formula as
+# SDPA path of WindowAttention (inference only). Same formula as
 # WindowAttention.forward (Swin V2 cosine attention + Log-CPB bias + cyclic-shift
 # mask + XSA), computed by F.scaled_dot_product_attention: one fused kernel on
-# CUDA. Equal in exact arithmetic, not bit-identical; off by default.
+# CUDA. Equal in exact arithmetic, not bit-identical; set per module by
+# enable_sdpa, which sage.inference.SAGE calls by default (sdpa=False opts out).
 # The Log-CPB bias depends on the weights only: it is computed once in full FP32
 # and cached, and recomputed whenever the weights, their dtype or device change.
 # Calls larger than the CUDA launch grid allows are split along batch / heads.

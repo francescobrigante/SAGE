@@ -294,9 +294,19 @@ def test_a_file_whose_embedding_fails_is_retried(clips, tmp_path, monkeypatch, n
 
 def test_model_settings_are_validated(clips, tmp_path):
     for bad in (["model=sam-s"], ["model=same-s", "deterministic=true"], ["model=same-s", f"checkpoint={clips}"],
-                ["model=same-s", "sdpa=true"]):
+                ["model=same-s", "sdpa=true"], ["model=same-s", "sdpa=false"]):
         with pytest.raises(SystemExit):
             reconstruction._args_from_cfg(_cfg([*bad, *_clips(clips)]))
+
+
+def test_sdpa_is_on_for_sage_by_default_and_off_for_the_other_models(clips, tmp_path):
+    ckpt = tmp_path / "sage.ckpt"
+    ckpt.touch()
+    sage = ["model=sage", f"checkpoint={ckpt}", *_clips(clips)]
+    assert reconstruction._args_from_cfg(_cfg(sage)).sdpa is True
+    assert reconstruction._args_from_cfg(_cfg([*sage, "sdpa=true"])).sdpa is True
+    assert reconstruction._args_from_cfg(_cfg([*sage, "sdpa=false"])).sdpa is False
+    assert reconstruction._args_from_cfg(_cfg(["model=same-s", *_clips(clips)])).sdpa is False
 
 
 def test_tables_read_any_mteb_revision_and_never_bold_the_oracle(tmp_path, capsys):
