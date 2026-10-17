@@ -3,9 +3,13 @@
 # Guards: off by default (the original forward runs untouched); in float64 the
 # SDPA path equals the original to rounding on W-MSA, SW-MSA, batch > 1, XSA and
 # variable-length multi-phase blocks; the cached bias follows the weights (load,
-# cast, in-place edits, compiled models) and works under inference_mode; training
-# and autograd always take the original forward; the state_dict does not change.
+# cast, in-place edits, compiled models) and works under inference_mode; calls above
+# the CUDA launch grid limit are split with the same values, calls below it are the
+# single call; training and autograd always take the original forward; the state_dict
+# does not change.
 # ===============================================================
+
+import math
 
 import pytest
 import torch
@@ -210,6 +214,63 @@ def test_module_pickles_after_an_sdpa_call():
     with torch.no_grad():
         blk(tokens(LOCAL))
     torch.save(blk, io.BytesIO())
+
+
+# --------------------------------------------------------------------------
+# Launch grid: SDPA calls above the CUDA limit on heads / batch are split
+# --------------------------------------------------------------------------
+
+# LOCAL grid, batch 3: 16 windows of 128 tokens, 4 heads of 16 channels.
+# W-MSA puts the windows on the batch axis, SW-MSA on the heads axis: (q shape, attn_mask shape).
+GRID_CALLS = {
+    "w-msa": ((48, 4, 128, 16), (1, 4, 128, 128)),
+    "sw-msa": ((3, 64, 128, 16), (1, 64, 128, 128)),
+}
+SHIFTS = {"w-msa": (0, 0), "sw-msa": (2, 16)}
+
+
+def record_sdpa_calls(monkeypatch) -> list:
+    """(q shape, attn_mask shape) of every F.scaled_dot_product_attention call from here on."""
+    calls, sdpa = [], torch.nn.functional.scaled_dot_product_attention
+
+    def spy(q, k, v, attn_mask=None, **kwargs):
+        calls.append((tuple(q.shape), tuple(attn_mask.shape)))
+        return sdpa(q, k, v, attn_mask=attn_mask, **kwargs)
+
+    monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", spy)
+    return calls
+
+
+@pytest.mark.parametrize("branch", ["w-msa", "sw-msa"])
+def test_at_or_below_the_grid_limit_is_the_single_call(branch, monkeypatch):
+    """The default limit, and a limit equal to the largest grid axis: one call on the whole tensors."""
+    blk, x = make_block(LOCAL, shift=SHIFTS[branch]), tokens(LOCAL, batch=3)
+    enable_sdpa(blk)
+    calls = record_sdpa_calls(monkeypatch)
+    for limit in (sdpa_module._GRID_LIMIT, max(GRID_CALLS[branch][0][:2])):
+        monkeypatch.setattr(sdpa_module, "_GRID_LIMIT", limit)
+        calls.clear()
+        with torch.no_grad():
+            blk(x)
+        assert calls == [GRID_CALLS[branch]]
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
+@pytest.mark.parametrize("limit", [2, 5])
+@pytest.mark.parametrize("branch", ["w-msa", "sw-msa"])
+def test_split_above_the_grid_limit_matches_the_single_call(branch, limit, dtype, monkeypatch):
+    """Both grid axes cut (uneven last slice with limit 5): bit-identical to the single call."""
+    blk, x = make_block(LOCAL, shift=SHIFTS[branch]).to(dtype), tokens(LOCAL, batch=3).to(dtype)
+    enable_sdpa(blk)
+    with torch.no_grad():
+        ref = blk(x)
+        monkeypatch.setattr(sdpa_module, "_GRID_LIMIT", limit)
+        calls = record_sdpa_calls(monkeypatch)
+        out = blk(x)
+    (batch, heads, _, _), _ = GRID_CALLS[branch]
+    assert len(calls) == math.ceil(batch / limit) * math.ceil(heads / limit)
+    assert all(q[0] <= limit and q[1] <= limit and m[:2] == (1, q[1]) for q, m in calls)
+    assert torch.equal(out, ref), (out - ref).abs().max()
 
 
 # --------------------------------------------------------------------------

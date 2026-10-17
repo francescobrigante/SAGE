@@ -5,6 +5,7 @@
 # CUDA. Equal in exact arithmetic, not bit-identical; off by default.
 # The Log-CPB bias depends on the weights only: it is computed once in full FP32
 # and cached, and recomputed whenever the weights, their dtype or device change.
+# Calls larger than the CUDA launch grid allows are split along batch / heads.
 # ===============================================================
 
 import math
@@ -17,6 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 _PRECISION_LOCK = threading.Lock()           # the matmul precision is a process-wide setting
+_GRID_LIMIT = 65535                          # CUDA cap on the y / z axes of a launch grid
 
 
 @contextmanager
@@ -82,6 +84,35 @@ def _cached_cpb(attn: nn.Module) -> torch.Tensor:
     return attn._sdpa_cpb
 
 
+def _sdpa(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
+    """F.scaled_dot_product_attention(q, k, v, attn_mask=bias, scale=1), split when too large to launch.
+
+    The memory-efficient CUDA kernel runs one block per (query tile, head, batch) on the grid axes
+    (x, y, z) and does not check the 65535 cap on y and z (torch 2.7): SW-MSA puts the windows on
+    the heads axis (nW·h > 65535 beyond ~760 s of audio in one pass at stage 1), W-MSA on the batch
+    axis (nW·B > 65535 beyond ~6100 s summed over the batch). Above _GRID_LIMIT each axis is cut
+    into slices of at most _GRID_LIMIT: every (batch, head) pair is computed on its own, so the
+    values do not change; at or below it this is the single call, unchanged.
+
+    Args:
+        q, k, v: (B, H, N, d)
+        bias: (1 or B, 1 or H, N, N), broadcast over its size-1 axes.
+    Returns:
+        (B, H, N, d)
+    """
+    for dim in (0, 1):                                                  # z = batch, y = heads
+        n = q.shape[dim]
+        if n > _GRID_LIMIT:
+            parts = []
+            for start in range(0, n, _GRID_LIMIT):
+                size = min(_GRID_LIMIT, n - start)
+                qs, ks, vs = (t.narrow(dim, start, size) for t in (q, k, v))
+                bs = bias if bias.shape[dim] == 1 else bias.narrow(dim, start, size)
+                parts.append(_sdpa(qs, ks, vs, bs))                     # the other axis is checked in there
+            return torch.cat(parts, dim=dim)                            # (B, H, N, d)
+    return F.scaled_dot_product_attention(q, k, v, attn_mask=bias, scale=1.0)
+
+
 def sdpa_forward(attn: nn.Module, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
     """WindowAttention.forward of a real-valued module through F.scaled_dot_product_attention.
 
@@ -110,7 +141,7 @@ def sdpa_forward(attn: nn.Module, x: torch.Tensor, mask: Optional[torch.Tensor] 
     cpb = _cached_cpb(attn)                                             # (h, N, N)
     if mask is None:
         bias = cpb.to(dt).unsqueeze(0)                                  # (1, h, N, N), broadcast over windows
-        y = F.scaled_dot_product_attention(q.to(dt), k.to(dt), v.to(dt), attn_mask=bias, scale=1.0)
+        y = _sdpa(q.to(dt), k.to(dt), v.to(dt), bias)                  # (nW·B, h, N, d)
     else:
         # The sum grows with the number of windows (≈ 1 GB per 30 s in FP32 over all blocks): rebuilt on
         # every call, never kept (one elementwise kernel, ~1-4% of an eager call).
@@ -119,7 +150,7 @@ def sdpa_forward(attn: nn.Module, x: torch.Tensor, mask: Optional[torch.Tensor] 
         bias = (cpb.unsqueeze(0) + mask.unsqueeze(1)).to(dt)            # (nW, h, N, N)
         bias = bias.reshape(1, nW * h, N, N)                            # (1, nW·h, N, N), broadcast over B
         qh, kh, vh = (t.to(dt).reshape(B, nW * h, N, -1) for t in (q, k, v))  # (B, nW·h, N, d)
-        y = F.scaled_dot_product_attention(qh, kh, vh, attn_mask=bias, scale=1.0)
+        y = _sdpa(qh, kh, vh, bias)                                     # (B, nW·h, N, d)
         y = y.reshape(B_, h, N, -1)                                     # (nW·B, h, N, d)
     if attn.attention_variant == "xsa":
         y = attn._apply_xsa(y, v)                                       # same v (dtype included) as the original
