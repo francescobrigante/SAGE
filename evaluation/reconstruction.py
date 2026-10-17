@@ -130,13 +130,13 @@ def _args_from_cfg(cfg: DictConfig) -> SimpleNamespace:
         checkpoint = Path(cfg.checkpoint or cfg.paths.sage_checkpoint)
         if not checkpoint.is_file():
             raise SystemExit(f"SAGE checkpoint not found: {checkpoint} (set checkpoint=... or paths.sage_checkpoint)")
-    elif cfg.checkpoint or cfg.varlen or cfg.deterministic or cfg.sdpa:
+    elif cfg.checkpoint or cfg.varlen or cfg.deterministic or cfg.sdpa is not None:
         raise SystemExit("checkpoint, varlen, deterministic and sdpa apply to model=sage only")
     else:
         checkpoint = None
     return SimpleNamespace(
         model=cfg.model, checkpoint=checkpoint, varlen=cfg.varlen, deterministic=bool(cfg.deterministic),
-        sdpa=bool(cfg.sdpa),
+        sdpa=cfg.model == "sage" and cfg.sdpa is not False,         # null = on for sage; off for the other models
         adapter_kwargs=adapter_kwargs(cfg.model, cfg.paths),
         protocol=ds.protocol, data_dir=Path(ds.data_dir), fma_csv=ds.fma_csv,
         extensions=ds.extensions or ".wav,.flac,.mp3,.ogg",

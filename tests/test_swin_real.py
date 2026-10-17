@@ -199,6 +199,24 @@ def test_u5_swin_block_shape():
 # U6 — SwinTransformerBlock: gradient flow
 # ---------------------------------------------------------------------------
 
+def test_shifted_block_keeps_no_per_grid_state():
+    """The SW-MSA mask is rebuilt at every call: grids of any number of lengths leave nothing on the block
+    (a per-grid cache used to keep ~2 MB per second of audio for every length), and the output is unchanged."""
+    from sage.model.swin.block import SwinTransformerBlock
+    blk = SwinTransformerBlock(dim=48, input_resolution=(16, 16), num_heads=3, window_size=8, shift_size=4).eval()
+    before = {k: v for k, v in vars(blk).items() if not k.startswith("_modules")}
+    with torch.no_grad():
+        outs = {}
+        for W in (16, 24, 40, 16):
+            blk.input_resolution = (16, W)
+            out = blk(torch.randn(B, 16 * W, 48, generator=torch.Generator().manual_seed(W)))
+            assert W not in outs or torch.equal(out, outs[W])
+            outs[W] = out
+    after = {k: v for k, v in vars(blk).items() if not k.startswith("_modules")}
+    assert after.keys() == before.keys() and not hasattr(blk, "_attn_mask_cache")
+    assert not any(isinstance(v, dict) and any(torch.is_tensor(t) for t in v.values()) for v in after.values())
+
+
 def test_u6_swin_block_gradients():
     """No SwinTransformerBlock parameter has None gradient after backward."""
     H, W, C = 32, 32, 48
@@ -304,7 +322,6 @@ def test_compiled_block_on_cuda_before_any_eager_call_has_no_graph_break():
         explanation = torch._dynamo.explain(blk)(x)
         out = torch.compile(blk, backend="aot_eager", dynamic=False)(x)
         torch._dynamo.reset()
-        assert not blk._attn_mask_cache
         ref = blk(x)
     assert (explanation.graph_count, explanation.graph_break_count) == (1, 0), explanation.break_reasons
     torch.testing.assert_close(out, ref, rtol=0.0, atol=1e-6)

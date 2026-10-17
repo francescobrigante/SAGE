@@ -6,14 +6,18 @@ from __future__ import annotations
 #   codec = SAGE.from_checkpoint("SAGE_FTe992.ckpt", device="cuda")
 #   z     = codec.encode(wav)                               # (B, 2, N) -> (B, 16, T_lat)
 #   rec   = codec.decode(z, target_length=wav.shape[-1])    # -> (B, 2, N)
+# Inputs longer than one chunk (300 s by default) run in chunks with context margins (sage.chunked).
 # =============================================================================
 
+import math
 import warnings
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 import torch
 import torch.nn.functional as F
 
+from sage import chunked
+from sage.constants import DEFAULT_CHUNK_MARGIN_SECONDS, DEFAULT_CHUNK_SECONDS
 from sage.model.autoencoder import SAGEAutoencoder
 from sage.utils.console import ok, warn
 from sage.compat import upgrade_model_config
@@ -148,6 +152,18 @@ def encode_audio(
     torch.Tensor
         Latent tensor.
     """
+    spec = _spectrogram(autoencoder, audio, debug)
+
+    # Encode
+    latents = autoencoder.encode(spec, deterministic=deterministic)
+    if debug:
+        print(f"[encode_audio] latents shape: {tuple(latents.shape)}")
+
+    return latents
+
+
+def _spectrogram(autoencoder: SAGEAutoencoder, audio: torch.Tensor, debug: bool = False) -> torch.Tensor:
+    """Waveform ``(T,)``, ``(C, T)`` or ``(B, C, T)`` -> the encoder's input spectrogram."""
     autoencoder._require_stft_config()
 
     # Normalize input shape to (B, C, T)
@@ -172,13 +188,13 @@ def encode_audio(
         spec = autoencoder._pack_complex(spec)
         if debug:
             print(f"[encode_audio] packed complex shape: {tuple(spec.shape)}")
+    return spec
 
-    # Encode
-    latents = autoencoder.encode(spec, deterministic=deterministic)
-    if debug:
-        print(f"[encode_audio] latents shape: {tuple(latents.shape)}")
 
-    return latents
+def _encode_params(autoencoder: SAGEAutoencoder, audio: torch.Tensor) -> torch.Tensor:
+    """Waveform -> the encoder output before the bottleneck (the posterior ``[mu | scale]`` of a VAE)."""
+    out = autoencoder.encode(_spectrogram(autoencoder, audio), return_info=True, deterministic=True)
+    return out[1]["pre_bottleneck_latents"]
 
 
 def decode_audio(
@@ -276,7 +292,9 @@ class SAGE:
         device: Optional[Union[str, torch.device]] = None,
         strict: bool = False,
         varlen: Optional[str] = None,
-        sdpa: bool = False,
+        sdpa: bool = True,
+        chunk_seconds: Optional[float] = DEFAULT_CHUNK_SECONDS,
+        chunk_margin_seconds: float = DEFAULT_CHUNK_MARGIN_SECONDS,
     ) -> "SAGE":
         """Load a SAGE checkpoint (EMA weights when present).
 
@@ -287,10 +305,15 @@ class SAGE:
             varlen: Variable-length attention preset from ``sage/model/swin/varlen.yaml``
                 (``"off"`` = single-phase attention); ``None`` uses the default there (``tri2``).
             sdpa: Run the window attention through ``F.scaled_dot_product_attention``: same
-                formula, fused kernel, faster; equal up to floating-point rounding, not bit-exact.
-                Off by default.
+                formula, fused kernel, faster. On by default; ``False`` runs the original attention.
+            chunk_seconds: Inputs longer than this are encoded and decoded in chunks of this length
+                (rounded to the 128-frame window grid, 1.49 s), so the memory stays bounded at any
+                length. ``None`` always runs one pass (memory grows with the length).
+            chunk_margin_seconds: Context per side of each chunk, discarded after the pass. 3 s or
+                more gives the one-pass output; less leaves audible seams.
         """
-        return cls(checkpoint_path, device=device, strict=strict, varlen=varlen, sdpa=sdpa)
+        return cls(checkpoint_path, device=device, strict=strict, varlen=varlen, sdpa=sdpa,
+                   chunk_seconds=chunk_seconds, chunk_margin_seconds=chunk_margin_seconds)
 
     def __init__(
         self,
@@ -299,7 +322,9 @@ class SAGE:
         device: Optional[Union[str, torch.device]] = None,
         strict: bool = False,
         varlen: Optional[str] = None,
-        sdpa: bool = False,
+        sdpa: bool = True,
+        chunk_seconds: Optional[float] = DEFAULT_CHUNK_SECONDS,
+        chunk_margin_seconds: float = DEFAULT_CHUNK_MARGIN_SECONDS,
     ) -> None:
         self.checkpoint_path = Path(checkpoint_path)
         if not self.checkpoint_path.is_file():
@@ -355,6 +380,7 @@ class SAGE:
         # the training length, so short-segment results are bit-identical.
         self._apply_varlen(varlen)
         self._apply_sdpa(sdpa)
+        self._apply_chunking(chunk_seconds, chunk_margin_seconds)
 
         ok(f"Loaded checkpoint: {self.checkpoint_path}", prefix="CHECKPOINT")
 
@@ -377,7 +403,7 @@ class SAGE:
            prefix="CHECKPOINT")
 
     def _apply_sdpa(self, sdpa: bool) -> None:
-        """Route the window attention through ``F.scaled_dot_product_attention`` (opt-in).
+        """Route the window attention through ``F.scaled_dot_product_attention`` (on by default).
 
         Sets ``sdpa`` (what ran: False when no real-valued attention exists to route) and
         ``sdpa_blocks`` (attention modules touched). See ``sage/model/swin/sdpa.py``.
@@ -388,6 +414,53 @@ class SAGE:
             ok(f"sdpa attention on {self.sdpa_blocks} attention modules", prefix="CHECKPOINT")
         elif sdpa:
             warn("sdpa=True ignored: the model has no real-valued window attention", prefix="CHECKPOINT")
+
+    def _apply_chunking(self, chunk_seconds: Optional[float], margin_seconds: float) -> None:
+        """Set the chunk length and margin, in frames on the window grid (see ``sage/chunked.py``).
+
+        Chunk starts stay on multiples of the coarsest attention window of encoder and decoder, so every
+        chunk sees the window and shift phases of a one-pass run. A positive margin is at least one grid
+        step (it would otherwise round to no context at all).
+
+        Args:
+            chunk_seconds: Chunk length; ``None`` turns chunking off (``_chunk_frames = None``).
+            margin_seconds: Context per side of each chunk, discarded after the pass.
+        """
+        if chunk_seconds is not None and chunk_seconds <= 0:
+            raise ValueError(f"chunk_seconds must be > 0 or None, got {chunk_seconds}")
+        if margin_seconds < 0:
+            raise ValueError(f"chunk_margin_seconds must be >= 0, got {margin_seconds}")
+        self.chunk_seconds, self.chunk_margin_seconds = chunk_seconds, margin_seconds
+        self._chunk_frames = self._margin_frames = None
+        stft = getattr(self.autoencoder, "_stft_config", None)
+        if chunk_seconds is not None and (stft is None or self.sample_rate is None):
+            warn("chunking off: the checkpoint has no stft_config / sample_rate", prefix="CHECKPOINT")
+            self.chunk_seconds = None
+        if self.chunk_seconds is None:
+            return
+        enc, dec = self.autoencoder.encoder, self.autoencoder.decoder
+        frames_per_step = enc.downsampling_ratio[1]
+        windows = [w[1] if isinstance(w, (tuple, list)) else w                # (freq, time) or one int
+                   for w in (getattr(m, "window_size", None) for m in (enc, dec)) if w is not None]
+        self._geometry = g = chunked.LatentGeometry(
+            hop=stft.hop_length,
+            frames_per_step=frames_per_step,
+            bands=1 if enc.fold_freq_to_channels else enc._final_resolution[0],
+            grid=math.lcm(*windows) * frames_per_step,
+        )
+        self._chunk_frames = max(g.frames(chunk_seconds, self.sample_rate), g.grid)
+        self._margin_frames = g.frames(margin_seconds, self.sample_rate)
+        if margin_seconds > 0:
+            self._margin_frames = max(self._margin_frames, g.grid)
+
+    def _chunks(self, frames: int) -> bool:
+        """Whether an input of ``frames`` STFT frames runs in chunks."""
+        return self._chunk_frames is not None and frames > self._chunk_frames
+
+    def _sample(self, params: torch.Tensor, deterministic: bool) -> torch.Tensor:
+        """Posterior parameters -> latent through the bottleneck (the mean when ``deterministic``)."""
+        bottleneck = self.autoencoder.bottleneck
+        return params if bottleneck is None else bottleneck.encode(params, deterministic=deterministic)
 
     @staticmethod
     def _resolve_device(device: Optional[Union[str, torch.device]]) -> torch.device:
@@ -420,12 +493,27 @@ class SAGE:
         deterministic : bool
             Return posterior mean μ instead of reparameterized sample z.
             Recommended for downstream tasks (diffusion, retrieval, probing).
+
+        Returns
+        -------
+        torch.Tensor
+            ``(B, 16, L)`` with ``L`` = STFT frames. The last axis is NOT time: it is the
+            encoder's (4 frequency bands, L / 4 time steps) token grid flattened band-major
+            (index ``f * L/4 + t``). Time is the last axis of ``z.view(B, 16, 4, L // 4)``,
+            one step per 4 frames (2048 samples); cut, crop or chunk latents along it.
         """
         self.autoencoder.eval()
-        return encode_audio(
-            self.autoencoder, audio.to(self.device),
-            deterministic=deterministic, debug=debug,
-        )
+        audio = audio.to(self.device)
+        if self._chunk_frames is not None and self._chunks(audio.shape[-1] // self._geometry.hop + 1):
+            if audio.dim() > 3:
+                raise ValueError(f"audio must be 1D/2D/3D, got {tuple(audio.shape)}")
+            return chunked.encode(
+                audio.view(-1, *audio.shape[-2:]) if audio.dim() > 1 else audio.view(1, 1, -1),  # (B, C, N)
+                self._geometry, self._chunk_frames, self._margin_frames,
+                encode_params=lambda a: _encode_params(self.autoencoder, a),
+                sample=lambda p: self._sample(p, deterministic),
+            )
+        return encode_audio(self.autoencoder, audio, deterministic=deterministic, debug=debug)
 
     @torch.no_grad()
     def decode(
@@ -434,14 +522,16 @@ class SAGE:
         target_length: Optional[int] = None,
         debug: bool = False,
     ) -> torch.Tensor:
-        """Decode latents to waveform."""
+        """Decode latents to waveform (in chunks above ``chunk_seconds``, as :meth:`encode`)."""
         self.autoencoder.eval()
-        return decode_audio(
-            self.autoencoder,
-            latents.to(self.device),
-            target_length=target_length,
-            debug=debug,
-        )
+        latents = latents.to(self.device)
+        if self._chunk_frames is not None and self._chunks(self._geometry.frames_of(latents.shape[-1])):
+            return chunked.decode(
+                latents, self._geometry, self._chunk_frames, self._margin_frames,
+                decode_fn=lambda z, n: decode_audio(self.autoencoder, z, target_length=n),
+                target_length=target_length,
+            )
+        return decode_audio(self.autoencoder, latents, target_length=target_length, debug=debug)
 
     def pad(self, audio: torch.Tensor) -> tuple[torch.Tensor, int]:
         """Right-pad a ``(B, C, N)`` waveform to the frame grid that :meth:`encode` needs.
