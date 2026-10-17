@@ -143,8 +143,10 @@ def shift_mask(Hp: int, Wp: int, window_size: Tuple[int, int], shift: Tuple[int,
                device: torch.device) -> torch.Tensor:
     """SW-MSA attention mask of a padded (Hp, Wp) grid: 0 between tokens of the same region, -100 across.
 
-    A per-grid constant, cached by the caller. Built on ``device`` with static shapes and small
-    integer values (exact in float32), so a torch.compile graph builds the same mask on the GPU.
+    Rebuilt at every call: it costs 0.5-1.4 % of a forward on an A100 (3.6 ms at 10 s, 40 ms at 20 min),
+    while a per-grid cache kept up to ~2 MB per second of audio for every distinct length, never released.
+    Built on ``device`` with static shapes and small integer values (exact in float32), so a torch.compile
+    graph builds the same mask on the GPU.
 
     Returns:
         (nW, wh*ww, wh*ww) float32 on ``device``.
@@ -341,9 +343,6 @@ class SwinTransformerBlock(nn.Module):
             complex_swiglu_gate=complex_swiglu_gate,
         )
 
-        # We will compute the SW-MSA mask dynamically and cache it in forward()
-        self._attn_mask_cache = {}
-
         # Variable-length inference: multi-phase attention on collapsed blocks.
         # None = disabled (default) → forward() is bit-identical to the original.
         # Set via sage.model.swin.varlen.enable_varlen(); see varlen.py for the rationale.
@@ -434,22 +433,11 @@ class SwinTransformerBlock(nn.Module):
         # which inductor fuses itself. Both are pure data movement, so the values are the same.
         fused = self.fused_window_process and x.is_cuda and not torch.compiler.is_compiling()
 
-        # cached attention mask uses -100.0 for cross-region pairs so softmax -> 0 after exp.
+        # SW-MSA mask, -100.0 for cross-region pairs so softmax -> 0 after exp. Built directly on the
+        # target device (no host-to-device copy); it only feeds the softmax in WindowAttention, never
+        # the fused CUDA window kernels. Not cached: see shift_mask.
         if max(sh, sw) > 0:
-            # Cache the mask already ON the target device, keyed by (grid, device):
-            # the SW-MSA mask is constant per grid, so building + H2D-copying it on
-            # every forward was a needless per-shifted-block transfer (a sync point).
-            # Keying on device keeps DDP/multi-device correct (each replica caches its
-            # own). This mask only feeds the softmax in WindowAttention and never the
-            # fused CUDA window kernels, so caching it cannot affect them.
-            # The shift is part of the key: the mask depends on it, and multi-phase
-            # inference calls this method with several shifts on the same block.
-            cache_key = (Hp, Wp, sh, sw, x.device)
-            attn_mask = self._attn_mask_cache.get(cache_key)
-            if attn_mask is None:
-                attn_mask = shift_mask(Hp, Wp, self.window_size, (sh, sw), x.device)
-                if not torch.compiler.is_compiling():  # a compiled graph rebuilds it (one graph per grid)
-                    self._attn_mask_cache[cache_key] = attn_mask
+            attn_mask = shift_mask(Hp, Wp, self.window_size, (sh, sw), x.device)
         else:
             attn_mask = None
 

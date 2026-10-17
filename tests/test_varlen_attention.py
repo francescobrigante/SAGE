@@ -186,7 +186,7 @@ def test_no_phase_is_preferred_at_the_true_start_of_the_clip():
 
 def test_compiled_before_any_eager_call_matches_eager():
     """torch.compile on a fresh block, before any eager call: the graph builds the phase weights and
-    the shift masks itself and leaves the caches to eager calls; same output."""
+    the shift masks itself and leaves the weight cache to eager calls; same output."""
     x = tokens(4 * WINDOW[1]).double()                         # 4x the training length: multi-phase
     ref_blk, blk = make_block().double(), make_block().double()
     for b in (ref_blk, blk):
@@ -195,8 +195,7 @@ def test_compiled_before_any_eager_call_matches_eager():
         ref = ref_blk(x)
         out = torch.compile(blk, backend="aot_eager", dynamic=False)(x)
     torch._dynamo.reset()
-    assert not blk._varlen_weight_cache and not blk._attn_mask_cache
-    assert ref_blk._varlen_weight_cache and ref_blk._attn_mask_cache
+    assert not blk._varlen_weight_cache and ref_blk._varlen_weight_cache
     assert torch.allclose(out, ref, rtol=0.0, atol=1e-12), (out - ref).abs().max()
 
 
