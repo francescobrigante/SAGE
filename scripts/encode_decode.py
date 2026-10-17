@@ -8,7 +8,8 @@
 #
 # Input audio is resampled to 44.1 kHz and made stereo (mono is duplicated). Latents are
 # saved with torch.save as {"latent": (1, 16, T), "num_samples", "padded_samples", "sample_rate"},
-# so `decode` restores the exact input length. Needs only the core install (pip install .).
+# so `decode` restores the exact input length. Inputs longer than --chunk-seconds (300 s) run in
+# chunks with context margins, so the memory stays bounded. Needs only the core install (pip install .).
 # =============================================================================
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ import torch
 import torchaudio
 
 from sage import SAGE
+from sage.constants import DEFAULT_CHUNK_MARGIN_SECONDS, DEFAULT_CHUNK_SECONDS
 
 
 def load_audio(path: Path, sample_rate: int, channels: int) -> torch.Tensor:
@@ -47,11 +49,19 @@ def main() -> None:
     ap.add_argument("--sdpa", action=argparse.BooleanOptionalAction, default=True,
                     help="attention through F.scaled_dot_product_attention (same formula, faster; default on); "
                          "--no-sdpa runs the original attention")
+    ap.add_argument("--chunk-seconds", type=float, default=DEFAULT_CHUNK_SECONDS,
+                    help=f"inputs longer than this run in chunks of this length (default {DEFAULT_CHUNK_SECONDS:g} s)")
+    ap.add_argument("--chunk-margin-seconds", type=float, default=DEFAULT_CHUNK_MARGIN_SECONDS,
+                    help=f"context per side of each chunk, discarded (default {DEFAULT_CHUNK_MARGIN_SECONDS:g} s; "
+                         "3 s or more gives the one-pass output)")
+    ap.add_argument("--no-chunk", action="store_true", help="always one pass (memory grows with the length)")
     ap.add_argument("--deterministic", action="store_true",
                     help="use the posterior mean instead of a sampled latent (the paper metrics use sampled z)")
     args = ap.parse_args()
 
-    codec = SAGE.from_checkpoint(args.ckpt, device=args.device, varlen=args.varlen, sdpa=args.sdpa)
+    codec = SAGE.from_checkpoint(args.ckpt, device=args.device, varlen=args.varlen, sdpa=args.sdpa,
+                                 chunk_seconds=None if args.no_chunk else args.chunk_seconds,
+                                 chunk_margin_seconds=args.chunk_margin_seconds)
     sr, channels = codec.sample_rate, codec.audio_channels
 
     if args.command == "reconstruct":

@@ -18,3 +18,11 @@ DEFAULT_SILENCE_THRESHOLD = -62           # dBFS: crops quieter than this are re
 # absorbs resampling edge transients so a full segment can always be cropped.
 DEFAULT_PARTIAL_READ = False
 DEFAULT_PARTIAL_READ_MARGIN = 4096
+
+# Long audio (sage.inference.SAGE): inputs longer than one chunk are encoded and decoded in chunks of this length,
+# each with this much context per side that is then discarded (SAME-style). A margin of 3 s or more gives the
+# one-pass output up to float rounding (> 100 dB); with the postnet in slices above ~190 s, 300 s chunks keep the
+# peak GPU memory of batch 1 near 14 GiB at any length (a single pass of 20 min peaks near 33 GiB), for about
+# 2-3 % more time.
+DEFAULT_CHUNK_SECONDS = 300.0
+DEFAULT_CHUNK_MARGIN_SECONDS = 6.0

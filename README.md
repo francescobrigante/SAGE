@@ -94,6 +94,13 @@ At inference the window attention runs through PyTorch's fused `scaled_dot_produ
 the same formula faster. `SAGE.from_checkpoint(..., sdpa=False)` (or `--no-sdpa` in `encode_decode.py`) runs the
 original attention instead.
 
+Inputs of any length work. Above 5 minutes, `encode`, `decode` and `reconstruct` run in 5-minute chunks
+that each see 6 s of the neighbouring audio, which is then discarded. The output equals a single pass up to
+floating-point rounding, for about 3 % more time, and the GPU memory stays below 14 GB however long the track
+is (a single pass of 20 minutes would need about 33 GB). `chunk_seconds=...` and `chunk_margin_seconds=...` in `SAGE.from_checkpoint`
+(`--chunk-seconds`, `--chunk-margin-seconds` in `encode_decode.py`) change the two lengths; margins under 3 s
+leave audible seams. `chunk_seconds=None` (`--no-chunk`) always runs a single pass.
+
 To work with the latents directly:
 
 ```python

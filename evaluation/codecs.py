@@ -94,13 +94,17 @@ class SAGEAdapter(CodecAdapter):
 
     def provenance(self) -> dict:
         """The attention settings that produced the numbers (metrics/varlen.json): variable-length
-        mode, and the SDPA path when it was on (the key is absent otherwise, as in earlier runs)."""
+        mode, the SDPA path when it was on (the key is absent otherwise, as in earlier runs), and the
+        chunk length above which long inputs run in chunks."""
         from sage.model.swin.varlen import resolve
         vl = resolve(self.codec.varlen_mode)
         out = {"mode": self.codec.varlen_mode, "blocks": self.codec.varlen_blocks,
                "phases": list(vl.phases) if vl else [], "combine": vl.combine if vl else None}
         if self.codec.sdpa:
             out["sdpa"] = True
+        if self.codec.chunk_seconds is not None:      # inputs longer than this ran in chunks
+            out["chunk_seconds"] = self.codec.chunk_seconds
+            out["chunk_margin_seconds"] = self.codec.chunk_margin_seconds
         return out
 
 

@@ -277,6 +277,8 @@ class SAGEEncoder(AbstractEncoder):
             return x, {"feature_shape": (1, T_lat)}               # freq folded away
 
         # ── Legacy path (default): per-token FC, keep F_lat × T_lat grid ───────────
+        # The latent stays flattened freq-major (idx = f*T_lat + t): its last axis is F_lat
+        # bands one after the other, not time. Slice time on x.view(B, C, F_lat, T_lat).
         x = self.head(x)                        # (B, 128, out_channels)
 
         x = x.transpose(1, 2)                   # (B, out_channels, 128=H*W latent)
