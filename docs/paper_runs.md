@@ -83,7 +83,7 @@ git clone https://github.com/Eps-Acoustic-Revolution-Lab/EAR_VAE2 models/EAR_VAE
 It follows the authors' `inference.py` (posterior mean, chunked encoding and decoding) without its
 output clipping and -14 LUFS normalisation, and runs at 44.1 kHz with resampling to 48 kHz inside.
 
-## Semantic probing (Tables 4 and 9)
+## Semantic probing (Tables 4 and 10)
 
 ```bash
 python -m evaluation.maeb encoder=sage        # the 19 tasks: FMA (6) + MoisesDB (7) + upstream MAEB music (6)
@@ -101,6 +101,6 @@ python -m evaluation.tables --recon "FMA test=results/recon_fma" --recon "Moises
     --maeb results/maeb/SAGE_FTe992 --maeb results/maeb/same-s --maeb results/maeb/clap
 ```
 
-Not reproduced by this repository: the inference timings of Tables 1 and 8, the MUSHRA
+Not reproduced by this repository: the inference timings of Tables 1, 8 and 9, the MUSHRA
 test of Table 3, and the ablations and sweeps of Tables 5, 7 (phase-1 checkpoints with and
-without L_SD), 10 and 11.
+without L_SD), 11 and 12.

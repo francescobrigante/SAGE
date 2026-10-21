@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# Semantic probing of a latent on the MAEB tasks (paper Section 4, Tables 4 and 9):
+# Semantic probing of a latent on the MAEB tasks (paper Section 4, Tables 4 and 10):
 #
 #   python -m evaluation.maeb encoder=sage                  # the paper's 19 tasks
 #   python -m evaluation.maeb encoder=same-s                # a baseline
