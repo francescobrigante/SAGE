@@ -228,6 +228,27 @@ def test_sdpa_is_the_default_and_matches_the_original_attention(tiny_pretrain_ck
     assert a.shape == b.shape and snr > 80, snr
 
 
+def test_precision_default_and_options(tiny_pretrain_ckpt):
+    """TF32 by default; bf16 autocasts encoder and decoder only (FP32 weights, latents and output), close to
+    FP32; on CPU the TF32 switches change nothing, so tf32, fp32 and None give the same output."""
+    from sage import SAGE
+    codecs = {p: SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu", precision=p) for p in ("tf32", "fp32", "bf16", None)}
+    assert SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu").precision == "tf32"
+    wav = 0.1 * torch.randn(2, 3 * 44100 + 123, generator=torch.Generator().manual_seed(0))
+    out = {p: c.reconstruct(wav, deterministic=True) for p, c in codecs.items()}
+    assert torch.equal(out["tf32"], out["fp32"]) and torch.equal(out["tf32"], out[None])
+    bf16 = codecs["bf16"]
+    assert all(p.dtype == torch.float32 for p in bf16.autoencoder.parameters())
+    assert bf16.encode(bf16.pad(wav.unsqueeze(0))[0], deterministic=True).dtype == torch.float32
+    assert out["bf16"].dtype == torch.float32 and not torch.equal(out["bf16"], out["fp32"])
+    assert _snr(out["fp32"], out["bf16"]) > 20
+    assert set(bf16.autoencoder.state_dict()) == set(codecs["fp32"].autoencoder.state_dict())
+    bf16.set_precision("fp32")                                   # switchable after loading
+    assert torch.equal(bf16.reconstruct(wav, deterministic=True), out["fp32"])
+    with pytest.raises(ValueError):
+        SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu", precision="fp16")
+
+
 def _snr(ref: torch.Tensor, est: torch.Tensor) -> float:
     return (10 * torch.log10(ref.pow(2).sum() / (ref - est).pow(2).sum().clamp_min(1e-30))).item()
 

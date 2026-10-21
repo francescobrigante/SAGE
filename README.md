@@ -18,7 +18,7 @@ Michele Mancusi<sup>1,2</sup><br>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/francescobrigante/SAGE/main/docs/assets/efficiency_dark.png">
     <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/francescobrigante/SAGE/main/docs/assets/efficiency.png">
-    <img src="https://raw.githubusercontent.com/francescobrigante/SAGE/main/docs/assets/efficiency.png" width="600" alt="FAD-MERT on the MoisesDB mixtures against real-time factor: SAGE has the lowest FAD-MERT at the real-time factor of Stable Audio Open">
+    <img src="https://raw.githubusercontent.com/francescobrigante/SAGE/main/docs/assets/efficiency.png" width="600" alt="FAD-MERT on the MoisesDB mixtures against real-time factor: SAGE has the lowest FAD-MERT and is outrun only by SAME-S">
   </picture>
   <br><em>Distributional fidelity against inference cost on the MoisesDB mixtures; marker area is the parameter count.</em>
 </p>
@@ -32,9 +32,9 @@ Its Swin Transformer V2 encoder and decoder operate on the STFT. During training
 semantic distillation from LAION-CLAP, a pretrained audio-text model, shapes the
 latent representation.
 
-- **Fast:** it runs at the inference cost of Stable Audio Open.
-- **High fidelity:** its listening-test score matches SAME-L, an autoencoder 8× larger and 4×
-  slower, and it surpasses both on objective perceptual and distributional reconstruction metrics.
+- **Fast:** it runs about 3× faster than Stable Audio Open.
+- **High fidelity:** its listening-test score matches SAME-L, an autoencoder 8× larger and over
+  2× slower, and it surpasses both on objective perceptual and distributional reconstruction metrics.
 - **Semantic latent:** it sets the state of the art on all nineteen probing tasks of latent
   semantics, in domain and out of domain.
 - **Open data:** it is trained solely on publicly available music.
@@ -94,6 +94,11 @@ At inference the window attention runs through PyTorch's fused `scaled_dot_produ
 the same formula faster. `SAGE.from_checkpoint(..., sdpa=False)` (or `--no-sdpa` in `encode_decode.py`) runs the
 original attention instead.
 
+Encoding and decoding run in TF32 by default, the setting of the paper's timings, which leaves the reconstruction
+unchanged (paper, Appendix C). `precision="fp32"` (`--precision fp32` in `encode_decode.py`) turns TF32 off;
+`precision="bf16"` runs the encoder and decoder under bfloat16 autocast, which is faster only on long inputs
+(30 s clips: 25.5 vs 30.6 ms, compiled) and costs a little fidelity.
+
 Inputs of any length work. Above 5 minutes, `encode`, `decode` and `reconstruct` run in 5-minute chunks
 that each see 6 s of the neighbouring audio, which is then discarded. The output equals a single pass up to
 floating-point rounding, for about 3 % more time, and the GPU memory stays below 14 GB however long the track
@@ -123,14 +128,15 @@ cannot be used to resume training.
 
 | Model | Params | Speed (RTF ↓) | Listening test (MUSHRA ↑) | Probing: FMA ↑ | Probing: MoisesDB ↑ | Probing: MAEB music ↑ |
 |---|---|---|---|---|---|---|
-| **SAGE** | **105M** | **0.0045** | **81.6 ± 2.7** | **0.563** | **0.544** | **0.622** |
-| SAME-L | 852M | 0.0192 | **81.8 ± 2.6** | 0.470 | 0.493 | 0.473 |
-| Stable Audio Open | 156M | **0.0045** | 64.6 ± 3.7 | 0.490 | 0.469 | 0.481 |
-| CoDiCodec | 150M | 0.0237 | 66.4 ± 3.5 | 0.474 | 0.456 | 0.471 |
+| **SAGE** | **105M** | **0.0012** | **81.6 ± 2.7** | **0.563** | **0.544** | **0.622** |
+| SAME-L | 852M | 0.0026 | **81.8 ± 2.6** | 0.470 | 0.493 | 0.473 |
+| Stable Audio Open | 156M | 0.0034 | 64.6 ± 3.7 | 0.490 | 0.469 | 0.481 |
+| CoDiCodec | 150M | 0.0148 | 66.4 ± 3.5 | 0.474 | 0.456 | 0.471 |
 
 How to read the table:
 
-- **RTF** (real-time factor): processing time divided by audio duration. Lower is faster.
+- **RTF** (real-time factor): time to encode and decode a 10 s clip divided by 10 s, on one NVIDIA
+  RTX PRO 6000 Blackwell GPU in TF32, compiled (paper Table 1 and Appendix C). Lower is faster.
 - **MUSHRA**: a listening test in which 21 raters (after filtering) scored reconstructions
   from 0 to 100 against the original (paper Table 3). SAGE and SAME-L are statistically
   indistinguishable.
@@ -154,6 +160,10 @@ command that reproduces each of them.
 | Everything, including the paper's baselines | `uv sync --all-extras` |
 
 PyTorch 2.7.1 is installed with CUDA 12.6 wheels on Linux and the default wheels elsewhere.
+Blackwell GPUs (RTX 50 series, RTX PRO 6000, B200) need the CUDA 12.8 wheels. After `uv sync`, run
+`uv pip install --reinstall torch==2.7.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128`,
+then use the environment with `source .venv/bin/activate` or `uv run --no-sync`: a plain `uv run` restores
+the locked CUDA 12.6 wheels.
 Run commands with `uv run`, or activate the environment once with `source .venv/bin/activate`.
 `pip install .` (or `pip install ".[train,eval]"`) also works, without the lock file.
 
@@ -171,7 +181,7 @@ commands for both phases, GPU sizing, resuming and SLURM.
 ```bash
 python -m evaluation.build_references dataset=musiccaps            # once per 10 s clip set
 python -m evaluation.reconstruction dataset=fma model=sage          # reconstruction metrics (Table 2)
-python -m evaluation.maeb encoder=sage                              # the 19 probing tasks (Tables 4, 9)
+python -m evaluation.maeb encoder=sage                              # the 19 probing tasks (Tables 4, 10)
 python -m evaluation.tables --recon "FMA test=results/recon_fma" --maeb results/maeb/SAGE_FTe992
 ```
 

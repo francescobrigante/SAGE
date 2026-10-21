@@ -64,7 +64,7 @@ class SAGELatentEncoder(AbsEncoder):
         self.max_audio_length_seconds = max_audio_length_seconds
 
         _device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        loader = SAGE.from_checkpoint(model_name, device=_device)
+        loader = SAGE.from_checkpoint(model_name, device=_device, precision=None)   # PyTorch defaults, as in the paper
         self.autoencoder = loader.autoencoder
         self.device: torch.device = loader.device
 

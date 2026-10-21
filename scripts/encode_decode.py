@@ -22,6 +22,7 @@ import torchaudio
 
 from sage import SAGE
 from sage.constants import DEFAULT_CHUNK_MARGIN_SECONDS, DEFAULT_CHUNK_SECONDS
+from sage.precision import DEFAULT_PRECISION, PRECISIONS
 
 
 def load_audio(path: Path, sample_rate: int, channels: int) -> torch.Tensor:
@@ -55,13 +56,16 @@ def main() -> None:
                     help=f"context per side of each chunk, discarded (default {DEFAULT_CHUNK_MARGIN_SECONDS:g} s; "
                          "3 s or more gives the one-pass output)")
     ap.add_argument("--no-chunk", action="store_true", help="always one pass (memory grows with the length)")
+    ap.add_argument("--precision", choices=PRECISIONS, default=DEFAULT_PRECISION,
+                    help="tf32 (default, the paper's timings), fp32 (no TF32) or bf16 (autocast: faster on long inputs "
+                         "only, slightly lower fidelity)")
     ap.add_argument("--deterministic", action="store_true",
                     help="use the posterior mean instead of a sampled latent (the paper metrics use sampled z)")
     args = ap.parse_args()
 
     codec = SAGE.from_checkpoint(args.ckpt, device=args.device, varlen=args.varlen, sdpa=args.sdpa,
                                  chunk_seconds=None if args.no_chunk else args.chunk_seconds,
-                                 chunk_margin_seconds=args.chunk_margin_seconds)
+                                 chunk_margin_seconds=args.chunk_margin_seconds, precision=args.precision)
     sr, channels = codec.sample_rate, codec.audio_channels
 
     if args.command == "reconstruct":

@@ -9,7 +9,7 @@
 #   --recon LABEL=DIR   one evaluation set; DIR/<model>/metrics/ as written by
 #                       evaluation.reconstruction → Table 2, plus the stereo-image
 #                       metrics when ms_metrics.csv exists (compute_ms_metrics=true)
-#   --maeb DIR          the MAEB output of one encoder (evaluation.maeb) → Table 9
+#   --maeb DIR          the MAEB output of one encoder (evaluation.maeb) → Table 10
 #                       and the block averages of Table 4; a directory named
 #                       "clap" is the oracle row, shown but never bolded
 # Per-file metrics are averaged over files; FADs are corpus-level scalars.
@@ -152,7 +152,7 @@ def main(argv=None) -> None:
                                    for ts in MAEB_BLOCKS.values()] for m, s in scores.items()},
                               index=list(MAEB_BLOCKS))
         oracle = ("clap",)
-        print(f"\n### Semantic probing, nineteen tasks (Table 9)\n\n"
+        print(f"\n### Semantic probing, nineteen tasks (Table 10)\n\n"
               f"{_markdown(per_task.T, {t: True for t in tasks}, exclude=oracle)}")
         print(f"\n### Average per block (Table 4)\n\n{_markdown(blocks.T, {b: True for b in MAEB_BLOCKS}, exclude=oracle)}")
 

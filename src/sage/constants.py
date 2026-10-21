@@ -26,3 +26,7 @@ DEFAULT_PARTIAL_READ_MARGIN = 4096
 # 2-3 % more time.
 DEFAULT_CHUNK_SECONDS = 300.0
 DEFAULT_CHUNK_MARGIN_SECONDS = 6.0
+
+# Numerical precision of inference (sage.inference.SAGE, `precision=`; see sage.precision): TF32 matmuls and
+# convolutions, the setting of the paper's timings (Table 1), which leaves the reconstruction unchanged.
+DEFAULT_PRECISION = "tf32"

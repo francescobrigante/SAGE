@@ -1,5 +1,5 @@
 # =============================================================================
-# evaluation.maeb: semantic probing of a latent on the MAEB tasks (Tables 4 and 9).
+# evaluation.maeb: semantic probing of a latent on the MAEB tasks (Tables 4 and 10).
 #
 #   python -m evaluation.maeb encoder=sage                  # the paper's 19 tasks
 #   python -m evaluation.maeb encoder=same-s                # a baseline

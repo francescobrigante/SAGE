@@ -39,7 +39,7 @@ from .moisesdb_tasks import MOISESDB_SUITE  # noqa: E402
 # The complete set of task names these CLIs may run.
 ALLOWED_TASKS = FMA_SUITE + MAEB_ORIGINAL_MUSIC + MOISESDB_SUITE
 
-# Named suites (configs/maeb.yaml `suite`); "paper" is the 19 tasks of Table 9.
+# Named suites (configs/maeb.yaml `suite`); "paper" is the 19 tasks of Table 10.
 SUITES = {
     "paper": FMA_SUITE + MOISESDB_SUITE + MAEB_ORIGINAL_MUSIC,
     "fma": FMA_SUITE,

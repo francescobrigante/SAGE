@@ -83,7 +83,8 @@ class SAGEAdapter(CodecAdapter):
             raise ValueError("model 'sage' needs a checkpoint")
         self.device = torch.device(device)          # model + I/O device
         self.deterministic = deterministic          # posterior mean instead of sampled z
-        self.codec = SAGE.from_checkpoint(checkpoint, device=self.device, varlen=varlen, sdpa=sdpa)
+        # precision=None: PyTorch's default flags, as for the paper's tables and every other adapter
+        self.codec = SAGE.from_checkpoint(checkpoint, device=self.device, varlen=varlen, sdpa=sdpa, precision=None)
         self.sample_rate = self.codec.sample_rate or 44100
         self.audio_channels = self.codec.audio_channels or 2
 

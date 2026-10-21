@@ -1,6 +1,6 @@
 [project]
 name = "sage"
-version = "0.1.1"
+version = "0.2.0"
 description = "SAGE: Semantic Audio Generative Encoder — a Swin V2 variational autoencoder for stereo music"
 authors = [
     { name = "Francesco Brigante", email = "francescobrigantefb@gmail.com" },
@@ -56,7 +56,7 @@ eval = [
     "cdpam==0.0.6",
     "resampy==0.4.3",
     "pandas>=2.2",
-    # MAEB (Tables 4, 9): the paper's versions. scikit-learn 1.9 draws other CV folds / k-means
+    # MAEB (Tables 4, 10): the paper's versions. scikit-learn 1.9 draws other CV folds / k-means
     # inits (clustering and classification scores move by up to 0.014); datasets 4+ decodes audio
     # only through torchcodec, and the six upstream MAEB tasks then fail.
     "scikit-learn==1.8.0",
