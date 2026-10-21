@@ -7,6 +7,7 @@ from __future__ import annotations
 #   z     = codec.encode(wav)                               # (B, 2, N) -> (B, 16, T_lat)
 #   rec   = codec.decode(z, target_length=wav.shape[-1])    # -> (B, 2, N)
 # Inputs longer than one chunk (300 s by default) run in chunks with context margins (sage.chunked).
+# Encode and decode run in TF32 by default (`precision=`, see sage.precision).
 # =============================================================================
 
 import math
@@ -16,7 +17,7 @@ from typing import Any, Dict, Optional, Union
 import torch
 import torch.nn.functional as F
 
-from sage import chunked
+from sage import chunked, precision as _precision
 from sage.constants import DEFAULT_CHUNK_MARGIN_SECONDS, DEFAULT_CHUNK_SECONDS
 from sage.model.autoencoder import SAGEAutoencoder
 from sage.utils.console import ok, warn
@@ -295,6 +296,7 @@ class SAGE:
         sdpa: bool = True,
         chunk_seconds: Optional[float] = DEFAULT_CHUNK_SECONDS,
         chunk_margin_seconds: float = DEFAULT_CHUNK_MARGIN_SECONDS,
+        precision: Optional[str] = _precision.DEFAULT_PRECISION,
     ) -> "SAGE":
         """Load a SAGE checkpoint (EMA weights when present).
 
@@ -311,9 +313,16 @@ class SAGE:
                 length. ``None`` always runs one pass (memory grows with the length).
             chunk_margin_seconds: Context per side of each chunk, discarded after the pass. 3 s or
                 more gives the one-pass output; less leaves audible seams.
+            precision: ``"tf32"`` (default): TF32 matrix multiplications and convolutions, the setting
+                of the paper's timings; ``"fp32"``: no TF32; ``"bf16"``: encoder and decoder under
+                ``torch.autocast(bfloat16)`` with FP32 weights (faster on long inputs only, slightly lower fidelity);
+                ``None``: PyTorch's flags as they are, as in the paper's reconstruction and probing
+                tables. The TF32 switches are set during :meth:`encode` / :meth:`decode` only and
+                restored afterwards; they are process-wide while those calls run.
         """
         return cls(checkpoint_path, device=device, strict=strict, varlen=varlen, sdpa=sdpa,
-                   chunk_seconds=chunk_seconds, chunk_margin_seconds=chunk_margin_seconds)
+                   chunk_seconds=chunk_seconds, chunk_margin_seconds=chunk_margin_seconds,
+                   precision=precision)
 
     def __init__(
         self,
@@ -325,7 +334,9 @@ class SAGE:
         sdpa: bool = True,
         chunk_seconds: Optional[float] = DEFAULT_CHUNK_SECONDS,
         chunk_margin_seconds: float = DEFAULT_CHUNK_MARGIN_SECONDS,
+        precision: Optional[str] = _precision.DEFAULT_PRECISION,
     ) -> None:
+        _precision.check_precision(precision)
         self.checkpoint_path = Path(checkpoint_path)
         if not self.checkpoint_path.is_file():
             raise FileNotFoundError(f"Checkpoint not found: {self.checkpoint_path}")
@@ -381,6 +392,7 @@ class SAGE:
         self._apply_varlen(varlen)
         self._apply_sdpa(sdpa)
         self._apply_chunking(chunk_seconds, chunk_margin_seconds)
+        self.set_precision(precision)
 
         ok(f"Loaded checkpoint: {self.checkpoint_path}", prefix="CHECKPOINT")
 
@@ -453,6 +465,13 @@ class SAGE:
         if margin_seconds > 0:
             self._margin_frames = max(self._margin_frames, g.grid)
 
+    def set_precision(self, precision: Optional[str]) -> None:
+        """Numerical precision of the next :meth:`encode` / :meth:`decode` calls (see :meth:`from_checkpoint`)."""
+        self.precision = _precision.check_precision(precision)
+        dtype = torch.bfloat16 if precision == "bf16" else None
+        for block in (self.autoencoder.encoder, self.autoencoder.decoder):
+            _precision.set_autocast(block, dtype)
+
     def _chunks(self, frames: int) -> bool:
         """Whether an input of ``frames`` STFT frames runs in chunks."""
         return self._chunk_frames is not None and frames > self._chunk_frames
@@ -502,6 +521,10 @@ class SAGE:
             (index ``f * L/4 + t``). Time is the last axis of ``z.view(B, 16, 4, L // 4)``,
             one step per 4 frames (2048 samples); cut, crop or chunk latents along it.
         """
+        with _precision.tf32_flags(self.precision):
+            return self._encode(audio, deterministic, debug)
+
+    def _encode(self, audio: torch.Tensor, deterministic: bool, debug: bool) -> torch.Tensor:
         self.autoencoder.eval()
         audio = audio.to(self.device)
         if self._chunk_frames is not None and self._chunks(audio.shape[-1] // self._geometry.hop + 1):
@@ -523,6 +546,10 @@ class SAGE:
         debug: bool = False,
     ) -> torch.Tensor:
         """Decode latents to waveform (in chunks above ``chunk_seconds``, as :meth:`encode`)."""
+        with _precision.tf32_flags(self.precision):
+            return self._decode(latents, target_length, debug)
+
+    def _decode(self, latents: torch.Tensor, target_length: Optional[int], debug: bool) -> torch.Tensor:
         self.autoencoder.eval()
         latents = latents.to(self.device)
         if self._chunk_frames is not None and self._chunks(self._geometry.frames_of(latents.shape[-1])):
@@ -564,4 +591,4 @@ class SAGE:
         return rec if batched else rec[0]
 
     def __repr__(self) -> str:
-        return f"SAGE(device={self.device}, sr={self.sample_rate})"
+        return f"SAGE(device={self.device}, sr={self.sample_rate}, precision={self.precision})"
