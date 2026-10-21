@@ -10,7 +10,7 @@ Layout: ``sage.model`` is the SAGE architecture, built from the generic building
 ``sage.nn``; ``sage.training`` holds the two training phases; ``sage.inference`` loads checkpoints.
 """
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 
 def __getattr__(name):
