@@ -149,7 +149,8 @@ class MRD(nn.Module):
         hop_factor: float = 0.25,
         sample_rate: int = 44100,
         bands: list = BANDS,
-        channels: int = 1
+        channels: int = 1,
+        joint: bool = False,
     ):
         """Complex multi-band spectrogram discriminator.
         Parameters
@@ -162,6 +163,9 @@ class MRD(nn.Module):
             Sampling rate of audio in Hz, by default 44100
         bands : list, optional
             Bands to run discriminator over.
+        joint : bool, optional
+            False: each channel is its own batch row (2 input maps, Re/Im). True: the
+            channels are stacked in the first convolution (2 * channels input maps).
         """
         super().__init__()
 
@@ -175,6 +179,7 @@ class MRD(nn.Module):
         )
 
         self.channels = channels
+        self.joint = joint                    # fuse the channels in the first conv instead of folding them
 
         n_fft = window_length // 2 + 1
         # `bands` may be given as explicit (lo, hi) fraction pairs, or as a flat list of
@@ -188,7 +193,7 @@ class MRD(nn.Module):
         ch = 32
         convs = lambda: nn.ModuleList(
             [
-                WNConv2d(2, ch, (3, 9), (1, 1), padding=(1, 4)),
+                WNConv2d(2 * channels if joint else 2, ch, (3, 9), (1, 1), padding=(1, 4)),
                 WNConv2d(ch, ch, (3, 9), (1, 2), padding=(1, 4)),
                 WNConv2d(ch, ch, (3, 9), (1, 2), padding=(1, 4)),
                 WNConv2d(ch, ch, (3, 9), (1, 2), padding=(1, 4)),
@@ -200,8 +205,11 @@ class MRD(nn.Module):
 
     def spectrogram(self, x):
         x = AudioSignal(x, self.sample_rate, stft_params=self.stft_params)
-        x = torch.view_as_real(x.stft())
-        x = rearrange(x, "b ch f t c -> (b ch) c t f", ch=self.channels)
+        x = torch.view_as_real(x.stft())                                  # (B, C, F, N, 2)
+        if self.joint:
+            x = rearrange(x, "b ch f t c -> b (ch c) t f", ch=self.channels)  # (B, 2C, N, F)
+        else:
+            x = rearrange(x, "b ch f t c -> (b ch) c t f", ch=self.channels)  # (B·C, 2, N, F)
         # Split into bands
         x_bands = [x[..., b[0] : b[1]] for b in self.bands]
         return x_bands

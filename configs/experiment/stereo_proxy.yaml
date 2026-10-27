@@ -1,0 +1,33 @@
+# @package _global_
+# =============================================================================
+# Stereo-discriminator proxy, arm C0: the pretraining recipe on FMA-medium at the scale of the
+# legacy stereo proxy (STEREO_N/B/C/D): global batch 16 (8 per GPU on 1 node x 2 GPUs, the same
+# per-GPU batch as the paper), 95 epochs (~118k batches, ~59k generator updates, LR ending at
+# ~88% of the peak with inv_gamma 2e5), a checkpoint every 10 epochs (epoch_089 is the paired
+# evaluation point). Losses and discriminator are those of pretrain.yaml, unchanged; the stereo
+# diagnostics of the critic are on (read-only).
+#
+#   python train.py +experiment=stereo_proxy trainer.trainer.num_gpus=2
+#
+# `+experiment=pretrain data=fma` alone would keep pretrain's global batch of 128.
+# tests/test_stereo_proxy_recipe.py checks that only the keys below differ from it.
+# =============================================================================
+defaults:
+  - pretrain
+  - override /data: fma
+  - _self_
+
+data:
+  train_dataloader:
+    batch_size: 16                    # global batch of the proxy
+  eval_dataloader:
+    batch_size: 16
+
+trainer:
+  wandb:
+    name: stereo_proxy_c0
+  trainer:
+    epochs: 95
+    save_every_n_epochs: 10           # epoch_009 ... epoch_089
+    critic_diag_every_n_epochs: 5     # read-only diagnostics (sage/training/stereo_diagnostics.py):
+    adv_grad_every: 500               # they do not change what the run trains

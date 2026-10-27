@@ -44,6 +44,7 @@ logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
 from sage.training.callbacks import DatasetEpochSetter, MultiCorpusEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger
+from sage.training.stereo_diagnostics import StereoCriticDiagnostics
 from sage.training.resume import (find_resume_checkpoint, is_slurm_requeue, read_run_id, resume_run_dir,
                                   should_auto_resume)
 from sage.training.data.dataset import MultiCorpusDataset
@@ -468,6 +469,7 @@ def main(cfg: DictConfig):
         pre_transform_spec=pre_transform_spec,
         accumulate_grad_batches=int(trainer_cfg.trainer.get("accumulate_grad_batches", 1)),
         clip_grad_norm=float(trainer_cfg.trainer.get("clip_grad_norm", 0.0)),
+        adv_grad_every=int(trainer_cfg.trainer.get("adv_grad_every", 0)),
         kl_annealing_epochs=int(trainer_cfg.trainer.get("kl_annealing_epochs", 0)),
         kl_beta_target=kl_beta_target,
     )
@@ -540,6 +542,10 @@ def main(cfg: DictConfig):
         MultiCorpusEpochSetter() if multi_corpus else DatasetEpochSetter(),
         CompressionStatsLogger(train_dl=train_dl, console=console),
     ]
+
+    critic_diag_every = int(pl_trainer_cfg.get("critic_diag_every_n_epochs", 0))
+    if critic_diag_every > 0:
+        callbacks.append(StereoCriticDiagnostics(every_n_epochs=critic_diag_every))
 
     use_ema = bool(pl_trainer_cfg.get("use_ema", True))
     ema_decay = float(pl_trainer_cfg["ema_decay"])       # configs/trainer.yaml: 0.9998 (Table 6)

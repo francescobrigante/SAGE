@@ -12,6 +12,7 @@ from sage.utils.audio import trim_to_shortest
 from sage.utils.tensors import align_freq_bins, align_time_frames
 
 from sage.training.loss_manager import LossManager
+from sage.training.stereo_diagnostics import adversarial_gradient_share
 
 
 def select_training_phase(use_disc: bool, warmup_mode: str, disc_phase: bool, warmed_up: bool) -> str:
@@ -56,8 +57,10 @@ class AutoencoderEngine(nn.Module):
                  teacher_model: Optional[SAGEAutoencoder] = None,
                  audio_channels: Optional[int] = None,
                  stft_params: Optional[dict] = None,
+                 adv_grad_every: int = 0,
                  ):
         super().__init__()
+        self.adv_grad_every = int(adv_grad_every)  # >0: adversarial gradient share every N generator updates
         self.autoencoder = autoencoder
         self.teacher_model = teacher_model
         self.sample_rate = sample_rate
@@ -273,6 +276,7 @@ class AutoencoderEngine(nn.Module):
 
         gen_total = None
         gen_breakdown: Dict[str, torch.Tensor] = {}
+        diag: Dict[str, float] = {}
         disc_total = None
         disc_breakdown: Dict[str, torch.Tensor] = {}
 
@@ -292,6 +296,9 @@ class AutoencoderEngine(nn.Module):
                 loss_info["feature_matching_distance"] = feat_match
 
             gen_total, gen_breakdown = self.loss_manager.losses_gen(loss_info)
+            if (self.adv_grad_every > 0 and self.use_disc and warmed_up and torch.is_grad_enabled()
+                    and gen_step % self.adv_grad_every == 0):
+                diag = adversarial_gradient_share(gen_total, gen_breakdown, sp_decoded, orig_waveforms)
 
         # Stats for logging
         data_std = loss_info["encoder_input"].std()
@@ -306,6 +313,7 @@ class AutoencoderEngine(nn.Module):
             "disc_breakdown": disc_breakdown,
             "loss_info": loss_info,
             "stats": stats,
+            "diag": diag,
         }
 
     @torch.no_grad()

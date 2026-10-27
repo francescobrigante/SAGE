@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 TensorDict = Dict[str, torch.Tensor]
 
-# Default frequency-band boundaries used by multi-band discriminators (Hz)
+# Default frequency-band boundaries used by multi-band discriminators, as fractions of Nyquist
 BANDS = [0.0, 0.1, 0.25, 0.5, 0.75, 1.0]
 
 

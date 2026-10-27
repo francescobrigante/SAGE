@@ -1,0 +1,20 @@
+# @package _global_
+# =============================================================================
+# Stereo-discriminator proxy, arm A3 = A1 + every critic joint with M, S given to all:
+# MPD on [L, R, M, S]; magnitude MRD as A2; DAC complex MRD on Re/Im of [L, R, M, S].
+# For MPD and DAC, M and S are linear in L, R: A3 - A2 tests conditioning, not information.
+# =============================================================================
+defaults:
+  - stereo_proxy
+  - _self_
+
+trainer:
+  wandb:
+    name: stereo_proxy_a3
+  loss_config:
+    discriminator:
+      config:
+        preprocess_gain: shared
+        mpd_stereo: lrms
+        mrd_stereo: lrms
+        dac_stereo: lrms

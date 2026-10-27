@@ -1,0 +1,18 @@
+# @package _global_
+# =============================================================================
+# Stereo-discriminator proxy, arm A1 = C0 + shared DAC gain: one peak-normalisation gain per stereo
+# example, taken on L and R (M, S derived after it), instead of one per channel. Fixes the ILD and
+# Side level that the per-channel DAC preprocess erases, and its 1/eps gradient on mono tracks.
+# Only the key below differs from stereo_proxy (C0); tests/test_stereo_proxy_recipe.py checks it.
+# =============================================================================
+defaults:
+  - stereo_proxy
+  - _self_
+
+trainer:
+  wandb:
+    name: stereo_proxy_a1
+  loss_config:
+    discriminator:
+      config:
+        preprocess_gain: shared

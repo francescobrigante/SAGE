@@ -5,8 +5,8 @@
 #   - MultiResolutionDiscriminator / DiscriminatorR  (UnivNet, **magnitude** STFT, no bands)
 # The MRD here is phase-BLIND (`torch.stft(...).abs()`); this is exactly what makes the
 # WavTokenizer-full stack distinct from DAC (whose MRD is complex+banded). Used only by the
-# `wavtokenizer` composite discriminator for the as-paper ablation. Inputs are mono (B, T);
-# the composite folds channels into the batch before calling these.
+# `wavtokenizer` composite discriminator. Inputs are mono (B, T), as in the original, or
+# (B, C, T) with `in_channels=C` for the joint stereo critics (the only change to the port).
 # =============================================================================
 
 from typing import List, Optional, Tuple
@@ -20,10 +20,11 @@ from torch.nn.utils import weight_norm
 class MultiPeriodDiscriminator(nn.Module):
     """Multi-Period Discriminator (HiFi-GAN), optionally conditional via an embedding table."""
 
-    def __init__(self, periods: Tuple[int, ...] = (2, 3, 5, 7, 11), num_embeddings: Optional[int] = None):
+    def __init__(self, periods: Tuple[int, ...] = (2, 3, 5, 7, 11), num_embeddings: Optional[int] = None,
+                 in_channels: int = 1):
         super().__init__()
         self.discriminators = nn.ModuleList(
-            [DiscriminatorP(period=p, num_embeddings=num_embeddings) for p in periods]
+            [DiscriminatorP(period=p, in_channels=in_channels, num_embeddings=num_embeddings) for p in periods]
         )
 
     def forward(
@@ -68,14 +69,15 @@ class DiscriminatorP(nn.Module):
     def forward(
         self, x: torch.Tensor, cond_embedding_id: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        x = x.unsqueeze(1)                                   # (B, T) -> (B, 1, T)
+        if x.dim() == 2:
+            x = x.unsqueeze(1)                               # (B, T) -> (B, 1, T); (B, C, T) is kept
         fmap = []
         b, c, t = x.shape
         if t % self.period != 0:                             # pad to a multiple of the period
             n_pad = self.period - (t % self.period)
             x = torch.nn.functional.pad(x, (0, n_pad), "reflect")
             t = t + n_pad
-        x = x.view(b, c, t // self.period, self.period)      # (B, 1, T//p, p)
+        x = x.view(b, c, t // self.period, self.period)      # (B, C, T//p, p)
 
         for i, l in enumerate(self.convs):
             x = l(x)
@@ -101,10 +103,12 @@ class MultiResolutionDiscriminator(nn.Module):
         self,
         resolutions: Tuple[Tuple[int, int, int], ...] = ((1024, 256, 1024), (2048, 512, 2048), (512, 128, 512)),
         num_embeddings: Optional[int] = None,
+        in_channels: int = 1,
     ):
         super().__init__()
         self.discriminators = nn.ModuleList(
-            [DiscriminatorR(resolution=r, num_embeddings=num_embeddings) for r in resolutions]
+            [DiscriminatorR(resolution=r, in_channels=in_channels, num_embeddings=num_embeddings)
+             for r in resolutions]
         )
 
     def forward(
@@ -150,8 +154,9 @@ class DiscriminatorR(nn.Module):
         self, x: torch.Tensor, cond_embedding_id: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         fmap = []
-        x = self.spectrogram(x)                              # (B, F, T_frames) magnitude
-        x = x.unsqueeze(1)                                   # (B, 1, F, T_frames)
+        x = self.spectrogram(x)                              # (B, F, N) or (B, C, F, N) magnitude
+        if x.dim() == 3:
+            x = x.unsqueeze(1)                               # (B, 1, F, N)
         for l in self.convs:
             x = l(x)
             x = torch.nn.functional.leaky_relu(x, self.lrelu_slope)
@@ -168,14 +173,16 @@ class DiscriminatorR(nn.Module):
         return x, fmap
 
     def spectrogram(self, x: torch.Tensor) -> torch.Tensor:
+        """|STFT| of a (B, T) or (B, C, T) waveform, one channel at a time → (B, [C,] F, N)."""
         n_fft, hop_length, win_length = self.resolution
+        lead = x.shape[:-1]                                  # (B,) or (B, C)
         magnitude_spectrogram = torch.stft(
-            x,
+            x.reshape(-1, x.shape[-1]),                      # (B·C, T)
             n_fft=n_fft,
             hop_length=hop_length,
             win_length=win_length,
             window=None,                                     # rectangular window (as in the original)
             center=True,
             return_complex=True,
-        ).abs()                                              # magnitude only → phase-blind
-        return magnitude_spectrogram
+        ).abs()                                              # (B·C, F, N) magnitude only → phase-blind
+        return magnitude_spectrogram.reshape(*lead, *magnitude_spectrogram.shape[-2:])
