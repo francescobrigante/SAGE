@@ -17,6 +17,7 @@ device: cuda
 num_workers: 8
 max_files: 0                # 0 = all
 resume: false               # keep the reference embeddings that already exist
+channel: mid                # mid = (L+R)/2 (the paper) | side = (L-R)/2, written under <embedder>-side
 seed: 0                     # per-file seed of the 10 s crop LAION-CLAP takes of clips longer than 10 s (FAD-CLAP)
 
 hydra:

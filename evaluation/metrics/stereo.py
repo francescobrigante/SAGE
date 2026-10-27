@@ -135,12 +135,70 @@ def band_weights(bands: List[Tuple[float, float]], sample_rate: int = 44100, n_f
     return [((freqs >= lo) & (freqs < hi)).float() for lo, hi in bands]
 
 
+# ── Inter-channel phase and level (earVAE / earVAE2) ─────────────────────────
+# Same logic as the reference implementation checked on the controlled-degradation
+# battery (CCPC: EAR_VAE eval/eval_compare_matrix.py @f61b7ba; IPD/ILD: earVAE2
+# App. J.1 Eq. 19-21). Only the low band is kept: above 4 kHz the IPD/ILD errors
+# also move with lowpass and additive noise, i.e. with non-stereo errors.
+CCPC_N_FFTS = (4096, 2048, 1024, 512)
+COHERENCE_MAG_THRESHOLD = 1e-6   # bins with |X_L||X_R| below this carry no phase
+LOW_BAND_HZ = 1500.0             # IPD/ILD band [0, LOW_BAND_HZ): where phase cues are used
+IPD_ILD_N_FFT = 2048
+
+
+def _stft_quarter_hop(x: torch.Tensor, n_fft: int) -> torch.Tensor:
+    """Complex STFT of a (2, T) waveform, Hann window, hop n_fft/4 → (2, F, N)."""
+    win = torch.hann_window(n_fft, device=x.device, dtype=x.dtype)
+    return torch.stft(x, n_fft, n_fft // 4, n_fft, win, return_complex=True)
+
+
+def ccpc(ref: torch.Tensor, rec: torch.Tensor, eps: float = 1e-8) -> float:
+    """Cross-channel phase coherence between two aligned (2, T) signals, in [0, 1].
+
+    Per frame, the coherence across frequency of the inter-channel phase difference
+    error, weighted by |X_L||X_R| of the reconstruction; frames are weighted by their
+    energy, then the four STFT sizes are averaged. 1 = the inter-channel phase is
+    reproduced up to a constant: blind to a polarity flip and to level differences.
+    """
+    vals = []
+    for n_fft in CCPC_N_FFTS:
+        P, T = _stft_quarter_hop(rec, n_fft), _stft_quarter_hop(ref, n_fft)          # (2, F, N)
+        d = torch.angle(P[0] * P[1].conj()) - torch.angle(T[0] * T[1].conj())       # (F, N) IPD error
+        w = P[0].abs() * P[1].abs()                                                # (F, N)
+        w = w * (w > COHERENCE_MAG_THRESHOLD)
+        coh = (w * torch.polar(torch.ones_like(d), d)).sum(0).abs() / w.sum(0).clamp_min(eps)   # (N,)
+        e = w.sum(0)                                                               # (N,) frame weight
+        vals.append(((coh * e).sum() / e.sum().clamp_min(eps)).item())
+    return sum(vals) / len(vals)
+
+
+def ipd_ild_low(ref: torch.Tensor, rec: torch.Tensor, sample_rate: int = 44100,
+                eps: float = 1e-8) -> Tuple[float, float]:
+    """Mean absolute IPD error (rad) and ILD error (dB) below LOW_BAND_HZ.
+
+    IPD: per TF bin, |angle of the reconstruction's L·R* against the reference's|.
+    ILD: per frame, 10·log10 of the L/R band energy ratio; mean |difference| over frames.
+    """
+    P, T = _stft_quarter_hop(rec, IPD_ILD_N_FFT), _stft_quarter_hop(ref, IPD_ILD_N_FFT)   # (2, F, N)
+    low = torch.fft.rfftfreq(IPD_ILD_N_FFT, 1 / sample_rate).to(P.device) < LOW_BAND_HZ  # (F,)
+    P, T = P[:, low], T[:, low]                                                     # (2, F_low, N)
+    ipd = torch.angle(P[0] * P[1].conj() * (T[0] * T[1].conj()).conj()).abs().mean()
+
+    def band_ild(X: torch.Tensor) -> torch.Tensor:                                  # (N,) dB
+        return 10 * torch.log10((X[0].abs().square().sum(0) + eps) / (X[1].abs().square().sum(0) + eps))
+
+    ild = (band_ild(P) - band_ild(T)).abs().mean()
+    return ipd.item(), ild.item()
+
+
 # ── Per-file row of the reconstruction evaluator ─────────────────────────────
 
 # Per-file schema. The first five columns are byte-identical to the legacy
 # compute_ms_metrics schema (old ms_metrics.csv stay readable, and readers that
 # select columns by name are unaffected). The rest are already computed by
-# stereo_imaging_distance and were previously thrown away.
+# stereo_imaging_distance and were previously thrown away; the last four were
+# added for the stereo-discriminator study and are appended so the earlier
+# columns keep their position.
 MS_COLUMNS = [
     "file",
     "width_bias", "d_width",      # Side LEVEL (signed) / stereo image error (unsigned)
@@ -149,6 +207,9 @@ MS_COLUMNS = [
     "score",                      # (d_width + d_pan) / 2
     "sm_ref_db", "sm_rec_db",     # global 10*log10(E_S/E_M), reference and reconstruction
     "ref_mono",                   # 1 = degenerate reference Side, see below
+    "side_db",                    # sm_rec_db - sm_ref_db: Side level error (dB)
+    "ccpc",                       # inter-channel phase coherence (1 = perfect)
+    "ipd_lo", "ild_lo",           # IPD (rad) / ILD (dB) errors below LOW_BAND_HZ
 ]
 
 # A reference whose Side sits this far below its Mid carries no stereo
@@ -188,6 +249,7 @@ def ms_metrics_row(ref: torch.Tensor, pred: torch.Tensor, sr: int) -> Dict[str, 
     Sx = (pred_a[0] - pred_a[1]) / 2 ** 0.5               # (T,) predicted side
     Mr = (ref_a[0] + ref_a[1]) / 2 ** 0.5                 # (T,) reference mid
     Mx = (pred_a[0] + pred_a[1]) / 2 ** 0.5               # (T,) predicted mid
+    ipd_lo, ild_lo = ipd_ild_low(ref_a, pred_a, sr)
 
     return {
         "width_bias": d["width_bias"], "d_width": d["d_width"],
@@ -195,4 +257,6 @@ def ms_metrics_row(ref: torch.Tensor, pred: torch.Tensor, sr: int) -> Dict[str, 
         "d_pan": d["d_pan"], "pan_bias": d["pan_bias"], "score": d["score"],
         "sm_ref_db": d["sm_ref_db"], "sm_rec_db": d["sm_rec_db"],
         "ref_mono": int(d["sm_ref_db"] < MONO_REF_DB),
+        "side_db": d["sm_rec_db"] - d["sm_ref_db"],
+        "ccpc": ccpc(ref_a, pred_a), "ipd_lo": ipd_lo, "ild_lo": ild_lo,
     }

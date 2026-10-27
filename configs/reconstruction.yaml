@@ -31,6 +31,8 @@ max_files: 0                # 0 = all
 skip_cdpam: false
 sdr_only: false             # only SDR / SI-SDR and the STFT and mel distances
 compute_ms_metrics: false   # also the stereo-image metrics (ms_metrics.csv, Table 7)
+channel: mid                # signal fed to FAD / CLAP / CDPAM: mid = (L+R)/2 (the paper) | side = (L-R)/2;
+                            # a side run is written to <name>-side and scored against the -side references
 resume: false               # skip the run if metrics/_done exists (files already scored are always skipped)
 merge: false                # only merge the per-task outputs into the final CSVs and FADs
 
