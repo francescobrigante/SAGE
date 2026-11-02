@@ -187,7 +187,7 @@ def test_trainer_default_is_off():
     assert cfg.trainer.freeze_disc_in_gen_step is False
     assert cfg.trainer.disc_step_loss_only is False
     critic = WavTokenizerGANLoss(loss_type="rpgan", **BASE)
-    assert not critic.fused_feature_matching
+    assert not (critic.fused_feature_matching or critic.discriminator.branch_streams)
 
 
 # ── inplace_act ──────────────────────────────────────────────────────────────
@@ -341,7 +341,7 @@ def test_channels_last_survives_load_and_optimizer():
 
 
 
-# ── discriminator step: dis_loss, fused feature matching ─────────────────────
+# ── discriminator step: dis_loss, fused feature matching, branch streams ─────
 
 def _dis_grads(gan, fn, real, fake):
     dis = fn(gan, real, fake)
@@ -384,6 +384,30 @@ def test_fused_feature_matching_keeps_int8_signs_for_the_backward():
             _, adv, fm = gan.loss(reals=real, fakes=f)
         sizes[fused] = sum(saved.values())
     assert sizes[True] < sizes[False]
+
+
+def test_branch_streams_is_a_noop_on_cpu():
+    ref, st = _gan("a2"), _gan("a2", branch_streams=True)
+    real, fake = _pair()
+    a = _dis_grads(ref, lambda g, r, f: g.dis_loss(r, f), real, fake)
+    b = _dis_grads(st, lambda g, r, f: g.dis_loss(r, f), real, fake)
+    assert torch.equal(a[0], b[0]) and all(torch.equal(x, y) for x, y in zip(a[1], b[1]))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA streams")
+@pytest.mark.parametrize("arm", ["c0", "a2"])
+def test_branch_streams_same_scores_and_gradients_on_cuda(arm):
+    torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = True, False
+    ref, st = _gan(arm).cuda(), _gan(arm, branch_streams=True).cuda()
+    real, fake = (t.cuda() for t in _pair())
+    with torch.no_grad():
+        for fa, fb in zip(ref.discriminator(real), st.discriminator(real)):
+            assert all(torch.equal(x, y) for x, y in zip(fa, fb))
+    (la, ga, _), (lb, gb, _) = _gen_step(ref, real, fake, True), _gen_step(st, real, fake, True)
+    assert all(torch.equal(a, b) for a, b in zip(la, lb)) and _rel(gb, ga) < 1e-6
+    a = _dis_grads(ref, lambda g, r, f: g.dis_loss(r, f), real, fake)
+    b = _dis_grads(st, lambda g, r, f: g.dis_loss(r, f), real, fake)
+    assert torch.equal(a[0], b[0]) and all(_rel(y, x) < 1e-6 for x, y in zip(a[1], b[1]))
 
 
 if __name__ == "__main__":

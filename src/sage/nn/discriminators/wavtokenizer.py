@@ -85,6 +85,8 @@ class WavTokenizerDiscriminator(nn.Module):
             half the activation memory kept for the backward).
         channels_last: 2-D convolution weights in channels-last (NHWC) layout, so cuDNN runs the
             convolutions in NHWC (same function, another summation order: float rounding differs).
+        branch_streams: on CUDA, each sub-discriminator runs on its own stream, so the small ones
+            overlap with the large ones (same kernels, same outputs and gradients).
     """
 
     def __init__(
@@ -104,6 +106,7 @@ class WavTokenizerDiscriminator(nn.Module):
         dac_bands: tp.Optional[list] = None,
         inplace_act: bool = False,
         channels_last: bool = False,
+        branch_streams: bool = False,
     ):
         super().__init__()
         modes = {"mpd_stereo": mpd_stereo, "mrd_stereo": mrd_stereo, "dac_stereo": dac_stereo}
@@ -156,6 +159,8 @@ class WavTokenizerDiscriminator(nn.Module):
         self.group_sizes = {"mpd": len(periods), "mrd": len(resolutions), "dac": len(fft_sizes) if use_dac else 0}
         self.inplace_act = inplace_act
         self.channels_last = channels_last
+        self.branch_streams = branch_streams
+        self._streams: tp.Dict[torch.device, tp.List[torch.cuda.Stream]] = {}   # one per sub-discriminator
         if channels_last:
             # 4-D parameters (weight_norm's v and g) in NHWC, kept by .to(device), load_state_dict and
             # the optimizer state. weight_norm recomputes a contiguous (NCHW) weight before every call
@@ -220,25 +225,61 @@ class WavTokenizerDiscriminator(nn.Module):
         x_dac = self._as_channels(x_fold)                                     # (2B, 2, T) or (B, C, T)
         x_rows = self._rows(x_fold)                                           # (rows, T), for the folded branches
         fmaps = []
+        streams = self._branch_streams(x)
+        calls = iter(streams) if streams else None
+
+        def run(d, inp):
+            return d(inp) if calls is None else self._on_stream(d, inp, next(calls))
 
         # Run Vocos MPD
         x_mpd = x_rows if self.mpd_stereo == "fold" else self._joint(x, self.mpd_stereo)   # (rows, T) | (B, 2|4, T)
         for d in self.vocos_mpd.discriminators:
-            _, fmap = d(x_mpd)
+            _, fmap = run(d, x_mpd)
             fmaps.append(fmap)
 
         # Run Vocos legacy mag-MRD
         x_mrd = x_rows if self.mrd_stereo == "fold" else self._joint(x, self.mrd_stereo)   # (rows, T) | (B, 4, T)
         for d in self.vocos_mrd.discriminators:
-            _, fmap = d(x_mrd)
+            _, fmap = run(d, x_mrd)
             fmaps.append(fmap)
 
         # Run DACDiscriminator
         if self.use_dac:
-            dac_fmaps = self.dac_disc(self.dac_input(x, folded=x_dac))
+            if calls is None:
+                dac_fmaps = self.dac_disc(self.dac_input(x, folded=x_dac))
+            else:                     # DACDiscriminator.forward without preprocess: one MRD per stream
+                x_in = self.dac_input(x, folded=x_dac)
+                dac_fmaps = [run(d, x_in) for d in self.dac_disc.discriminators]
             fmaps.extend(dac_fmaps)
 
+        if streams:                   # the caller's stream waits for every branch before using the fmaps
+            caller = torch.cuda.current_stream(x.device)
+            for s in streams:
+                caller.wait_stream(s)
+            for fmap in fmaps:
+                for t in fmap:
+                    t.record_stream(caller)
         return fmaps
+
+    def _branch_streams(self, x: torch.Tensor) -> tp.Optional[tp.List[torch.cuda.Stream]]:
+        """branch_streams on a CUDA input: one stream per sub-discriminator, created once per device."""
+        use = self.branch_streams and x.is_cuda and not (
+            self.use_dac and (self.dac_disc.preprocess_enabled or self.dac_disc.use_checkpoint))
+        if not use:
+            return None
+        if x.device not in self._streams:
+            n = sum(self.group_sizes.values())
+            self._streams[x.device] = [torch.cuda.Stream(x.device) for _ in range(n)]
+        return self._streams[x.device]
+
+    @staticmethod
+    def _on_stream(d: nn.Module, inp: torch.Tensor, stream: torch.cuda.Stream):
+        """d(inp) on `stream`, after the work the caller's stream has queued so far. Its backward runs
+        on the same stream (autograd follows the forward's streams and syncs the gradients)."""
+        stream.wait_stream(torch.cuda.current_stream(inp.device))
+        inp.record_stream(stream)                     # made on the caller's stream, read on this one
+        with torch.cuda.stream(stream):
+            return d(inp)
 
 
 def _lsgan_losses(scores_real: torch.Tensor, scores_fake: torch.Tensor) -> tp.Tuple[torch.Tensor, torch.Tensor]:
