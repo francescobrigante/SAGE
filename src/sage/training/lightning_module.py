@@ -210,6 +210,7 @@ class SAGELightningModule(pl.LightningModule):
 
         checkpoint["inference_config"] = {k: v for k, v in inference_cfg.items() if v is not None}
         checkpoint["gen_step"] = int(self.gen_step)
+        checkpoint["loop_state"] = self._loop_state()
 
     def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
         # Pre-release checkpoints have no "gen_step": the generator LR scheduler (first in the
@@ -220,6 +221,9 @@ class SAGELightningModule(pl.LightningModule):
             self.gen_step = int(checkpoint["lr_schedulers"][0].get("last_epoch", 0))
         else:
             warn("checkpoint has neither gen_step nor LR scheduler state: gen_step restarts at 0", prefix="RESUME")
+        # Pre-fix checkpoints have no loop_state: the alternation restarts with a generator batch.
+        if "loop_state" in checkpoint:
+            self._restore_loop_state(checkpoint["loop_state"])
         # Keys of pre-release checkpoints owned by no current module (sage/compat.py);
         # removed before Lightning's strict load_state_dict.
         removed = drop_legacy_state_keys(checkpoint.get("state_dict", {}))
@@ -233,6 +237,20 @@ class SAGELightningModule(pl.LightningModule):
         ema_keys = [k for k in list(state) if k.startswith(prefix)]
         if ema_keys:
             checkpoint["_ema_state"] = {k[len(prefix):]: state.pop(k) for k in ema_keys}
+
+    def _loop_state(self) -> Dict[str, Any]:
+        """G/D alternation and accumulation windows, saved so that a resumed run continues with the
+        right phase."""
+        return {"disc_phase": bool(self._disc_phase), "accum_steps_gen": int(self._accum_steps_gen),
+                "accum_steps_disc": int(self._accum_steps_disc)}
+
+    def _restore_loop_state(self, state: Dict[str, Any]) -> None:
+        self._disc_phase = bool(state["disc_phase"])
+        # The grads of an open window are not in the checkpoint: the window restarts empty.
+        open_windows = {k: v for k, v in state.items() if k.startswith("accum_steps") and v}
+        if open_windows:
+            warn(f"open accumulation windows dropped at resume (their grads are not saved): {open_windows}",
+                 prefix="RESUME")
 
     def configure_optimizers(self):
         """

@@ -237,3 +237,41 @@ def test_aux_head_is_clipped_on_its_own():
     clipped = _grad_norms_at_step(_module(aux=True, clip=0.01), batch)
     assert clipped["aux"] == pytest.approx(0.01, rel=1e-4)
     assert clipped["ae"] == pytest.approx(0.01, rel=1e-4)            # its own norm, not the joint one
+
+
+# ── resume (B4) ──────────────────────────────────────────────────────────────
+
+def _resumed(m, restore):
+    """A fresh module with m's weights and optimizer states, as after a checkpoint load."""
+    r = _module()
+    r.engine.load_state_dict(m.engine.state_dict())
+    for o_r, o_m in zip(r.optimizers(), m.optimizers()):
+        o_r.load_state_dict(o_m.state_dict())
+    if restore:
+        r._restore_loop_state(m._loop_state())
+    return r
+
+
+@pytest.mark.parametrize("restore", [True, False])
+def test_resume_continues_the_alternation(restore):
+    batches = _batches(5)
+    full = _module()
+    _run(full, batches)
+    m = _module()
+    _run(m, batches[:3])                                            # G D G: the next batch is a D batch
+    r = _resumed(m, restore)
+    for i, b in enumerate(batches[3:], start=3):
+        r.training_step(b, i)
+    same = all(torch.equal(a, b) for a, b in zip(full.engine.state_dict().values(), r.engine.state_dict().values()))
+    assert same == restore                                          # without the loop state: G batch again
+
+
+def test_open_windows_are_dropped_at_resume(monkeypatch):
+    import sage.training.lightning_module as lm
+    warned = []
+    monkeypatch.setattr(lm, "warn", lambda msg, **kw: warned.append(msg))
+    m = _module(accum=2)
+    _run(m, _batches(1))                                            # one generator micro-batch of 2
+    r = _module(accum=2)
+    r._restore_loop_state(m._loop_state())
+    assert r._disc_phase is False and r._accum_steps_gen == 0 and "accum_steps_gen" in warned[0]
