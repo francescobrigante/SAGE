@@ -434,5 +434,28 @@ def test_ema_foreach_is_bit_identical():
 
 
 
+# ── +speedup overrides ───────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("arm", ["stereo_proxy", "stereo_proxy_a2", "stereo_proxy_a4", "pretrain"])
+@pytest.mark.parametrize("speedup", ["critic_fast"])
+def test_speedup_override_changes_only_speed_keys(arm, speedup):
+    """+speedup=... adds the speed keys and changes nothing else of the recipe."""
+    from hydra import compose, initialize_config_dir
+    from omegaconf import OmegaConf
+    from pathlib import Path
+    with initialize_config_dir(config_dir=str(Path(__file__).parents[1] / "configs"), version_base=None):
+        ref = OmegaConf.to_container(compose("main", [f"+experiment={arm}"]), resolve=False)
+        fast = OmegaConf.to_container(compose("main", [f"+experiment={arm}", f"+speedup={speedup}"]), resolve=False)
+    t, d = fast["trainer"]["trainer"], fast["trainer"]["loss_config"]["discriminator"]["config"]
+    assert t["freeze_disc_in_gen_step"] and t["disc_step_loss_only"] and t["ema_foreach"]
+    keys = ("inplace_act", "fused_feature_matching", "channels_last", "branch_streams")
+    assert all(d[k] is True for k in keys)
+    for k in ("freeze_disc_in_gen_step", "disc_step_loss_only", "ema_foreach"):
+        t[k] = ref["trainer"]["trainer"][k]
+    for k in keys:
+        d.pop(k)
+    assert fast == ref
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
