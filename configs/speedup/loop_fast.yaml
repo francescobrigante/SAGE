@@ -1,0 +1,19 @@
+# @package _global_
+# =============================================================================
+# Exact speed-ups of the training loop around the critic (logging, progress bar, DDP), on top of any
+# recipe with the WavTokenizer critic: same updates bit for bit as the plain recipe (the logged
+# train/* values are window means of the same numbers). tests/test_loop_speed.py checks each key.
+# ddp_skip_idle_buckets needs freeze_disc_in_gen_step, so this override turns it on as well.
+#
+#   python train.py +experiment=stereo_proxy "+speedup=[critic_fast,loop_fast]" trainer.trainer.num_gpus=2
+# =============================================================================
+trainer:
+  trainer:
+    freeze_disc_in_gen_step: true      # precondition of ddp_skip_idle_buckets (already in critic_fast)
+    log_every_n_batches: 1             # train/* summed on the GPU, one host copy per batch (per-step W&B curves as today; 50 gains only ~1 % more)
+    progress_bar_refresh_rate: 50
+    lr_monitor: false                  # the module logs train/{gen,disc,aux}_lr
+    detach_step_output: true           # no second DDP graph walk on the returned loss
+    ddp_skip_idle_buckets: true        # no all-reduce of the idle model's buckets
+    ddp_gradient_as_bucket_view: true  # gradients are views of the DDP buckets
+    ddp_broadcast_buffers: false       # no buffer broadcast at every forward

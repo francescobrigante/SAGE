@@ -1,5 +1,5 @@
 # ===============
-# Speed keys of the training loop around the critic, all off by default:
+# Speed keys of the training loop around the critic (configs/speedup/loop_fast.yaml), all off by default:
 # - log_every_n_batches (sums kept on the GPU, one host copy per log flush) logs the same values as the
 #   per-optimizer-step logs of tests/test_training_step.py, without a host sync per value;
 # - detach_step_output: training_step returns the loss without its graph;
@@ -23,6 +23,8 @@ from sage.training.engine import frozen_parameters, select_training_phase
 from sage.training.lightning_module import SAGELightningModule
 
 CONFIGS = Path(__file__).parents[1] / "configs"
+LOOP_KEYS = ("log_every_n_batches", "progress_bar_refresh_rate", "lr_monitor", "detach_step_output",
+             "ddp_skip_idle_buckets", "ddp_gradient_as_bucket_view", "ddp_broadcast_buffers")
 
 
 # ── configs ──────────────────────────────────────────────────────────────────
@@ -34,6 +36,21 @@ def test_trainer_defaults_are_todays_loop():
     assert t.detach_step_output is False
     assert t.ddp_skip_idle_buckets is False and t.ddp_gradient_as_bucket_view is False
     assert t.ddp_broadcast_buffers is True
+
+
+@pytest.mark.parametrize("arm", ["stereo_proxy", "stereo_proxy_a2", "pretrain"])
+def test_loop_fast_changes_only_loop_keys(arm):
+    from hydra import compose, initialize_config_dir
+    from omegaconf import OmegaConf
+    with initialize_config_dir(config_dir=str(CONFIGS), version_base=None):
+        ref = OmegaConf.to_container(compose("main", [f"+experiment={arm}", "+speedup=critic_fast"]), resolve=False)
+        fast = OmegaConf.to_container(compose("main", [f"+experiment={arm}", "+speedup=[critic_fast,loop_fast]"]),
+                                      resolve=False)
+    t = fast["trainer"]["trainer"]
+    assert t["log_every_n_batches"] == 1 and t["ddp_skip_idle_buckets"] and t["freeze_disc_in_gen_step"]
+    for k in LOOP_KEYS:
+        t[k] = ref["trainer"]["trainer"][k]
+    assert fast == ref
 
 
 # ── training_step logging ────────────────────────────────────────────────────
