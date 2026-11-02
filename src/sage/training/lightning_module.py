@@ -438,6 +438,11 @@ class SAGELightningModule(pl.LightningModule):
                 opt_disc.zero_grad()
             self.manual_backward(disc_loss / accum_batches)
             self._accum_steps_disc += 1
+            # breakdown disc: accumulated before the window closes, so its log includes this batch
+            for name, value in out["disc_breakdown"].items():
+                key = f"train/{name}"
+                self._log_accum_disc[key] = self._log_accum_disc.get(key, 0.0) + value.detach().item()
+            self._log_accum_disc_count += 1
             if (self._accum_steps_disc % accum_batches == 0) or is_last_batch:
                 if self.clip_grad_norm > 0.0:
                     torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), self.clip_grad_norm)
@@ -456,12 +461,6 @@ class SAGELightningModule(pl.LightningModule):
                 self._log_accum_disc = {}
                 self._log_accum_disc_count = 0
 
-            # breakdown disc
-            for name, value in out["disc_breakdown"].items():
-                key = f"train/{name}"
-                self._log_accum_disc[key] = self._log_accum_disc.get(key, 0.0) + value.detach().item()
-            self._log_accum_disc_count += 1
-
         # GEN step
         else:
             gen_loss = out["gen_total"]
@@ -479,6 +478,15 @@ class SAGELightningModule(pl.LightningModule):
                     opt_aux.zero_grad()
             self.manual_backward(gen_loss / accum_batches)  # fills grads on AE + alignment modules (same graph)
             self._accum_steps_gen += 1
+            # logging richiesto: loss, latent_std, data_std + breakdown gen, accumulated before the
+            # window closes, so its log includes this batch
+            self._log_accum_gen["train/loss"] = self._log_accum_gen.get("train/loss", 0.0) + gen_loss.detach().item()
+            self._log_accum_gen["train/latent_std"] = self._log_accum_gen.get("train/latent_std", 0.0) + stats["latent_std"].detach().item()
+            self._log_accum_gen["train/data_std"] = self._log_accum_gen.get("train/data_std", 0.0) + stats["data_std"].detach().item()
+            for name, value in out["gen_breakdown"].items():
+                key = f"train/{name}"
+                self._log_accum_gen[key] = self._log_accum_gen.get(key, 0.0) + value.detach().item()
+            self._log_accum_gen_count += 1
             if (self._accum_steps_gen % accum_batches == 0) or is_last_batch:
                 if self.clip_grad_norm > 0.0:
                     torch.nn.utils.clip_grad_norm_(self.autoencoder.parameters(), self.clip_grad_norm)
@@ -507,17 +515,6 @@ class SAGELightningModule(pl.LightningModule):
                 self.log_dict(log_dict, prog_bar=True, on_step=True)
                 self._log_accum_gen = {}
                 self._log_accum_gen_count = 0
-
-            # logging richiesto: loss, latent_std, data_std
-            self._log_accum_gen["train/loss"] = self._log_accum_gen.get("train/loss", 0.0) + gen_loss.detach().item()
-            self._log_accum_gen["train/latent_std"] = self._log_accum_gen.get("train/latent_std", 0.0) + stats["latent_std"].detach().item()
-            self._log_accum_gen["train/data_std"] = self._log_accum_gen.get("train/data_std", 0.0) + stats["data_std"].detach().item()
-
-            # breakdown gen
-            for name, value in out["gen_breakdown"].items():
-                key = f"train/{name}"
-                self._log_accum_gen[key] = self._log_accum_gen.get(key, 0.0) + value.detach().item()
-            self._log_accum_gen_count += 1
         return out["gen_total"] if out["gen_total"] is not None else out["disc_total"]
 
     def validation_step(self, batch, batch_idx):
