@@ -45,6 +45,7 @@ OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${m
 
 from sage.training.callbacks import DatasetEpochSetter, MultiCorpusEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger
 from sage.training.stereo_diagnostics import StereoCriticDiagnostics
+from sage.training.ddp_hooks import build_ddp_strategy
 from sage.training.resume import (find_resume_checkpoint, is_slurm_requeue, read_run_id, resume_run_dir,
                                   should_auto_resume)
 from sage.training.data.dataset import MultiCorpusDataset
@@ -648,7 +649,12 @@ def main(cfg: DictConfig):
         accelerator=req_accelerator,
         devices=int(pl_trainer_cfg.get("num_gpus", 1)),
         num_nodes=int(pl_trainer_cfg.get("num_nodes", 1)),
-        strategy=pl_trainer_cfg.get("strategy", "auto"),
+        strategy=build_ddp_strategy(
+            pl_trainer_cfg.get("strategy", "auto"), wrapper,
+            skip_idle_buckets=bool(pl_trainer_cfg.get("ddp_skip_idle_buckets", False)),
+            gradient_as_bucket_view=bool(pl_trainer_cfg.get("ddp_gradient_as_bucket_view", False)),
+            broadcast_buffers=bool(pl_trainer_cfg.get("ddp_broadcast_buffers", True)),
+            freeze_disc_in_gen_step=bool(pl_trainer_cfg.get("freeze_disc_in_gen_step", False))),
         max_epochs=int(pl_trainer_cfg.get("epochs", 50)),
         max_steps=int(pl_trainer_cfg.get("max_steps", -1)),
         precision=requested_precision,

@@ -82,6 +82,10 @@ trainer:
   progress_bar_refresh_rate: 1      # TQDM refresh every N batches
   lr_monitor: true                  # false: no LearningRateMonitor (the module logs train/{gen,disc,aux}_lr)
   detach_step_output: false         # true: training_step returns the loss detached (no 2nd DDP graph walk)
+  ddp_skip_idle_buckets: false      # true: DDP hook that skips the all-reduce of the idle model's buckets
+                                    # (needs freeze_disc_in_gen_step and ddp_find_unused_parameters_true)
+  ddp_gradient_as_bucket_view: false  # true: gradients are views of the DDP buckets (no copy, less memory)
+  ddp_broadcast_buffers: true       # false: no buffer broadcast at every forward (the buffers are constants)
   detect_anomaly: false
   # no gradient_clip_val/algorithm: Lightning does not support them with manual optimization
 

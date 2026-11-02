@@ -186,6 +186,7 @@ class SAGELightningModule(pl.LightningModule):
         # Values are floats, or 0-dim GPU tensors with log_on_device.
         self._log_accum = {"gen": {}, "disc": {}}
         self._log_count = {"gen": 0, "disc": 0}
+        self._step_phase = "gen"   # phase of the current batch, read by the DDP skip-idle hook
 
         # Make the model DDP-compatible if it contains ComplexFloat parameters
         from sage.nn.complex.ddp import make_complex_model_ddp_compatible
@@ -535,6 +536,7 @@ class SAGELightningModule(pl.LightningModule):
         self._ema_update_this_batch = False
         out = self.engine.compute(batch, gen_step=self.gen_step, disc_phase=self._disc_phase)
         phase = out["phase"]
+        self._step_phase = phase   # read by the DDP skip-idle hook during manual_backward
         loss_info = out["loss_info"]
         stats = out["stats"]
 
