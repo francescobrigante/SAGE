@@ -15,6 +15,7 @@ from sage.nn.discriminators.types import (
     get_sigmoid_relgan_losses,
 )
 from sage.nn.discriminators.dac import DACDiscriminator, peak_normalize
+from sage.nn.discriminators.fused_act import fuse_bias_act
 from sage.nn.discriminators.vocos_legacy import MultiPeriodDiscriminator, MultiResolutionDiscriminator
 
 
@@ -87,6 +88,12 @@ class WavTokenizerDiscriminator(nn.Module):
             convolutions in NHWC (same function, another summation order: float rounding differs).
         branch_streams: on CUDA, each sub-discriminator runs on its own stream, so the small ones
             overlap with the large ones (same kernels, same outputs and gradients).
+        fused_bias_act: on float32 CUDA inputs (no autocast), each conv followed by a LeakyReLU runs
+            bias-free and a Triton kernel adds the bias and applies the LeakyReLU in one pass (same
+            arithmetic: same outputs and gradients bit for bit). Elsewhere (CPU, autocast): plain path.
+        fused_bias_grad: with fused_bias_act, the bias-gradient sum is fused into the LeakyReLU
+            backward kernel on NHWC tensors (channels_last); the bias gradients are summed in another
+            order (float rounding differs), every other value is unchanged.
     """
 
     def __init__(
@@ -107,8 +114,12 @@ class WavTokenizerDiscriminator(nn.Module):
         inplace_act: bool = False,
         channels_last: bool = False,
         branch_streams: bool = False,
+        fused_bias_act: bool = False,
+        fused_bias_grad: bool = False,
     ):
         super().__init__()
+        if fused_bias_grad and not fused_bias_act:
+            raise ValueError("fused_bias_grad needs fused_bias_act=true")
         modes = {"mpd_stereo": mpd_stereo, "mrd_stereo": mrd_stereo, "dac_stereo": dac_stereo}
         for key, mode in modes.items():
             if mode not in STEREO_MODES[key]:
@@ -160,6 +171,10 @@ class WavTokenizerDiscriminator(nn.Module):
         self.inplace_act = inplace_act
         self.channels_last = channels_last
         self.branch_streams = branch_streams
+        self.fused_bias_act = fused_bias_act
+        self.fused_bias_grad = fused_bias_grad
+        if fused_bias_act:            # after inplace_act: the fused convs take over the LeakyReLU's settings
+            fuse_bias_act(self, fused_grad=fused_bias_grad)
         self._streams: tp.Dict[torch.device, tp.List[torch.cuda.Stream]] = {}   # one per sub-discriminator
         if channels_last:
             # 4-D parameters (weight_norm's v and g) in NHWC, kept by .to(device), load_state_dict and

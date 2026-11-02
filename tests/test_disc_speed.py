@@ -4,6 +4,9 @@
 # same generator / critic gradients bit for bit; channels_last gives them to float rounding, and its
 # weights stay channels-last through .to(), load_state_dict and the optimizer state. The discriminator
 # step keys: dis_loss and fused_feature_matching are bit-exact.
+# fused_bias_act: on CPU the plain path (bit-identical); its autograd Function (forced on CPU against
+# the cuDNN order of operations, and with the Triton kernels on CUDA) gives the same fmaps, losses and
+# gradients bit for bit; with a Triton other than the tested version it falls back to the plain path.
 # ===============
 import contextlib
 import types
@@ -12,6 +15,7 @@ import pytest
 import torch
 import torch.nn as nn
 
+from sage.nn.discriminators.fused_act import BiasLeakyReLUConv2d
 from sage.nn.discriminators.wavtokenizer import WavTokenizerGANLoss
 from sage.training.engine import AutoencoderEngine, frozen_parameters
 
@@ -188,6 +192,8 @@ def test_trainer_default_is_off():
     assert cfg.trainer.disc_step_loss_only is False
     critic = WavTokenizerGANLoss(loss_type="rpgan", **BASE)
     assert not (critic.fused_feature_matching or critic.discriminator.branch_streams)
+    assert not (critic.discriminator.fused_bias_act or critic.discriminator.fused_bias_grad)
+    assert not any(isinstance(m, BiasLeakyReLUConv2d) for m in critic.modules())
 
 
 # ── inplace_act ──────────────────────────────────────────────────────────────
@@ -343,6 +349,20 @@ def test_channels_last_survives_load_and_optimizer():
 
 # ── discriminator step: dis_loss, fused feature matching, branch streams ─────
 
+# the arms, a stereo critic without fold_lrms and a mono critic
+LAYOUTS = {**ARMS, "c0_nofold": dict(fold_lrms=False), "mono": dict(channels=1, fold_lrms=False)}
+
+
+def _layout_gan(name, **kw):
+    torch.manual_seed(0)
+    return WavTokenizerGANLoss(loss_type="rpgan", **{**BASE, **LAYOUTS[name], **kw})
+
+
+def _layout_pair(name):
+    real, fake = _pair()
+    return (real[:, :1], fake[:, :1]) if LAYOUTS[name].get("channels") == 1 else (real, fake)
+
+
 def _dis_grads(gan, fn, real, fake):
     dis = fn(gan, real, fake)
     dis.backward()
@@ -410,6 +430,192 @@ def test_branch_streams_same_scores_and_gradients_on_cuda(arm):
     assert torch.equal(a[0], b[0]) and all(_rel(y, x) < 1e-6 for x, y in zip(a[1], b[1]))
 
 
+# ── fused_bias_act ───────────────────────────────────────────────────────────
+
+FUSED_KEYS = {"plain": {}, "inplace": dict(inplace_act=True), "nhwc": dict(channels_last=True),
+              "inplace_nhwc": dict(inplace_act=True, channels_last=True)}
+
+
+def _equal(a, b):
+    return all((x is None and y is None) or torch.equal(x, y) for x, y in zip(a, b))
+
+
+def _conv_input_grads(gan, real, fake):
+    """Generator step (critic frozen): the gradient reaching the input of every activated convolution,
+    in call order. On CUDA these come from cuDNN's deterministic dgrad only; the gradient of the fake
+    waveform then also crosses the reflect-pad backwards (STFT centring, period padding), which
+    accumulate with atomics: it varies at ~1e-8 from run to run on the same critic."""
+    grads, handles = {}, []
+    def hook(m, args):
+        key = (id(m), len([k for k in grads if k[0] == id(m)]))
+        grads[key] = None
+        if args[0].requires_grad:
+            args[0].register_hook(lambda g, key=key: grads.__setitem__(key, g.clone()))
+    convs = [m for m in gan.modules() if isinstance(m, nn.Conv2d) and m.out_channels > 1]
+    handles = [m.register_forward_pre_hook(hook) for m in convs]
+    try:
+        _gen_step(gan, real, fake, freeze=True)
+    finally:
+        for h in handles:
+            h.remove()
+    order = {id(m): i for i, m in enumerate(convs)}
+    return [grads[k] for k in sorted(grads, key=lambda k: (order[k[0]], k[1]))]
+
+
+def _assert_same_critic(ref, fused, real, fake):
+    """fmaps, losses, generator gradient (critic trainable and frozen) and critic gradients: bit for bit.
+    On CUDA the gradient of the fake waveform is compared at the convolution inputs (bit for bit) and
+    after the atomic reflect-pad backwards to their run-to-run noise (relative 1e-6)."""
+    with torch.no_grad():
+        for fa, fb in zip(ref.discriminator(real), fused.discriminator(real)):
+            assert _equal(fa, fb)
+    for freeze in (False, True):
+        (la, ga, ca), (lb, gb, cb) = _gen_step(ref, real, fake, freeze), _gen_step(fused, real, fake, freeze)
+        assert _equal(la, lb) and _equal(ca, cb)
+        assert torch.equal(ga, gb) if ga.device.type == "cpu" else _rel(gb, ga) < 1e-6
+    if real.is_cuda:
+        ia, ib = _conv_input_grads(ref, real, fake), _conv_input_grads(fused, real, fake)
+        assert len(ia) == len(ib) and any(g is not None for g in ia) and _equal(ia, ib)
+    a = _dis_grads(ref, lambda g, r, f: g.dis_loss(r, f), real, fake)
+    b = _dis_grads(fused, lambda g, r, f: g.dis_loss(r, f), real, fake)
+    assert torch.equal(a[0], b[0]) and _equal(a[1], b[1])
+
+
+@pytest.mark.parametrize("keys", list(FUSED_KEYS))
+@pytest.mark.parametrize("layout", list(LAYOUTS))
+def test_fused_bias_act_is_the_plain_path_on_cpu(layout, keys):
+    ref = _layout_gan(layout, **FUSED_KEYS[keys])
+    fused = _layout_gan(layout, **FUSED_KEYS[keys], fused_bias_act=True, fused_bias_grad=True)
+    assert _equal(ref.state_dict().values(), fused.state_dict().values())
+    assert list(ref.state_dict()) == list(fused.state_dict())
+    _assert_same_critic(ref, fused, *_layout_pair(layout))
+
+
+@pytest.mark.parametrize("keys", list(FUSED_KEYS))
+@pytest.mark.parametrize("layout", list(LAYOUTS))
+def test_fused_bias_act_function_is_bit_identical(layout, keys, monkeypatch):
+    """The fused autograd Function forced on CPU (torch-op forward) against autograd through what cuDNN
+    computes: the bias-free convolution, then + bias, then the LeakyReLU. (The CPU convolution adds the
+    bias inside its accumulation, so the plain CPU critic differs from both by rounding.) Same values and
+    the same gradients bit for bit: the Function's backward is autograd's."""
+    def cudnn_like(self, x):
+        z = self._conv_forward(x, self.weight, None)
+        return z if self.bias is None else z + self.bias.view(1, -1, 1, 1)
+    monkeypatch.setattr(nn.Conv2d, "forward", cudnn_like)                 # plain convs (+ every conv_post)
+    monkeypatch.setattr(BiasLeakyReLUConv2d, "_fused", lambda self, x: True)
+    ref = _layout_gan(layout, **FUSED_KEYS[keys])
+    fused = _layout_gan(layout, **FUSED_KEYS[keys], fused_bias_act=True)
+    _assert_same_critic(ref, fused, *_layout_pair(layout))
+
+
+def test_fused_bias_act_reaches_every_conv_with_an_activation():
+    gan = _gan("c0", fused_bias_act=True, inplace_act=True).discriminator
+    fused = [m for m in gan.modules() if isinstance(m, BiasLeakyReLUConv2d)]
+    subs = list(gan.vocos_mpd.discriminators) + list(gan.vocos_mrd.discriminators)
+    n_dac = sum(len(stack) for d in gan.dac_disc.discriminators for stack in d.band_convs)
+    assert len(fused) == 5 * len(subs) + n_dac
+    assert all(d.fused_act for d in subs) and all(m.act_inplace and m.act_slope == 0.1 for m in fused)
+    assert not any(isinstance(m, nn.LeakyReLU) for m in gan.modules())
+    posts = [d.conv_post for d in subs + list(gan.dac_disc.discriminators)]
+    assert all(type(p) is nn.Conv2d for p in posts)                       # the logit convs keep their bias add
+
+
+def test_fused_bias_act_checkpoints_load_both_ways():
+    fused, ref = _gan("c0", fused_bias_act=True), _gan("c0", seed=5)
+    fused.load_state_dict(ref.state_dict())
+    assert _equal(fused.state_dict().values(), ref.state_dict().values())
+    _gan("c0").load_state_dict(fused.state_dict())
+
+
+def test_fused_bias_act_needs_the_tested_triton(monkeypatch):
+    """Another Triton version than TRITON_VERSION (or none): one warning, then the plain path for every
+    conv, with the same outputs and gradients. CPU: the CUDA checks of _fused see a stand-in input."""
+    from sage.nn.discriminators import fused_act
+    pytest.importorskip("triton")
+    cuda_input = types.SimpleNamespace(is_cuda=True, dtype=torch.float32, numel=lambda: 1)  # what is checked
+    warned = []
+    monkeypatch.setattr(fused_act, "warn", lambda msg, **kw: warned.append(msg))
+    fused = _gan("c0", fused_bias_act=True, fused_bias_grad=True)
+    conv = next(m for m in fused.modules() if isinstance(m, BiasLeakyReLUConv2d))
+    monkeypatch.setattr(fused_act.triton, "__version__", fused_act.TRITON_VERSION)
+    monkeypatch.setattr(fused_act, "_triton_ok", None)
+    assert conv._fused(cuda_input) and fused_act._kernel_ok(cuda_input) and not warned
+    for version in ("0.0.0", None):                          # another version; Triton not importable
+        monkeypatch.setattr(fused_act, "_triton_ok", None)
+        if version is None:
+            monkeypatch.setattr(fused_act, "triton", None)
+        else:
+            monkeypatch.setattr(fused_act.triton, "__version__", version)
+        assert not conv._fused(cuda_input) and not conv._fused(cuda_input)
+        assert not fused_act._kernel_ok(cuda_input) and len(warned) == 1
+        warned.clear()
+    _assert_same_critic(_gan("c0"), fused, *_pair())
+
+
+def test_fused_bias_grad_needs_fused_bias_act():
+    with pytest.raises(ValueError, match="fused_bias_grad"):
+        _gan("c0", fused_bias_grad=True)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Triton kernels")
+@pytest.mark.parametrize("memory_format", [torch.contiguous_format, torch.channels_last])
+def test_fused_bias_act_kernels_match_torch_on_cuda(memory_format):
+    from sage.nn.discriminators import fused_act
+    torch.manual_seed(0)
+    z = torch.randn(3, 37, 11, 5, device="cuda").contiguous(memory_format=memory_format)
+    z.as_strided((z.numel(),), (1,))[:6] = torch.tensor([0.0, -0.0, 1e-41, -1e-41, float("nan"), -float("inf")])
+    b = torch.randn(37, device="cuda")
+    ref = torch.nn.functional.leaky_relu(z + b.view(1, -1, 1, 1), 0.1)
+    for _ in range(2):                          # first call through Triton's JIT, then the compiled launcher
+        y = fused_act._bias_leaky_relu_forward(z, b, 0.1)
+        assert torch.equal(y.isnan(), ref.isnan()) and torch.equal(y.nan_to_num(), ref.nan_to_num())
+        assert y.stride() == z.stride()
+    g = torch.randn_like(y)
+    gz_ref = torch.ops.aten.leaky_relu_backward(g, y.nan_to_num(), 0.1, True)
+    for _ in range(2):
+        out = fused_act._leaky_relu_backward_bias_sum(g, y.nan_to_num(), 0.1)
+        if memory_format is torch.contiguous_format:
+            assert out is None                                            # NCHW: autograd's two kernels
+            return
+        assert torch.equal(out[0], gz_ref)
+        assert torch.allclose(out[1], gz_ref.double().sum((0, 2, 3)).float(), rtol=1e-5, atol=1e-5)
+    assert any(k[0] is fused_act._leaky_relu_bwd_bias_sum for k in fused_act._COMPILED)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Triton kernels")
+@pytest.mark.parametrize("keys", list(FUSED_KEYS))
+@pytest.mark.parametrize("layout", list(LAYOUTS))
+def test_fused_bias_act_is_bit_identical_on_cuda(layout, keys):
+    torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = True, False
+    ref = _layout_gan(layout, **FUSED_KEYS[keys]).cuda()
+    fused = _layout_gan(layout, **FUSED_KEYS[keys], fused_bias_act=True).cuda()
+    _assert_same_critic(ref, fused, *(t.cuda() for t in _layout_pair(layout)))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Triton kernels")
+@pytest.mark.parametrize("layout", list(LAYOUTS))
+def test_fused_bias_grad_changes_only_the_bias_gradients_on_cuda(layout):
+    torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = True, False
+    keys = dict(inplace_act=True, channels_last=True)
+    ref = _layout_gan(layout, **keys, fused_bias_act=True).cuda()
+    fused = _layout_gan(layout, **keys, fused_bias_act=True, fused_bias_grad=True).cuda()
+    real, fake = (t.cuda() for t in _layout_pair(layout))
+    (la, ga, _), (lb, gb, _) = _gen_step(ref, real, fake, True), _gen_step(fused, real, fake, True)
+    assert _equal(la, lb) and _rel(gb, ga) < 1e-6                         # no bias gradient in the G step
+    assert _equal(_conv_input_grads(ref, real, fake), _conv_input_grads(fused, real, fake))
+    a = _dis_grads(ref, lambda g, r, f: g.dis_loss(r, f), real, fake)
+    b = _dis_grads(fused, lambda g, r, f: g.dis_loss(r, f), real, fake)
+    assert torch.equal(a[0], b[0])
+    fused_bias = [id(p) in {id(m.bias) for m in fused.modules() if isinstance(m, BiasLeakyReLUConv2d)}
+                  for p in fused.parameters()]
+    assert all(torch.equal(x, y) for x, y, is_b in zip(a[1], b[1], fused_bias) if not is_b)
+    # biases: another summation order (production critics: 1.4e-5 to 2.1e-5 apart as one vector, and the
+    # fused sums are the closer ones to a float64 sum of the same gradient, local/disc_speed/fused)
+    assert _norm_rel([y for y, is_b in zip(b[1], fused_bias) if is_b],
+                     [x for x, is_b in zip(a[1], fused_bias) if is_b]) < 1e-4
+
+
+
 # ── EMA as multi-tensor ops ──────────────────────────────────────────────────
 
 def test_ema_foreach_is_bit_identical():
@@ -437,7 +643,7 @@ def test_ema_foreach_is_bit_identical():
 # ── +speedup overrides ───────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("arm", ["stereo_proxy", "stereo_proxy_a2", "stereo_proxy_a4", "pretrain"])
-@pytest.mark.parametrize("speedup", ["critic_fast"])
+@pytest.mark.parametrize("speedup", ["critic_fast", "critic_fast_fused"])
 def test_speedup_override_changes_only_speed_keys(arm, speedup):
     """+speedup=... adds the speed keys and changes nothing else of the recipe."""
     from hydra import compose, initialize_config_dir
@@ -449,7 +655,9 @@ def test_speedup_override_changes_only_speed_keys(arm, speedup):
     t, d = fast["trainer"]["trainer"], fast["trainer"]["loss_config"]["discriminator"]["config"]
     assert t["freeze_disc_in_gen_step"] and t["disc_step_loss_only"] and t["ema_foreach"]
     keys = ("inplace_act", "fused_feature_matching", "channels_last", "branch_streams")
+    keys += ("fused_bias_act", "fused_bias_grad") if speedup.endswith("fused") else ()
     assert all(d[k] is True for k in keys)
+    assert speedup.endswith("fused") or "fused_bias_act" not in d
     for k in ("freeze_disc_in_gen_step", "disc_step_loss_only", "ema_foreach"):
         t[k] = ref["trainer"]["trainer"][k]
     for k in keys:

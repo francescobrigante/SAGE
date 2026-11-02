@@ -1,0 +1,22 @@
+# @package _global_
+# =============================================================================
+# critic_fast plus the Triton bias + LeakyReLU of the critic convolutions (fused_bias_act) and the bias-
+# gradient sum fused into its backward (fused_bias_grad). Same fmaps, losses, generator gradient and
+# critic weight gradients as critic_fast bit for bit; the conv-bias gradients are summed in another order
+# (1.4e-5 to 2.1e-5 apart as one vector, the fused sums the closer ones to float64). Measured on the full
+# training step (1 A100, local/disc_speed/fused): +6.0 % it/s on C0 (the fold critic of pretrain and
+# decoder_ft) and A4, but -2.1 % on A2 (joint critics: a smaller forward, bound by the CPU), so it is
+# not part of critic_fast. Use it with the fold critics only.
+#
+#   python train.py +experiment=pretrain +speedup=critic_fast_fused
+# =============================================================================
+defaults:
+  - critic_fast
+  - _self_
+
+trainer:
+  loss_config:
+    discriminator:
+      config:
+        fused_bias_act: true          # bias + LeakyReLU of every activated conv in one Triton kernel
+        fused_bias_grad: true         # bias-gradient sum inside the LeakyReLU backward kernel (NHWC)

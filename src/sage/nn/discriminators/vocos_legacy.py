@@ -7,7 +7,8 @@
 # WavTokenizer-full stack distinct from DAC (whose MRD is complex+banded). Used only by the
 # `wavtokenizer` composite discriminator. Inputs are mono (B, T), as in the original, or
 # (B, C, T) with `in_channels=C` for the joint stereo critics; `inplace_act` runs the LeakyReLU
-# in place (same values and gradients, one stored activation per layer instead of two).
+# in place (same values and gradients, one stored activation per layer instead of two); with
+# `fused_act` (set by fused_act.fuse_bias_act) each conv applies its own bias + LeakyReLU.
 # =============================================================================
 
 from typing import List, Optional, Tuple
@@ -55,6 +56,7 @@ class DiscriminatorP(nn.Module):
         super().__init__()
         self.period = period
         self.inplace_act = inplace_act                       # LeakyReLU in place on the conv output
+        self.fused_act = False                               # True: the convs apply bias + LeakyReLU themselves
         self.convs = nn.ModuleList(
             [
                 weight_norm(Conv2d(in_channels, 32, (kernel_size, 1), (stride, 1), padding=(kernel_size // 2, 0))),
@@ -85,7 +87,8 @@ class DiscriminatorP(nn.Module):
 
         for i, l in enumerate(self.convs):
             x = l(x)
-            x = torch.nn.functional.leaky_relu(x, self.lrelu_slope, inplace=self.inplace_act)
+            if not self.fused_act:
+                x = torch.nn.functional.leaky_relu(x, self.lrelu_slope, inplace=self.inplace_act)
             if i > 0:
                 fmap.append(x)
         if cond_embedding_id is not None:
@@ -144,6 +147,7 @@ class DiscriminatorR(nn.Module):
         self.in_channels = in_channels
         self.lrelu_slope = lrelu_slope
         self.inplace_act = inplace_act                       # LeakyReLU in place on the conv output
+        self.fused_act = False                               # True: the convs apply bias + LeakyReLU themselves
         self.convs = nn.ModuleList(
             [
                 weight_norm(nn.Conv2d(in_channels, channels, kernel_size=(7, 5), stride=(2, 2), padding=(3, 2))),
@@ -167,7 +171,8 @@ class DiscriminatorR(nn.Module):
             x = x.unsqueeze(1)                               # (B, 1, F, N)
         for l in self.convs:
             x = l(x)
-            x = torch.nn.functional.leaky_relu(x, self.lrelu_slope, inplace=self.inplace_act)
+            if not self.fused_act:
+                x = torch.nn.functional.leaky_relu(x, self.lrelu_slope, inplace=self.inplace_act)
             fmap.append(x)
         if cond_embedding_id is not None:
             emb = self.emb(cond_embedding_id)
