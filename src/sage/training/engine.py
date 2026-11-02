@@ -77,12 +77,16 @@ class AutoencoderEngine(nn.Module):
                  stft_params: Optional[dict] = None,
                  adv_grad_every: int = 0,
                  freeze_disc_in_gen_step: bool = False,
+                 disc_step_loss_only: bool = False,
                  ):
         super().__init__()
         self.adv_grad_every = int(adv_grad_every)  # >0: adversarial gradient share every N generator updates
         # True: the critic's parameters are frozen while the generator step runs it, so D(real) builds
         # no graph and the generator backward computes no critic weight gradient (discarded anyway)
         self.freeze_disc_in_gen_step = bool(freeze_disc_in_gen_step)
+        # True: the discriminator step computes only the discriminator loss (critic.dis_loss), not the
+        # generator terms it would drop: same loss and critic gradients, less memory and traffic
+        self.disc_step_loss_only = bool(disc_step_loss_only)
         self.autoencoder = autoencoder
         self.teacher_model = teacher_model
         self.sample_rate = sample_rate
@@ -136,6 +140,17 @@ class AutoencoderEngine(nn.Module):
             audio_channels=self.audio_channels
         )
         self.use_disc = self.loss_manager.use_disc
+
+    def _disc_step_loss(self, reals: torch.Tensor, fakes: torch.Tensor) -> torch.Tensor:
+        """Loss of the discriminator step: loss()[0] by default, the critic's dis_loss with
+        disc_step_loss_only."""
+        disc = self.loss_manager.discriminator
+        if not self.disc_step_loss_only:
+            return disc.loss(reals=reals, fakes=fakes)[0]
+        if not hasattr(disc, "dis_loss"):
+            raise ValueError(f"disc_step_loss_only needs a critic with dis_loss (WavTokenizerGANLoss), "
+                             f"got {type(disc).__name__}")
+        return disc.dis_loss(reals, fakes)
 
     @torch.no_grad()
     def _encode_teacher_if_needed(self, encoder_input):
@@ -304,7 +319,7 @@ class AutoencoderEngine(nn.Module):
 
         if disc_step:
             # decoded is detached (no_grad forward) → disc.loss() updates only the disc
-            loss_dis, _, _ = self.loss_manager.discriminator.loss(reals=orig_waveforms, fakes=decoded)
+            loss_dis = self._disc_step_loss(orig_waveforms, decoded)
             loss_info["loss_dis"] = loss_dis
             disc_total, disc_breakdown = self.loss_manager.losses_disc(loss_info)
         else:

@@ -1,7 +1,7 @@
 # ===============
 # Speed-up keys of the WavTokenizer critic, checked against the default critic on every stereo arm
 # layout (C0, A1, A2, A3, A4): freeze_disc_in_gen_step and inplace_act give the same losses and the
-# same generator / critic gradients bit for bit.
+# same generator / critic gradients bit for bit. The discriminator step's dis_loss is bit-exact.
 # ===============
 import types
 
@@ -126,7 +126,7 @@ class _StubAE(nn.Module):
         return self.clip[: sp.shape[0]] * (1 + 0.1 * sp.mean(dim=(1, 2, 3)))[:, None, None] * self.w
 
 
-def _stub_engine(freeze, **critic):
+def _stub_engine(freeze, loss_only=False, **critic):
     """The engine of test_o1_phase_compute, with a real critic behind a stub loss manager."""
     eng = AutoencoderEngine.__new__(AutoencoderEngine)
     nn.Module.__init__(eng)
@@ -143,7 +143,7 @@ def _stub_engine(freeze, **critic):
                      encoder_freeze_on_warmup=False, freeze_encoder=False, force_input_mono=False,
                      latent_mask_ratio=0.0, audio_channels=2, sample_rate=44100,
                      stft_params={"n_fft": 2048, "hop_length": 512}, adv_grad_every=0,
-                     freeze_disc_in_gen_step=freeze).items():
+                     freeze_disc_in_gen_step=freeze, disc_step_loss_only=loss_only).items():
         setattr(eng, k, v)
     return eng
 
@@ -153,7 +153,7 @@ def test_engine_key_same_generator_update_and_disc_step():
     batch = (torch.randn(2, 4, 16, 8), 0.3 * torch.randn(2, 2, T))
     outs = {}
     for freeze in (False, True):
-        eng = _stub_engine(freeze)
+        eng = _stub_engine(freeze, loss_only=freeze)
         gen = eng.compute(batch, gen_step=1, disc_phase=False)
         gen["gen_total"].backward()
         d_grads = [p.grad for p in eng.loss_manager.discriminator.parameters()]
@@ -175,6 +175,7 @@ def test_trainer_default_is_off():
     from pathlib import Path
     cfg = OmegaConf.load(Path(__file__).parents[1] / "configs" / "trainer.yaml")
     assert cfg.trainer.freeze_disc_in_gen_step is False
+    assert cfg.trainer.disc_step_loss_only is False
 
 
 # ── inplace_act ──────────────────────────────────────────────────────────────
@@ -216,6 +217,25 @@ def test_inplace_act_keeps_fewer_activations_for_the_backward():
         return sum(storages.values())
     real, fake = _pair()
     assert saved_bytes(_gan("c0", inplace_act=True), real, fake) < 0.75 * saved_bytes(_gan("c0"), real, fake)
+
+
+# ── discriminator step: dis_loss ─────────────────────────────────────────────
+
+def _dis_grads(gan, fn, real, fake):
+    dis = fn(gan, real, fake)
+    dis.backward()
+    grads = [p.grad.clone() for p in gan.parameters()]
+    gan.zero_grad(set_to_none=True)
+    return dis.detach(), grads
+
+
+@pytest.mark.parametrize("arm", list(ARMS))
+def test_dis_loss_is_the_first_output_of_loss_bit_for_bit(arm):
+    gan = _gan(arm)
+    real, fake = _pair()
+    a = _dis_grads(gan, lambda g, r, f: g.loss(reals=r, fakes=f)[0], real, fake)
+    b = _dis_grads(gan, lambda g, r, f: g.dis_loss(r, f), real, fake)
+    assert torch.equal(a[0], b[0]) and all(torch.equal(x, y) for x, y in zip(a[1], b[1]))
 
 
 if __name__ == "__main__":

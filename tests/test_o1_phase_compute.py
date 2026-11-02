@@ -93,6 +93,7 @@ def _make_engine(use_disc=True, warmup_steps=0):
     eng.stft_params = {"n_fft": 2048, "hop_length": 512}
     eng.adv_grad_every = 0
     eng.freeze_disc_in_gen_step = False
+    eng.disc_step_loss_only = False
     return eng
 
 

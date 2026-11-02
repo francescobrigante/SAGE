@@ -116,6 +116,7 @@ class SAGELightningModule(pl.LightningModule):
         accumulate_grad_batches: int = 1,
         adv_grad_every: int = 0,
         freeze_disc_in_gen_step: bool = False,
+        disc_step_loss_only: bool = False,
     ):
         super().__init__()
         self.automatic_optimization = False
@@ -152,6 +153,7 @@ class SAGELightningModule(pl.LightningModule):
             stft_params=stft_params,
             adv_grad_every=adv_grad_every,
             freeze_disc_in_gen_step=freeze_disc_in_gen_step,
+            disc_step_loss_only=disc_step_loss_only,
         )
 
         # Set optional spectrogram normalization on the core autoencoder

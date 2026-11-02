@@ -272,6 +272,17 @@ class WavTokenizerGANLoss(nn.Module):
         k = len(d_fake)
         return dis_loss / k, adv_loss / k, fm_loss / k
 
+    def dis_loss(self, reals: torch.Tensor, fakes: torch.Tensor) -> torch.Tensor:
+        """The first output of loss() alone, for the discriminator step: the same forwards (real, then
+        fake) and the same loss, without the adversarial and feature-matching terms of the generator,
+        which the discriminator step drops (they would keep every feature-map difference in memory)."""
+        d_real = self.discriminator(reals)
+        d_fake = self.discriminator(fakes)
+        dis_loss = torch.zeros((), device=reals.device)
+        for fr, fg in zip(d_real, d_fake):
+            dis_loss = dis_loss + self._loss_fn(fr[-1], fg[-1])[0]
+        return dis_loss / len(d_fake)
+
     def discriminator_loss(self, fake: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
         d_fake = self.discriminator(fake.clone().detach())
         d_real = self.discriminator(real)

@@ -73,6 +73,8 @@ trainer:
   adv_grad_every: 0                 # >0: adversarial share of the generator gradient every N generator updates (diag/*)
   freeze_disc_in_gen_step: false    # true: critic frozen in the generator step (no D(real) graph, no critic weight
                                     # gradients there); same generator gradient and updates (exact speed-up)
+  disc_step_loss_only: false        # true: the discriminator step computes only the critic loss (critic.dis_loss),
+                                    # not the dropped generator terms; same loss and critic gradients (exact)
   detect_anomaly: false
   # no gradient_clip_val/algorithm: Lightning does not support them with manual optimization
 
