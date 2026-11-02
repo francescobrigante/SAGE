@@ -76,7 +76,8 @@ class CodecAdapter(ABC):
 # ===========================================================================
 class SAGEAdapter(CodecAdapter):
     def __init__(self, device: str = "cuda", checkpoint: str | None = None,
-                 varlen: str | None = None, deterministic: bool = False, sdpa: bool = True, **_: Any):
+                 varlen: str | None = None, deterministic: bool = False, sdpa: bool = True,
+                 use_ema: bool = True, **_: Any):
         from sage.inference import SAGE
 
         if checkpoint is None:
@@ -84,7 +85,8 @@ class SAGEAdapter(CodecAdapter):
         self.device = torch.device(device)          # model + I/O device
         self.deterministic = deterministic          # posterior mean instead of sampled z
         # precision=None: PyTorch's default flags, as for the paper's tables and every other adapter
-        self.codec = SAGE.from_checkpoint(checkpoint, device=self.device, varlen=varlen, sdpa=sdpa, precision=None)
+        self.codec = SAGE.from_checkpoint(checkpoint, device=self.device, varlen=varlen, sdpa=sdpa, precision=None,
+                                          use_ema=use_ema)        # False: the training weights
         self.sample_rate = self.codec.sample_rate or 44100
         self.audio_channels = self.codec.audio_channels or 2
 
