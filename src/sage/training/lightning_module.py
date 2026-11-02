@@ -403,6 +403,64 @@ class SAGELightningModule(pl.LightningModule):
         for p, g in zip(self.discriminator.parameters(), grads):
             p.grad = g
 
+    def _scale_partial_window(self, params, steps: int) -> None:
+        """A window closed after steps < accumulate_grad_batches micro-batches holds the sum of
+        loss / accumulate_grad_batches: rescale it to the mean of its own micro-batches."""
+        if 0 < steps < self.accumulate_grad_batches:
+            for p in params:
+                if p.grad is not None:
+                    p.grad.mul_(self.accumulate_grad_batches / steps)
+
+    def _step_disc(self, opt_disc, sched_disc) -> None:
+        self._scale_partial_window(self.discriminator.parameters(), self._accum_steps_disc)
+        if self.clip_grad_norm > 0.0:
+            torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), self.clip_grad_norm)
+        opt_disc.step()
+        if sched_disc is not None:
+            sched_disc.step()
+        opt_disc.zero_grad()
+        self._accum_steps_disc = 0
+        # Log once per optimizer step.
+        log_dict = {}
+        log_dict["train/disc_lr"] = opt_disc.param_groups[0]["lr"]
+        if self._log_accum_disc_count > 0:
+            for key, value in self._log_accum_disc.items():
+                log_dict[key] = value / self._log_accum_disc_count
+        self.log_dict(log_dict, prog_bar=True, on_step=True)
+        self._log_accum_disc = {}
+        self._log_accum_disc_count = 0
+
+    def _step_gen(self, opt_gen, opt_aux, sched_gen, sched_aux) -> None:
+        aux_params = [p for g in opt_aux.param_groups for p in g["params"]] if opt_aux is not None else []
+        self._scale_partial_window(list(self.autoencoder.parameters()) + aux_params, self._accum_steps_gen)
+        if self.clip_grad_norm > 0.0:
+            torch.nn.utils.clip_grad_norm_(self.autoencoder.parameters(), self.clip_grad_norm)
+        opt_gen.step()
+        self.gen_step += 1
+        # Generator weights just changed → EMA may advance this batch.
+        self._ema_update_this_batch = True
+        if opt_aux is not None:
+            opt_aux.step()
+        if sched_gen is not None:
+            sched_gen.step()
+        if opt_aux is not None and sched_aux is not None:
+            sched_aux.step()
+        opt_gen.zero_grad()
+        if opt_aux is not None:
+            opt_aux.zero_grad()
+        self._accum_steps_gen = 0
+        # Log once per optimizer step.
+        log_dict = {}
+        log_dict["train/gen_lr"] = opt_gen.param_groups[0]["lr"]
+        if opt_aux is not None:
+            log_dict["train/aux_lr"] = opt_aux.param_groups[0]["lr"]
+        if self._log_accum_gen_count > 0:
+            for key, value in self._log_accum_gen.items():
+                log_dict[key] = value / self._log_accum_gen_count
+        self.log_dict(log_dict, prog_bar=True, on_step=True)
+        self._log_accum_gen = {}
+        self._log_accum_gen_count = 0
+
     def training_step(self, batch, batch_idx):
         # Per-batch G/D alternation, decoupled from global_step (which advances by a
         # variable number of optimizer.step() per batch when opt_aux is active).
@@ -443,12 +501,16 @@ class SAGELightningModule(pl.LightningModule):
         else:
             sched_gen, sched_disc, sched_aux = schedulers, None, None
 
+        # Under DDP every micro-batch all-reduces its grads. DDP's no_sync cannot skip it: the backward runs
+        # inside DDP's forward, whose end primes the reducer for the next backward, no_sync or not.
+
         # DISC step
         if phase == "disc" and self.use_disc:
             disc_loss = out["disc_total"]
 
             if self._accum_steps_disc == 0:
                 opt_disc.zero_grad()
+            closes = (self._accum_steps_disc + 1) % accum_batches == 0 or is_last_batch
             self.manual_backward(disc_loss / accum_batches)
             self._accum_steps_disc += 1
             # breakdown disc: accumulated before the window closes, so its log includes this batch
@@ -456,23 +518,8 @@ class SAGELightningModule(pl.LightningModule):
                 key = f"train/{name}"
                 self._log_accum_disc[key] = self._log_accum_disc.get(key, 0.0) + value.detach().item()
             self._log_accum_disc_count += 1
-            if (self._accum_steps_disc % accum_batches == 0) or is_last_batch:
-                if self.clip_grad_norm > 0.0:
-                    torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), self.clip_grad_norm)
-                opt_disc.step()
-                if sched_disc is not None:
-                    sched_disc.step()
-                opt_disc.zero_grad()
-                self._accum_steps_disc = 0
-                # Log once per optimizer step.
-                log_dict = {}
-                log_dict["train/disc_lr"] = opt_disc.param_groups[0]["lr"]
-                if self._log_accum_disc_count > 0:
-                    for key, value in self._log_accum_disc.items():
-                        log_dict[key] = value / self._log_accum_disc_count
-                self.log_dict(log_dict, prog_bar=True, on_step=True)
-                self._log_accum_disc = {}
-                self._log_accum_disc_count = 0
+            if closes:
+                self._step_disc(opt_disc, sched_disc)
 
         # GEN step
         else:
@@ -489,6 +536,7 @@ class SAGELightningModule(pl.LightningModule):
                 opt_gen.zero_grad()
                 if opt_aux is not None:
                     opt_aux.zero_grad()
+            closes = (self._accum_steps_gen + 1) % accum_batches == 0 or is_last_batch
             # The adversarial terms also fill the critic's grads, which no optimizer step uses: they are
             # dropped, so an open discriminator window (accumulate_grad_batches > 1) keeps only its own.
             critic_grads = self._critic_grads()
@@ -504,34 +552,16 @@ class SAGELightningModule(pl.LightningModule):
                 key = f"train/{name}"
                 self._log_accum_gen[key] = self._log_accum_gen.get(key, 0.0) + value.detach().item()
             self._log_accum_gen_count += 1
-            if (self._accum_steps_gen % accum_batches == 0) or is_last_batch:
-                if self.clip_grad_norm > 0.0:
-                    torch.nn.utils.clip_grad_norm_(self.autoencoder.parameters(), self.clip_grad_norm)
-                opt_gen.step()
-                self.gen_step += 1
-                # Generator weights just changed → EMA may advance this batch.
-                self._ema_update_this_batch = True
-                if opt_aux is not None:
-                    opt_aux.step()
-                if sched_gen is not None:
-                    sched_gen.step()
-                if opt_aux is not None and sched_aux is not None:
-                    sched_aux.step()
-                opt_gen.zero_grad()
-                if opt_aux is not None:
-                    opt_aux.zero_grad()
-                self._accum_steps_gen = 0
-                # Log once per optimizer step.
-                log_dict = {}
-                log_dict["train/gen_lr"] = opt_gen.param_groups[0]["lr"]
-                if opt_aux is not None:
-                    log_dict["train/aux_lr"] = opt_aux.param_groups[0]["lr"]
-                if self._log_accum_gen_count > 0:
-                    for key, value in self._log_accum_gen.items():
-                        log_dict[key] = value / self._log_accum_gen_count
-                self.log_dict(log_dict, prog_bar=True, on_step=True)
-                self._log_accum_gen = {}
-                self._log_accum_gen_count = 0
+            if closes:
+                self._step_gen(opt_gen, opt_aux, sched_gen, sched_aux)
+
+        # No window stays open across the end of the epoch: the other phase's partial window is
+        # stepped too (with accumulate_grad_batches = 1 it is always closed already).
+        if is_last_batch:
+            if self.use_disc and self._accum_steps_disc > 0:
+                self._step_disc(opt_disc, sched_disc)
+            if self._accum_steps_gen > 0:
+                self._step_gen(opt_gen, opt_aux, sched_gen, sched_aux)
         return out["gen_total"] if out["gen_total"] is not None else out["disc_total"]
 
     def validation_step(self, batch, batch_idx):

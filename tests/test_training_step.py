@@ -129,3 +129,83 @@ def test_generator_batch_leaves_no_critic_grads():
     m.training_step(_batches(1)[0], 0)                              # first batch: generator
     assert m.engine.loss_manager.discriminator.weight.grad is None
     assert m.engine.autoencoder.weight.grad is None                 # its window closed and was zeroed
+
+
+# ── gradient accumulation: partial windows, epoch end (B2) ─────────────────
+
+def _sgd_ref(module, w0, losses, lr):
+    """Parameters after one SGD step on the mean of `losses(module)` from weights w0."""
+    with torch.no_grad():
+        for p, w in zip(module.parameters(), w0):
+            p.copy_(w)
+    module.zero_grad(set_to_none=True)
+    losses(module).backward()
+    return [w - lr * p.grad for w, p in zip(w0, module.parameters())]
+
+
+def test_partial_window_at_epoch_end_is_the_mean_of_its_batches():
+    m = _module(accum=3, clip=0.0, n_batches=3)                    # G D G: both windows end partial
+    ae, critic = m.engine.autoencoder, m.engine.loss_manager.discriminator
+    a0 = [p.detach().clone() for p in ae.parameters()]
+    c0 = [p.detach().clone() for p in critic.parameters()]
+    batches = _batches(3)
+    _run(m, batches)
+    assert m._accum_steps_gen == 0 and m._accum_steps_disc == 0    # no window left open
+    ref = _FakeEngine()
+    exp_c = _sgd_ref(ref.loss_manager.discriminator, c0, lambda c: c(batches[1]).pow(2).mean(), 0.05)
+    gen = lambda b: ref.autoencoder(b).pow(2).mean() + ref.loss_manager.discriminator(ref.autoencoder(b)).mean()
+    with torch.no_grad():
+        for p, w in zip(ref.loss_manager.discriminator.parameters(), c0):
+            p.copy_(w)
+    exp_a = _sgd_ref(ref.autoencoder, a0, lambda _: (gen(batches[0]) + gen(batches[2])) / 2, 0.1)
+    for p, e in zip(list(critic.parameters()) + list(ae.parameters()), exp_c + exp_a):
+        torch.testing.assert_close(p.detach(), e, rtol=1e-6, atol=1e-7)
+
+
+# ── DDP, 2 gloo processes: accumulation equals the full-batch update ────────
+
+class _StepModel(nn.Module):
+    """What Lightning runs inside DDP's forward: the module's training_step (manual optimization)."""
+
+    def __init__(self, m):
+        super().__init__()
+        self.m = m
+
+    def forward(self, batch, batch_idx):
+        return self.m.training_step(batch, batch_idx)
+
+
+def _ddp_worker(rank, world, init_file, out_dir, accum, n):
+    import torch.distributed as dist
+    from pytorch_lightning.overrides.distributed import prepare_for_backward
+    from torch.nn.parallel import DistributedDataParallel as DDP
+    dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=world)
+    torch.set_num_threads(1)
+    m = _module(accum=accum, clip=0.0, n_batches=n)
+    ddp = DDP(_StepModel(m), find_unused_parameters=True)
+
+    def backward(loss):
+        prepare_for_backward(ddp, loss)                          # Lightning's DDP pre-backward
+        loss.backward()
+
+    m.manual_backward = backward
+    g = torch.Generator().manual_seed(100 + rank)
+    for i in range(n):
+        ddp(torch.randn(3, 4, generator=g), i)                   # Lightning runs training_step in DDP's forward
+    torch.save({k: v.detach().clone() for k, v in m.engine.state_dict().items()}, f"{out_dir}/{rank}.pt")
+    dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("accum, n", [(2, 8), (2, 7), (3, 7)])
+def test_ddp_accumulation_matches_the_full_batch(tmp_path, accum, n):
+    import torch.multiprocessing as mp
+    mp.spawn(_ddp_worker, args=(2, str(tmp_path / "init"), str(tmp_path), accum, n), nprocs=2, join=True)
+    res = [torch.load(tmp_path / f"{r}.pt") for r in (0, 1)]
+    # reference: one process on the two ranks' batches concatenated (every loss is a batch mean)
+    ref = _module(accum=accum, clip=0.0, n_batches=n)
+    gens = [torch.Generator().manual_seed(100 + r) for r in (0, 1)]
+    for i in range(n):
+        ref.training_step(torch.cat([torch.randn(3, 4, generator=g) for g in gens]), i)
+    for k, v in ref.engine.state_dict().items():
+        torch.testing.assert_close(res[0][k], v, rtol=1e-5, atol=1e-6)
+        assert torch.equal(res[0][k], res[1][k])                        # ranks agree
