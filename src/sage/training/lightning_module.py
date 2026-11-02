@@ -435,6 +435,9 @@ class SAGELightningModule(pl.LightningModule):
         self._scale_partial_window(list(self.autoencoder.parameters()) + aux_params, self._accum_steps_gen)
         if self.clip_grad_norm > 0.0:
             torch.nn.utils.clip_grad_norm_(self.autoencoder.parameters(), self.clip_grad_norm)
+            # The projection head of opt_aux is clipped on its own: the autoencoder's norm is unchanged.
+            if aux_params:
+                torch.nn.utils.clip_grad_norm_(aux_params, self.clip_grad_norm)
         opt_gen.step()
         self.gen_step += 1
         # Generator weights just changed → EMA may advance this batch.

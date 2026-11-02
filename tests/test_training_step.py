@@ -209,3 +209,31 @@ def test_ddp_accumulation_matches_the_full_batch(tmp_path, accum, n):
     for k, v in ref.engine.state_dict().items():
         torch.testing.assert_close(res[0][k], v, rtol=1e-5, atol=1e-6)
         assert torch.equal(res[0][k], res[1][k])                        # ranks agree
+
+
+# ── clipping of the aux head (B3) ────────────────────────────────────────────
+
+def _grad_norms_at_step(m, batch):
+    """Grad norms of the autoencoder and the aux head right before opt_gen.step()."""
+    seen = {}
+    opt_gen = m.optimizers()[0]
+    real_step = opt_gen.step
+
+    def step(*a, **kw):
+        norm = lambda ps: torch.linalg.vector_norm(torch.stack([p.grad.norm() for p in ps])).item()
+        seen["ae"] = norm(list(m.engine.autoencoder.parameters()))
+        seen["aux"] = norm(m.engine.loss_manager.aux_parameters())
+        return real_step(*a, **kw)
+
+    opt_gen.step = step
+    m.training_step(batch, 0)
+    return seen
+
+
+def test_aux_head_is_clipped_on_its_own():
+    batch = 10 * _batches(1)[0]                                     # large grads: both norms above the limit
+    free = _grad_norms_at_step(_module(aux=True, clip=0.0), batch)
+    assert free["ae"] > 0.01 and free["aux"] > 0.01
+    clipped = _grad_norms_at_step(_module(aux=True, clip=0.01), batch)
+    assert clipped["aux"] == pytest.approx(0.01, rel=1e-4)
+    assert clipped["ae"] == pytest.approx(0.01, rel=1e-4)            # its own norm, not the joint one
