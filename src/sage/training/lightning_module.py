@@ -117,6 +117,7 @@ class SAGELightningModule(pl.LightningModule):
         adv_grad_every: int = 0,
         freeze_disc_in_gen_step: bool = False,
         disc_step_loss_only: bool = False,
+        log_on_device: bool = False,
     ):
         super().__init__()
         self.automatic_optimization = False
@@ -129,6 +130,9 @@ class SAGELightningModule(pl.LightningModule):
         self.model_channels = model_channels
         self.stft_params = stft_params
         self.sample_rate = sample_rate
+        # True: the train/* values are summed on the GPU and copied to the host once per Lightning log
+        # flush (Trainer log_every_n_steps), not with one .item() each per batch; same logged values
+        self.log_on_device = bool(log_on_device)
 
         # Store raw specs (may be None). We normalize in configure_optimizers.
         self._optimizer_spec = optimizer_spec
@@ -174,11 +178,10 @@ class SAGELightningModule(pl.LightningModule):
         # semantic gate, discriminator warm-up). Lightning's global_step counts every
         # optimizer.step() (generator + projection head + discriminator), so it is not used.
         self.gen_step = 0
-        # Accumulate metrics to log once per optimizer step.
-        self._log_accum_gen: Dict[str, float] = {}
-        self._log_accum_disc: Dict[str, float] = {}
-        self._log_accum_gen_count = 0
-        self._log_accum_disc_count = 0
+        # Accumulate metrics to log once per optimizer step (log_on_device: once per log flush).
+        # Values are floats, or 0-dim GPU tensors with log_on_device.
+        self._log_accum = {"gen": {}, "disc": {}}
+        self._log_count = {"gen": 0, "disc": 0}
 
         # Make the model DDP-compatible if it contains ComplexFloat parameters
         from sage.nn.complex.ddp import make_complex_model_ddp_compatible
@@ -442,15 +445,9 @@ class SAGELightningModule(pl.LightningModule):
             sched_disc.step()
         opt_disc.zero_grad()
         self._accum_steps_disc = 0
-        # Log once per optimizer step.
-        log_dict = {}
-        log_dict["train/disc_lr"] = opt_disc.param_groups[0]["lr"]
-        if self._log_accum_disc_count > 0:
-            for key, value in self._log_accum_disc.items():
-                log_dict[key] = value / self._log_accum_disc_count
-        self.log_dict(log_dict, prog_bar=True, on_step=True)
-        self._log_accum_disc = {}
-        self._log_accum_disc_count = 0
+        # Log once per optimizer step (log_on_device: at Lightning's log batches, in training_step).
+        if not self.log_on_device:
+            self._log_window("disc", {"train/disc_lr": opt_disc.param_groups[0]["lr"]})
 
     def _step_gen(self, opt_gen, opt_aux, sched_gen, sched_aux) -> None:
         aux_params = [p for g in opt_aux.param_groups for p in g["params"]] if opt_aux is not None else []
@@ -474,17 +471,55 @@ class SAGELightningModule(pl.LightningModule):
         if opt_aux is not None:
             opt_aux.zero_grad()
         self._accum_steps_gen = 0
-        # Log once per optimizer step.
-        log_dict = {}
-        log_dict["train/gen_lr"] = opt_gen.param_groups[0]["lr"]
-        if opt_aux is not None:
-            log_dict["train/aux_lr"] = opt_aux.param_groups[0]["lr"]
-        if self._log_accum_gen_count > 0:
-            for key, value in self._log_accum_gen.items():
-                log_dict[key] = value / self._log_accum_gen_count
+        # Log once per optimizer step (log_on_device: at Lightning's log batches, in training_step).
+        if not self.log_on_device:
+            self._log_window("gen", self._lrs(opt_gen, None, opt_aux))
+
+    def _lrs(self, opt_gen, opt_disc, opt_aux) -> Dict[str, float]:
+        """train/{gen,disc,aux}_lr of the optimizers that are not None."""
+        opts = {"gen": opt_gen, "disc": opt_disc, "aux": opt_aux}
+        return {f"train/{name}_lr": opt.param_groups[0]["lr"] for name, opt in opts.items() if opt is not None}
+
+    def _log_add(self, phase: str, values: Dict[str, torch.Tensor]) -> None:
+        """Add one batch's values to the log window of its phase: floats (.item(), one host sync each),
+        or 0-dim float32 sums kept on the GPU with log_on_device."""
+        window = self._log_accum[phase]
+        for name, value in values.items():
+            key = f"train/{name}"
+            v = value.detach().float().reshape(()) if self.log_on_device else value.detach().item()
+            window[key] = window[key] + v if key in window else v
+        self._log_count[phase] += 1
+
+    def _log_window(self, phase: str, extra: Dict[str, float]) -> None:
+        """Log `extra` and the mean of the window of `phase` (its closing batch included), then open a new one."""
+        n = self._log_count[phase]
+        log_dict = dict(extra)
+        log_dict.update({key: value / n for key, value in self._log_accum[phase].items()} if n else {})
         self.log_dict(log_dict, prog_bar=True, on_step=True)
-        self._log_accum_gen = {}
-        self._log_accum_gen_count = 0
+        self._log_accum[phase], self._log_count[phase] = {}, 0
+
+    def _lightning_logs_this_batch(self) -> bool:
+        """True when Lightning sends the step metrics to the logger at the end of this batch
+        (every Trainer log_every_n_steps batches)."""
+        connector = getattr(self.trainer, "_logger_connector", None)
+        return True if connector is None else bool(connector.should_update_logs)
+
+    def _log_flush_device(self, lrs: Dict[str, float]) -> None:
+        """log_on_device: the means of both windows, copied to the host in ONE transfer, plus the
+        current learning rates. Values go to Lightning as CPU tensors (a float would be re-sent to the
+        GPU with a blocking copy). A phase without batches in the window keeps its last logged value."""
+        keys, sums = [], []
+        for phase in ("gen", "disc"):
+            for key, value in self._log_accum[phase].items():
+                keys.append((phase, key))
+                sums.append(value)
+        host = torch.stack(sums).cpu() if sums else None
+        log_dict = {key: torch.tensor(value) for key, value in lrs.items()}
+        for i, (phase, key) in enumerate(keys):
+            log_dict[key] = host[i] / self._log_count[phase]
+        self.log_dict(log_dict, prog_bar=True, on_step=True)
+        self._log_accum = {"gen": {}, "disc": {}}
+        self._log_count = {"gen": 0, "disc": 0}
 
     def training_step(self, batch, batch_idx):
         # Per-batch G/D alternation, decoupled from global_step (which advances by a
@@ -539,10 +574,7 @@ class SAGELightningModule(pl.LightningModule):
             self.manual_backward(disc_loss / accum_batches)
             self._accum_steps_disc += 1
             # breakdown disc: accumulated before the window closes, so its log includes this batch
-            for name, value in out["disc_breakdown"].items():
-                key = f"train/{name}"
-                self._log_accum_disc[key] = self._log_accum_disc.get(key, 0.0) + value.detach().item()
-            self._log_accum_disc_count += 1
+            self._log_add("disc", out["disc_breakdown"])
             if closes:
                 self._step_disc(opt_disc, sched_disc)
 
@@ -570,13 +602,8 @@ class SAGELightningModule(pl.LightningModule):
             self._accum_steps_gen += 1
             # logging richiesto: loss, latent_std, data_std + breakdown gen, accumulated before the
             # window closes, so its log includes this batch
-            self._log_accum_gen["train/loss"] = self._log_accum_gen.get("train/loss", 0.0) + gen_loss.detach().item()
-            self._log_accum_gen["train/latent_std"] = self._log_accum_gen.get("train/latent_std", 0.0) + stats["latent_std"].detach().item()
-            self._log_accum_gen["train/data_std"] = self._log_accum_gen.get("train/data_std", 0.0) + stats["data_std"].detach().item()
-            for name, value in out["gen_breakdown"].items():
-                key = f"train/{name}"
-                self._log_accum_gen[key] = self._log_accum_gen.get(key, 0.0) + value.detach().item()
-            self._log_accum_gen_count += 1
+            self._log_add("gen", {"loss": gen_loss, "latent_std": stats["latent_std"],
+                                  "data_std": stats["data_std"], **out["gen_breakdown"]})
             if closes:
                 self._step_gen(opt_gen, opt_aux, sched_gen, sched_aux)
 
@@ -587,6 +614,8 @@ class SAGELightningModule(pl.LightningModule):
                 self._step_disc(opt_disc, sched_disc)
             if self._accum_steps_gen > 0:
                 self._step_gen(opt_gen, opt_aux, sched_gen, sched_aux)
+        if self.log_on_device and self._lightning_logs_this_batch():
+            self._log_flush_device(self._lrs(opt_gen, opt_disc, opt_aux))
         return out["gen_total"] if out["gen_total"] is not None else out["disc_total"]
 
     def validation_step(self, batch, batch_idx):

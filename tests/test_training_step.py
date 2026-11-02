@@ -57,9 +57,9 @@ def _module(accum=1, aux=False, clip=1.0, n_batches=1000):
     m.automatic_optimization = False
     m.engine = _FakeEngine(aux=aux)
     for k, v in dict(accumulate_grad_batches=accum, clip_grad_norm=clip, _accum_steps_gen=0, _accum_steps_disc=0,
-                     _disc_phase=True, gen_step=0, _log_accum_gen={}, _log_accum_disc={}, _log_accum_gen_count=0,
-                     _log_accum_disc_count=0).items():
+                     _disc_phase=True, gen_step=0, log_on_device=False).items():
         setattr(m, k, v)
+    m._log_accum, m._log_count = {"gen": {}, "disc": {}}, {"gen": 0, "disc": 0}
     opts = [torch.optim.SGD(m.engine.autoencoder.parameters(), lr=0.1),
             torch.optim.SGD(m.engine.loss_manager.discriminator.parameters(), lr=0.05)]
     if aux:

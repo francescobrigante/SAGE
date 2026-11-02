@@ -472,6 +472,7 @@ def main(cfg: DictConfig):
         adv_grad_every=int(trainer_cfg.trainer.get("adv_grad_every", 0)),
         freeze_disc_in_gen_step=bool(trainer_cfg.trainer.get("freeze_disc_in_gen_step", False)),
         disc_step_loss_only=bool(trainer_cfg.trainer.get("disc_step_loss_only", False)),
+        log_on_device=int(trainer_cfg.trainer.get("log_every_n_batches", 0)) > 0,
         kl_annealing_epochs=int(trainer_cfg.trainer.get("kl_annealing_epochs", 0)),
         kl_beta_target=kl_beta_target,
     )
@@ -536,14 +537,16 @@ def main(cfg: DictConfig):
             every_n_epochs=int(pl_trainer_cfg.get("save_every_n_epochs", 3)),
             auto_insert_metric_name=False,
         ),
-        LearningRateMonitor(logging_interval="step"),
         TableOnlyModelSummary(max_depth=2),
-        TQDMProgressBar(refresh_rate=1),
+        TQDMProgressBar(refresh_rate=int(pl_trainer_cfg.get("progress_bar_refresh_rate", 1))),
         # Multi-corpus advances both the rotating sampler and the dataset children;
         # single-corpus advances only the dataset crops. Both keep val at epoch 0.
         MultiCorpusEpochSetter() if multi_corpus else DatasetEpochSetter(),
         CompressionStatsLogger(train_dl=train_dl, console=console),
     ]
+
+    if bool(pl_trainer_cfg.get("lr_monitor", True)):   # false: the module already logs train/*_lr
+        callbacks.insert(2, LearningRateMonitor(logging_interval="step"))
 
     critic_diag_every = int(pl_trainer_cfg.get("critic_diag_every_n_epochs", 0))
     if critic_diag_every > 0:
@@ -650,7 +653,8 @@ def main(cfg: DictConfig):
         precision=requested_precision,
         logger=logger,
         callbacks=callbacks,
-        log_every_n_steps=int(pl_trainer_cfg.get("log_interval", 1)),
+        # log_every_n_batches > 0: the train/* values are summed on the GPU and logged every N batches
+        log_every_n_steps=int(pl_trainer_cfg.get("log_every_n_batches", 0)) or int(pl_trainer_cfg.get("log_interval", 1)),
         num_sanity_val_steps=int(pl_trainer_cfg.get("num_sanity_val_steps", 0)),
         gradient_clip_val=float(pl_trainer_cfg.get("gradient_clip_val", 0.0)),
         detect_anomaly=bool(pl_trainer_cfg.get("detect_anomaly", False)),
