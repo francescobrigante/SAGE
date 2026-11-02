@@ -552,7 +552,7 @@ def main(cfg: DictConfig):
     use_ema = bool(pl_trainer_cfg.get("use_ema", True))
     ema_decay = float(pl_trainer_cfg["ema_decay"])       # configs/trainer.yaml: 0.9998 (Table 6)
     if use_ema and ema_decay > 0:
-        callbacks.append(EMACallback(decay=ema_decay))
+        callbacks.append(EMACallback(decay=ema_decay, foreach=bool(pl_trainer_cfg.get("ema_foreach", False))))
 
     # Validation demo callback
     demo_cfg = OmegaConf.to_container(cfg.data.get("demo", {}), resolve=True) or {}

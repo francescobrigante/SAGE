@@ -67,6 +67,7 @@ trainer:
   clip_grad_norm: 20.0
   use_ema: true
   ema_decay: 0.9998                # EMA of the generator weights, updated on generator steps (Table 6)
+  ema_foreach: false                # true: the EMA update as multi-tensor ops (same values, fewer kernel launches)
   kl_annealing_epochs: 0
   terminate_on_nan: true
   critic_diag_every_n_epochs: 0     # >0: stereo report of the WavTokenizer critic every N epochs (critic/* in W&B)

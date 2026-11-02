@@ -410,5 +410,29 @@ def test_branch_streams_same_scores_and_gradients_on_cuda(arm):
     assert torch.equal(a[0], b[0]) and all(_rel(y, x) < 1e-6 for x, y in zip(a[1], b[1]))
 
 
+# ── EMA as multi-tensor ops ──────────────────────────────────────────────────
+
+def test_ema_foreach_is_bit_identical():
+    from sage.training.callbacks import EMACallback
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(8, 8), nn.BatchNorm1d(8))
+    model(torch.randn(4, 8))                                             # num_batches_tracked: an int buffer
+    module = types.SimpleNamespace(autoencoder=model, _ema_update_this_batch=True)
+    cbs = [EMACallback(decay=0.9998, foreach=f) for f in (False, True)]
+    for cb in cbs:
+        cb.on_fit_start(None, module)
+    for _ in range(3):
+        with torch.no_grad():
+            for p in model.parameters():
+                p.add_(0.1 * torch.randn_like(p))
+        model(torch.randn(4, 8))
+        for cb in cbs:
+            cb.on_train_batch_end(None, module, None, None, 0)
+    a, b = cbs[0].ema_state_dict, cbs[1].ema_state_dict
+    assert a.keys() == b.keys() and all(torch.equal(a[k], b[k]) for k in a)
+    assert int(b["1.num_batches_tracked"]) == 4
+
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
