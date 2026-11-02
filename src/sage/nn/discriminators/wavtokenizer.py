@@ -48,6 +48,14 @@ class _L1Mean(torch.autograd.Function):
                 -grad if ctx.needs_input_grad[1] else None)
 
 
+def _channels_last_conv_inputs(conv: nn.Conv2d, args: tuple) -> tuple:
+    """Forward pre-hook of channels_last: the (weight_norm-recomputed) weight and the input in NHWC."""
+    if not isinstance(conv.weight, nn.Parameter):          # weight_norm's recomputed weight (a parameter is NHWC)
+        conv.weight = conv.weight.contiguous(memory_format=torch.channels_last)
+    return tuple(a.contiguous(memory_format=torch.channels_last) if torch.is_tensor(a) and a.dim() == 4 else a
+                 for a in args)
+
+
 class WavTokenizerDiscriminator(nn.Module):
     """
     Composite discriminator for WavTokenizer-full ablation:
@@ -75,6 +83,8 @@ class WavTokenizerDiscriminator(nn.Module):
         dac_bands: band edges of the DAC MRDs as fractions of Nyquist (None = BANDS).
         inplace_act: LeakyReLU in place in every branch (exact: same outputs and gradients, about
             half the activation memory kept for the backward).
+        channels_last: 2-D convolution weights in channels-last (NHWC) layout, so cuDNN runs the
+            convolutions in NHWC (same function, another summation order: float rounding differs).
     """
 
     def __init__(
@@ -93,6 +103,7 @@ class WavTokenizerDiscriminator(nn.Module):
         dac_stereo: str = "fold",
         dac_bands: tp.Optional[list] = None,
         inplace_act: bool = False,
+        channels_last: bool = False,
     ):
         super().__init__()
         modes = {"mpd_stereo": mpd_stereo, "mrd_stereo": mrd_stereo, "dac_stereo": dac_stereo}
@@ -144,6 +155,16 @@ class WavTokenizerDiscriminator(nn.Module):
         # number of sub-discriminators per branch, in the order of forward's output
         self.group_sizes = {"mpd": len(periods), "mrd": len(resolutions), "dac": len(fft_sizes) if use_dac else 0}
         self.inplace_act = inplace_act
+        self.channels_last = channels_last
+        if channels_last:
+            # 4-D parameters (weight_norm's v and g) in NHWC, kept by .to(device), load_state_dict and
+            # the optimizer state. weight_norm recomputes a contiguous (NCHW) weight before every call
+            # (torch._weight_norm on CUDA), so each Conv2d also gets a pre-hook, run after weight_norm's,
+            # that hands cuDNN an NHWC weight and input: no NCHW<->NHWC transposes around the kernels.
+            self.to(memory_format=torch.channels_last)
+            for m in self.modules():
+                if isinstance(m, nn.Conv2d):
+                    m.register_forward_pre_hook(_channels_last_conv_inputs)
 
     def _fold(self, x: torch.Tensor) -> torch.Tensor:
         """With fold_lrms on a stereo batch: (B, 2, T) → (2B, 2, T) = [L,R | M,S], M,S = L ± R."""

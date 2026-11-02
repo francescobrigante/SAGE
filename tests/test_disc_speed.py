@@ -1,9 +1,11 @@
 # ===============
 # Speed-up keys of the WavTokenizer critic, checked against the default critic on every stereo arm
 # layout (C0, A1, A2, A3, A4): freeze_disc_in_gen_step and inplace_act give the same losses and the
-# same generator / critic gradients bit for bit. The discriminator step's dis_loss and
-# fused_feature_matching are bit-exact.
+# same generator / critic gradients bit for bit; channels_last gives them to float rounding, and its
+# weights stay channels-last through .to(), load_state_dict and the optimizer state. The discriminator
+# step keys: dis_loss and fused_feature_matching are bit-exact.
 # ===============
+import contextlib
 import types
 
 import pytest
@@ -24,6 +26,9 @@ ARMS = {
                dac_bands=[0.0, 0.011337868, 0.045351474, 0.181405896, 0.453514739, 1.0]),
 }
 T = 8192
+CL_RTOL = 1e-5            # channels_last vs default, float32 on CPU
+CL_GRAD_ATOL = 1e-2       # critic weight gradients of either float32 layout vs float64, as one vector
+CL_SEEDS = 4              # batches over which the float32 layouts are compared
 
 
 def _gan(arm, seed=0, **kw):
@@ -57,6 +62,10 @@ def _disc_step(gan, real, fake):
     grads = [p.grad.clone() for p in gan.parameters()]
     gan.zero_grad(set_to_none=True)
     return dis.detach(), grads
+
+
+def _rel(a, b):
+    return float((a - b).abs().max() / b.abs().max().clamp_min(1e-30))
 
 
 # ── frozen_parameters ────────────────────────────────────────────────────────
@@ -220,6 +229,116 @@ def test_inplace_act_keeps_fewer_activations_for_the_backward():
         return sum(storages.values())
     real, fake = _pair()
     assert saved_bytes(_gan("c0", inplace_act=True), real, fake) < 0.75 * saved_bytes(_gan("c0"), real, fake)
+
+
+# ── channels_last ────────────────────────────────────────────────────────────
+
+def _norm_rel(a, b):
+    """‖a - b‖ / ‖b‖ over a list of tensors taken as one vector (None entries skipped)."""
+    pairs = [(x.double(), y.double()) for x, y in zip(a, b) if y is not None]
+    num = sum(float((x - y).pow(2).sum()) for x, y in pairs)
+    den = sum(float(y.pow(2).sum()) for _, y in pairs)
+    return (num / max(den, 1e-300)) ** 0.5
+
+
+@contextlib.contextmanager
+def _float64_windows():
+    """audiotools casts the STFT window to float32 (DAC branch): float64 windows inside this block."""
+    import audiotools
+    orig = audiotools.AudioSignal.__dict__["get_window"]
+    audiotools.AudioSignal.get_window = staticmethod(lambda wt, wl, dev: orig.__func__(wt, wl, dev).double())
+    try:
+        yield
+    finally:
+        audiotools.AudioSignal.get_window = orig
+
+
+@pytest.fixture
+def float64_stft_window():
+    with _float64_windows():
+        yield
+
+
+@pytest.mark.parametrize("arm", list(ARMS))
+def test_channels_last_is_the_same_critic_in_float64(arm, float64_stft_window):
+    """In float64 rounding is out of the picture: the NHWC critic is the default critic to 1e-10."""
+    ref, ncl = _gan(arm).double(), _gan(arm, channels_last=True).double()
+    assert all(_cl(p) for p in ncl.parameters())                          # .double() keeps NHWC
+    real, fake = (t.double() for t in _pair())
+    with torch.no_grad():
+        for fa, fb in zip(ref.discriminator(real), ncl.discriminator(real)):
+            assert all(_rel(tb, ta) < 1e-10 for ta, tb in zip(fa, fb))
+    (la, ga, _), (lb, gb, _) = _gen_step(ref, real, fake), _gen_step(ncl, real, fake)
+    assert all(_rel(b, a) < 1e-10 for a, b in zip(la, lb)) and _rel(gb, ga) < 1e-10
+    (dis_a, gr_a), (dis_b, gr_b) = _disc_step(ref, real, fake), _disc_step(ncl, real, fake)
+    assert _rel(dis_b, dis_a) < 1e-10
+    assert all(_rel(b, a) < 1e-10 for a, b in zip(gr_a, gr_b))
+
+
+def _cl_errors(arm, seed):
+    """Generator- and critic-gradient errors of both float32 layouts against the float64 critic."""
+    real, fake = _pair(seed=seed)
+    ref64 = _gan(arm).double()
+    with _float64_windows():
+        (l64, g64, _), (d64, gr64) = (_gen_step(ref64, real.double(), fake.double()),
+                                      _disc_step(ref64, real.double(), fake.double()))
+    err = {}
+    for name, gan in (("default", _gan(arm)), ("nhwc", _gan(arm, channels_last=True))):
+        (l, g, _), (d, gr) = _gen_step(gan, real, fake), _disc_step(gan, real, fake)
+        assert all(_rel(a, b) < CL_RTOL for a, b in zip(l, l64)) and _rel(d, d64) < CL_RTOL
+        err[name] = (_norm_rel([g], [g64]), _norm_rel(gr, gr64))
+    return err
+
+
+@pytest.mark.parametrize("arm", list(ARMS))
+def test_channels_last_matches_to_float_rounding(arm):
+    """float32, over CL_SEEDS batches, both layouts against the float64 critic. Losses: per value.
+    Generator gradient (what trains SAGE): NHWC no farther than the default layout (median over the
+    batches; on one batch either layout can be the unlucky one, a pre-activation rounding across a
+    LeakyReLU kink). Critic weight gradients: on CPU the NHWC weight-gradient kernels are measurably
+    less accurate (median ~1e-3 vs ~1e-4 of the default, local/disc_speed/cl_seeds.py), so both
+    layouts only get the absolute bound CL_GRAD_ATOL; the GPU (cuDNN) check is in the same script."""
+    errs = [_cl_errors(arm, seed) for seed in range(1, CL_SEEDS + 1)]
+    med = lambda name, i: sorted(e[name][i] for e in errs)[len(errs) // 2]
+    assert med("nhwc", 0) < 2 * med("default", 0) + 1e-6
+    assert all(e[name][1] < CL_GRAD_ATOL for e in errs for name in e)
+
+
+def _cl(t):
+    return t.dim() != 4 or t.is_contiguous(memory_format=torch.channels_last)
+
+
+def test_channels_last_convs_get_nhwc_weight_and_input():
+    gan = _gan("c0", channels_last=True)
+    seen = []
+    def check(conv, args):
+        seen.append(_cl(conv.weight) and _cl(args[0]))
+    convs = [m for m in gan.modules() if isinstance(m, nn.Conv2d)]
+    for m in convs:
+        m.register_forward_pre_hook(check)                  # runs after weight_norm's and channels_last's
+    real, fake = _pair()
+    gan.loss(reals=real, fakes=fake)
+    assert len(seen) >= 2 * len(convs) and all(seen)
+
+
+def test_channels_last_survives_load_and_optimizer():
+    ncl = _gan("c0", channels_last=True)
+    params4d = [p for p in ncl.parameters() if p.dim() == 4]
+    assert params4d and all(_cl(p) for p in params4d)
+    ncl.load_state_dict(_gan("c0", seed=5).state_dict())                # checkpoint of a default critic
+    assert all(_cl(p) for p in ncl.parameters())
+    ncl.to(torch.float32)
+    assert all(_cl(p) for p in ncl.parameters())
+    opt = torch.optim.AdamW(ncl.parameters(), lr=1e-4)
+    real, fake = _pair()
+    ncl.loss(reals=real, fakes=fake)[0].backward()
+    opt.step()
+    assert all(_cl(p) for p in ncl.parameters())
+    assert all(_cl(s["exp_avg"]) for s in opt.state.values())
+    ref = _gan("c0")
+    ref.load_state_dict(ncl.state_dict())                                 # and back into a default critic
+    assert all(p.is_contiguous() for p in ref.parameters())
+
 
 
 # ── discriminator step: dis_loss, fused feature matching ─────────────────────
