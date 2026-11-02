@@ -473,6 +473,7 @@ def main(cfg: DictConfig):
         freeze_disc_in_gen_step=bool(trainer_cfg.trainer.get("freeze_disc_in_gen_step", False)),
         disc_step_loss_only=bool(trainer_cfg.trainer.get("disc_step_loss_only", False)),
         log_on_device=int(trainer_cfg.trainer.get("log_every_n_batches", 0)) > 0,
+        detach_step_output=bool(trainer_cfg.trainer.get("detach_step_output", False)),
         kl_annealing_epochs=int(trainer_cfg.trainer.get("kl_annealing_epochs", 0)),
         kl_beta_target=kl_beta_target,
     )

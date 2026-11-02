@@ -118,6 +118,7 @@ class SAGELightningModule(pl.LightningModule):
         freeze_disc_in_gen_step: bool = False,
         disc_step_loss_only: bool = False,
         log_on_device: bool = False,
+        detach_step_output: bool = False,
     ):
         super().__init__()
         self.automatic_optimization = False
@@ -133,6 +134,9 @@ class SAGELightningModule(pl.LightningModule):
         # True: the train/* values are summed on the GPU and copied to the host once per Lightning log
         # flush (Trainer log_every_n_steps), not with one .item() each per batch; same logged values
         self.log_on_device = bool(log_on_device)
+        # True: training_step returns the loss detached, so DDP's forward does not walk the autograd
+        # graph of a backward already done (Lightning's pre-backward walk is the one that counts)
+        self.detach_step_output = bool(detach_step_output)
 
         # Store raw specs (may be None). We normalize in configure_optimizers.
         self._optimizer_spec = optimizer_spec
@@ -616,7 +620,8 @@ class SAGELightningModule(pl.LightningModule):
                 self._step_gen(opt_gen, opt_aux, sched_gen, sched_aux)
         if self.log_on_device and self._lightning_logs_this_batch():
             self._log_flush_device(self._lrs(opt_gen, opt_disc, opt_aux))
-        return out["gen_total"] if out["gen_total"] is not None else out["disc_total"]
+        loss = out["gen_total"] if out["gen_total"] is not None else out["disc_total"]
+        return loss.detach() if self.detach_step_output else loss
 
     def validation_step(self, batch, batch_idx):
         val_loss_dict = self.engine.compute_validation(batch)

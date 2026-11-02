@@ -81,6 +81,7 @@ trainer:
                                     # (sets the Trainer's log_every_n_steps; 0 = .item() per value, log_interval)
   progress_bar_refresh_rate: 1      # TQDM refresh every N batches
   lr_monitor: true                  # false: no LearningRateMonitor (the module logs train/{gen,disc,aux}_lr)
+  detach_step_output: false         # true: training_step returns the loss detached (no 2nd DDP graph walk)
   detect_anomaly: false
   # no gradient_clip_val/algorithm: Lightning does not support them with manual optimization
 

@@ -1,7 +1,8 @@
 # ===============
 # Speed keys of the training loop around the critic, all off by default:
 # - log_every_n_batches (sums kept on the GPU, one host copy per log flush) logs the same values as the
-#   per-optimizer-step logs of tests/test_training_step.py, without a host sync per value.
+#   per-optimizer-step logs of tests/test_training_step.py, without a host sync per value;
+# - detach_step_output: training_step returns the loss without its graph.
 # ===============
 import types
 from pathlib import Path
@@ -23,6 +24,7 @@ def test_trainer_defaults_are_todays_loop():
     from omegaconf import OmegaConf
     t = OmegaConf.load(CONFIGS / "trainer.yaml").trainer
     assert t.log_every_n_batches == 0 and t.progress_bar_refresh_rate == 1 and t.lr_monitor is True
+    assert t.detach_step_output is False
 
 
 # ── training_step logging ────────────────────────────────────────────────────
@@ -71,13 +73,14 @@ class _Connector:
         return (self.batch + 1) % self.every == 0
 
 
-def _module(log_on_device=False, every=1, accum=1, n_batches=1000):
+def _module(log_on_device=False, every=1, detach=False, accum=1, n_batches=1000):
     m = SAGELightningModule.__new__(SAGELightningModule)
     pl.LightningModule.__init__(m)
     m.automatic_optimization = False
     m.engine = _FakeEngine()
     for k, v in dict(accumulate_grad_batches=accum, clip_grad_norm=1.0, log_on_device=log_on_device,
-                     _accum_steps_gen=0, _accum_steps_disc=0, _disc_phase=True, gen_step=0).items():
+                     detach_step_output=detach, _accum_steps_gen=0, _accum_steps_disc=0, _disc_phase=True,
+                     gen_step=0).items():
         setattr(m, k, v)
     m._log_accum, m._log_count = {"gen": {}, "disc": {}}, {"gen": 0, "disc": 0}
     opts = [torch.optim.SGD(m.engine.autoencoder.parameters(), lr=0.1),
@@ -145,6 +148,13 @@ def test_log_on_device_with_accumulation_and_epoch_end():
         window = seen[3 * w: 3 * w + 3]
         vals = [v["train/loss"] for p, v in window if p == "gen"]
         assert log["train/loss"] == pytest.approx(sum(vals) / len(vals), rel=1e-6)
+
+
+def test_detach_step_output():
+    returned = _run(_module(detach=True), 4)
+    assert all(t.grad_fn is None and not t.requires_grad for t in returned)
+    returned = _run(_module(), 2)
+    assert all(t.grad_fn is not None for t in returned)
 
 
 if __name__ == "__main__":
