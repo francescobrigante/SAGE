@@ -29,6 +29,25 @@ JOINT_CHANNELS = {"lr": 2, "lrms": 4}
 PREPROCESS_GAINS = ("per_channel", "shared")
 
 
+class _L1Mean(torch.autograd.Function):
+    """mean |a - b| with the backward of (a - b).abs().mean(): the same value and the same gradients
+    bit for bit, but it keeps the sign of a - b in int8 for the backward instead of the float32 a - b."""
+
+    @staticmethod
+    def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        d = a - b
+        ctx.save_for_backward(torch.sign(d).to(torch.int8))
+        ctx.numel, ctx.dtype = d.numel(), d.dtype
+        return d.abs().mean()
+
+    @staticmethod
+    def backward(ctx, g: torch.Tensor):
+        (sign,) = ctx.saved_tensors
+        grad = sign.to(ctx.dtype) * (g / ctx.numel)          # MeanBackward then AbsBackward, as autograd
+        return (grad if ctx.needs_input_grad[0] else None,
+                -grad if ctx.needs_input_grad[1] else None)
+
+
 class WavTokenizerDiscriminator(nn.Module):
     """
     Composite discriminator for WavTokenizer-full ablation:
@@ -227,8 +246,13 @@ class WavTokenizerGANLoss(nn.Module):
         loss_type: tp.Literal["hinge", "rpgan", "sigmoid_relgan", "lsgan"] = "hinge",
         use_hinge: tp.Optional[bool] = None,
         normalize_losses: bool = False,
+        fused_feature_matching: bool = False,
         **discriminator_kwargs,
     ):
+        """
+        fused_feature_matching: the L1 feature matching keeps the sign of the difference (int8) for the
+            backward instead of the float32 difference: same loss and gradients bit for bit, less memory.
+        """
         super().__init__()
         if use_hinge is not None:
             loss_type = "hinge" if use_hinge else "lsgan"
@@ -239,11 +263,13 @@ class WavTokenizerGANLoss(nn.Module):
         self.loss_type = loss_type
         self._loss_fn = _LOSS_DISPATCH[loss_type]
         self.normalize_losses = normalize_losses
-        self.fm_reduction = (
-            (lambda x, y: (x - y).abs().mean() / (x.abs().mean() + 1e-3))
-            if normalize_losses
-            else (lambda x, y: (x - y).abs().mean())
-        )
+        self.fused_feature_matching = fused_feature_matching
+        if normalize_losses:
+            self.fm_reduction = lambda x, y: (x - y).abs().mean() / (x.abs().mean() + 1e-3)
+        elif fused_feature_matching:
+            self.fm_reduction = _L1Mean.apply
+        else:
+            self.fm_reduction = lambda x, y: (x - y).abs().mean()
         self.discriminator = WavTokenizerDiscriminator(**discriminator_kwargs)
 
     def forward(self, fake: torch.Tensor, real: torch.Tensor) -> tp.Tuple[tp.List[tp.List[torch.Tensor]], tp.List[tp.List[torch.Tensor]]]:

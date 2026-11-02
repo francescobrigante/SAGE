@@ -1,7 +1,8 @@
 # ===============
 # Speed-up keys of the WavTokenizer critic, checked against the default critic on every stereo arm
 # layout (C0, A1, A2, A3, A4): freeze_disc_in_gen_step and inplace_act give the same losses and the
-# same generator / critic gradients bit for bit. The discriminator step's dis_loss is bit-exact.
+# same generator / critic gradients bit for bit. The discriminator step's dis_loss and
+# fused_feature_matching are bit-exact.
 # ===============
 import types
 
@@ -176,6 +177,8 @@ def test_trainer_default_is_off():
     cfg = OmegaConf.load(Path(__file__).parents[1] / "configs" / "trainer.yaml")
     assert cfg.trainer.freeze_disc_in_gen_step is False
     assert cfg.trainer.disc_step_loss_only is False
+    critic = WavTokenizerGANLoss(loss_type="rpgan", **BASE)
+    assert not critic.fused_feature_matching
 
 
 # ── inplace_act ──────────────────────────────────────────────────────────────
@@ -219,7 +222,7 @@ def test_inplace_act_keeps_fewer_activations_for_the_backward():
     assert saved_bytes(_gan("c0", inplace_act=True), real, fake) < 0.75 * saved_bytes(_gan("c0"), real, fake)
 
 
-# ── discriminator step: dis_loss ─────────────────────────────────────────────
+# ── discriminator step: dis_loss, fused feature matching ─────────────────────
 
 def _dis_grads(gan, fn, real, fake):
     dis = fn(gan, real, fake)
@@ -236,6 +239,32 @@ def test_dis_loss_is_the_first_output_of_loss_bit_for_bit(arm):
     a = _dis_grads(gan, lambda g, r, f: g.loss(reals=r, fakes=f)[0], real, fake)
     b = _dis_grads(gan, lambda g, r, f: g.dis_loss(r, f), real, fake)
     assert torch.equal(a[0], b[0]) and all(torch.equal(x, y) for x, y in zip(a[1], b[1]))
+
+
+@pytest.mark.parametrize("arm", list(ARMS))
+@pytest.mark.parametrize("freeze", [False, True])
+def test_fused_feature_matching_is_bit_identical(arm, freeze):
+    ref, fused = _gan(arm), _gan(arm, fused_feature_matching=True)
+    real, fake = _pair()
+    (la, ga, ca), (lb, gb, cb) = _gen_step(ref, real, fake, freeze), _gen_step(fused, real, fake, freeze)
+    assert all(torch.equal(a, b) for a, b in zip(la, lb)) and torch.equal(ga, gb)
+    assert all((a is None and b is None) or torch.equal(a, b) for a, b in zip(ca, cb))
+
+
+def test_fused_feature_matching_keeps_int8_signs_for_the_backward():
+    real, fake = _pair()
+    sizes = {}
+    for fused in (False, True):
+        gan = _gan("c0", fused_feature_matching=True) if fused else _gan("c0")
+        saved = {}
+        def pack(t):
+            saved[t.untyped_storage().data_ptr()] = t.untyped_storage().nbytes()
+            return t
+        f = fake.clone().requires_grad_(True)
+        with frozen_parameters(gan), torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
+            _, adv, fm = gan.loss(reals=real, fakes=f)
+        sizes[fused] = sum(saved.values())
+    assert sizes[True] < sizes[False]
 
 
 if __name__ == "__main__":
