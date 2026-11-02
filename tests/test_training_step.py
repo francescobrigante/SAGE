@@ -103,3 +103,29 @@ def test_logs_the_window_mean_with_accumulation():
         phase = "gen" if "train/gen_lr" in log else "disc"
         a, b = seen[phase].pop(0), seen[phase].pop(0)
         assert {k: log[k] for k in a} == pytest.approx({k: (a[k] + b[k]) / 2 for k in a}, rel=1e-6)
+
+
+# ── critic grads of the generator batches (leak with accumulation) ──────────
+
+def test_discriminator_step_uses_only_its_own_batches():
+    m = _module(accum=2, clip=0.0)
+    critic = m.engine.loss_manager.discriminator
+    w0 = [p.detach().clone() for p in critic.parameters()]
+    batches = _batches(4)                                           # G D G D: the D window is batches 1 and 3
+    _run(m, batches)
+    ref = nn.Linear(4, 1)
+    with torch.no_grad():
+        for p, w in zip(ref.parameters(), w0):
+            p.copy_(w)
+    for b in (batches[1], batches[3]):
+        (ref(b).pow(2).mean() / 2).backward()
+    expected = [w - 0.05 * p.grad for w, p in zip(w0, ref.parameters())]
+    for p, e in zip(critic.parameters(), expected):
+        torch.testing.assert_close(p.detach(), e, rtol=1e-6, atol=1e-7)
+
+
+def test_generator_batch_leaves_no_critic_grads():
+    m = _module()
+    m.training_step(_batches(1)[0], 0)                              # first batch: generator
+    assert m.engine.loss_manager.discriminator.weight.grad is None
+    assert m.engine.autoencoder.weight.grad is None                 # its window closed and was zeroed

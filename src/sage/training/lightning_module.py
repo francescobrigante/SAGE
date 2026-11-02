@@ -390,6 +390,19 @@ class SAGELightningModule(pl.LightningModule):
             kl_module.update_weight(annealed)
         self.log("train/kl_weight", annealed, on_epoch=True, prog_bar=False, sync_dist=True)
 
+    def _critic_grads(self) -> Optional[list]:
+        """Copies of the critic's grads (None where unset): with accumulate_grad_batches = 1 the
+        discriminator window is closed at a generator batch, so every entry is None and nothing is copied."""
+        if not self.use_disc:
+            return None
+        return [None if p.grad is None else p.grad.clone() for p in self.discriminator.parameters()]
+
+    def _restore_critic_grads(self, grads: Optional[list]) -> None:
+        if grads is None:
+            return
+        for p, g in zip(self.discriminator.parameters(), grads):
+            p.grad = g
+
     def training_step(self, batch, batch_idx):
         # Per-batch G/D alternation, decoupled from global_step (which advances by a
         # variable number of optimizer.step() per batch when opt_aux is active).
@@ -476,7 +489,11 @@ class SAGELightningModule(pl.LightningModule):
                 opt_gen.zero_grad()
                 if opt_aux is not None:
                     opt_aux.zero_grad()
+            # The adversarial terms also fill the critic's grads, which no optimizer step uses: they are
+            # dropped, so an open discriminator window (accumulate_grad_batches > 1) keeps only its own.
+            critic_grads = self._critic_grads()
             self.manual_backward(gen_loss / accum_batches)  # fills grads on AE + alignment modules (same graph)
+            self._restore_critic_grads(critic_grads)
             self._accum_steps_gen += 1
             # logging richiesto: loss, latent_std, data_std + breakdown gen, accumulated before the
             # window closes, so its log includes this batch
