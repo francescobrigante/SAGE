@@ -1,0 +1,172 @@
+# ===============
+# Speed-up keys of the WavTokenizer critic, checked against the default critic on every stereo arm
+# layout (C0, A1, A2, A3, A4): freeze_disc_in_gen_step gives the same losses and the same generator
+# gradient bit for bit.
+# ===============
+import types
+
+import pytest
+import torch
+import torch.nn as nn
+
+from sage.nn.discriminators.wavtokenizer import WavTokenizerGANLoss
+from sage.training.engine import AutoencoderEngine, frozen_parameters
+
+BASE = dict(channels=2, sample_rate=44100, periods=[2, 3], resolutions=[(512, 128, 512)], fft_sizes=[512],
+            preprocess=True, fold_lrms=True)
+ARMS = {
+    "c0": {},
+    "a1": dict(preprocess_gain="shared"),
+    "a2": dict(preprocess_gain="shared", mpd_stereo="lr", mrd_stereo="lrms", dac_stereo="lr"),
+    "a3": dict(preprocess_gain="shared", mpd_stereo="lrms", mrd_stereo="lrms", dac_stereo="lrms"),
+    "a4": dict(preprocess_gain="shared", resolutions=[(1024, 256, 1024)], fft_sizes=[1024],
+               dac_bands=[0.0, 0.011337868, 0.045351474, 0.181405896, 0.453514739, 1.0]),
+}
+T = 8192
+
+
+def _gan(arm, seed=0, **kw):
+    torch.manual_seed(seed)
+    return WavTokenizerGANLoss(loss_type="rpgan", **{**BASE, **ARMS[arm], **kw})
+
+
+def _pair(seed=1, b=2):
+    g = torch.Generator().manual_seed(seed)
+    m, s = torch.randn(b, T, generator=g), torch.randn(b, T, generator=g)
+    real = 0.3 * torch.stack([m + 0.4 * s, m - 0.4 * s], dim=1)                 # (B, 2, T)
+    fake = real + 0.05 * torch.randn(real.shape, generator=g)
+    return real, fake
+
+
+def _gen_step(gan, real, fake, freeze=False):
+    """Generator side: L_adv + L_fm backward into the fake. Returns losses, fake grad, critic grads."""
+    fake = fake.clone().requires_grad_(True)
+    with frozen_parameters(gan, enabled=freeze):
+        _, adv, fm = gan.loss(reals=real, fakes=fake)
+    (0.1 * adv + 0.2 * fm).backward()
+    grads = [None if p.grad is None else p.grad.clone() for p in gan.parameters()]
+    gan.zero_grad(set_to_none=True)
+    return (adv.detach(), fm.detach()), fake.grad, grads
+
+
+# ── frozen_parameters ────────────────────────────────────────────────────────
+
+def test_frozen_parameters_restores_only_what_it_froze():
+    m = nn.Linear(3, 3)
+    m.bias.requires_grad_(False)
+    with frozen_parameters(m):
+        assert not any(p.requires_grad for p in m.parameters())
+    assert m.weight.requires_grad and not m.bias.requires_grad
+
+
+def test_frozen_parameters_restores_on_error_and_noop_when_disabled():
+    m = nn.Linear(3, 3)
+    with pytest.raises(RuntimeError):
+        with frozen_parameters(m):
+            raise RuntimeError("boom")
+    assert all(p.requires_grad for p in m.parameters())
+    with frozen_parameters(m, enabled=False):
+        assert all(p.requires_grad for p in m.parameters())
+    with frozen_parameters(None):
+        pass
+
+
+# ── freeze_disc_in_gen_step ──────────────────────────────────────────────────
+
+@pytest.mark.parametrize("arm", list(ARMS))
+def test_frozen_critic_gives_the_generator_gradient_bit_for_bit(arm):
+    gan = _gan(arm)
+    real, fake = _pair()
+    losses, g_ref, d_grads = _gen_step(gan, real, fake, freeze=False)
+    losses_f, g_frozen, d_grads_f = _gen_step(gan, real, fake, freeze=True)
+    assert all(torch.equal(a, b) for a, b in zip(losses, losses_f))
+    assert torch.equal(g_ref, g_frozen)
+    assert all(g is not None for g in d_grads)            # today: critic weight gradients, discarded later
+    assert all(g is None for g in d_grads_f)              # frozen: none computed
+    assert all(p.requires_grad for p in gan.parameters())
+
+
+def test_frozen_critic_builds_no_graph_on_the_real_path():
+    gan = _gan("c0")
+    real, fake = _pair()
+    with frozen_parameters(gan):
+        fmaps_real = gan.discriminator(real)
+        fmaps_fake = gan.discriminator(fake.clone().requires_grad_(True))
+    assert all(t.grad_fn is None for fm in fmaps_real for t in fm)
+    assert all(t.grad_fn is not None for fm in fmaps_fake for t in fm)
+
+
+class _StubAE(nn.Module):
+    """One-parameter autoencoder whose waveform output is a fixed stereo clip scaled by its spectrogram."""
+
+    def __init__(self):
+        super().__init__()
+        self.w = nn.Parameter(torch.ones(()))
+        self.encoder = types.SimpleNamespace(is_complex=False)
+        self.has_pre_transform = self.pre_transform_applies_to_target = self.pre_transform_applies_inverse = False
+        self.register_buffer("clip", _pair(seed=7)[0])                         # (2, 2, T)
+
+    def encode(self, x, return_info=False, **kw):
+        latents = x.reshape(x.shape[0], 4, -1)[..., :4] * self.w
+        return (latents, {}) if return_info else latents
+
+    def decode(self, z, encoder_info=None, apply_inverse=False):
+        return z.mean(dim=2)[:, :, None, None].expand(z.shape[0], 4, 16, 8) * self.w
+
+    def istft(self, sp, target_length=None):
+        return self.clip[: sp.shape[0]] * (1 + 0.1 * sp.mean(dim=(1, 2, 3)))[:, None, None] * self.w
+
+
+def _stub_engine(freeze, **critic):
+    """The engine of test_o1_phase_compute, with a real critic behind a stub loss manager."""
+    eng = AutoencoderEngine.__new__(AutoencoderEngine)
+    nn.Module.__init__(eng)
+    eng.autoencoder = _StubAE()
+    gan = _gan("c0", periods=[2], fft_sizes=[512], **critic)
+    lm = nn.Module()
+    lm.discriminator = gan
+    lm.use_disc = True
+    lm.losses_gen = lambda info: (info["decoded"].mean() + 0.1 * info["loss_adv"]
+                                  + 0.2 * info["feature_matching_distance"], {})
+    lm.losses_disc = lambda info: (info["loss_dis"], {})
+    eng.loss_manager = lm
+    for k, v in dict(teacher_model=None, use_disc=True, warmup_steps=0, warmup_mode="adv",
+                     encoder_freeze_on_warmup=False, freeze_encoder=False, force_input_mono=False,
+                     latent_mask_ratio=0.0, audio_channels=2, sample_rate=44100,
+                     stft_params={"n_fft": 2048, "hop_length": 512}, adv_grad_every=0,
+                     freeze_disc_in_gen_step=freeze).items():
+        setattr(eng, k, v)
+    return eng
+
+
+def test_engine_key_same_generator_update_and_disc_step():
+    torch.manual_seed(3)
+    batch = (torch.randn(2, 4, 16, 8), 0.3 * torch.randn(2, 2, T))
+    outs = {}
+    for freeze in (False, True):
+        eng = _stub_engine(freeze)
+        gen = eng.compute(batch, gen_step=1, disc_phase=False)
+        gen["gen_total"].backward()
+        d_grads = [p.grad for p in eng.loss_manager.discriminator.parameters()]
+        g_ae = eng.autoencoder.w.grad.clone()
+        eng.loss_manager.discriminator.zero_grad(set_to_none=True)
+        dis = eng.compute(batch, gen_step=1, disc_phase=True)
+        dis["disc_total"].backward()
+        outs[freeze] = (gen["gen_total"].detach(), g_ae, d_grads,
+                        [p.grad.clone() for p in eng.loss_manager.discriminator.parameters()])
+        assert all(p.requires_grad for p in eng.loss_manager.discriminator.parameters())
+    assert torch.equal(outs[False][0], outs[True][0])
+    assert torch.equal(outs[False][1], outs[True][1])
+    assert all(g is not None for g in outs[False][2]) and all(g is None for g in outs[True][2])
+    assert all(torch.equal(a, b) for a, b in zip(outs[False][3], outs[True][3]))
+
+
+def test_trainer_default_is_off():
+    from omegaconf import OmegaConf
+    from pathlib import Path
+    cfg = OmegaConf.load(Path(__file__).parents[1] / "configs" / "trainer.yaml")
+    assert cfg.trainer.freeze_disc_in_gen_step is False
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))

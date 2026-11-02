@@ -470,6 +470,7 @@ def main(cfg: DictConfig):
         accumulate_grad_batches=int(trainer_cfg.trainer.get("accumulate_grad_batches", 1)),
         clip_grad_norm=float(trainer_cfg.trainer.get("clip_grad_norm", 0.0)),
         adv_grad_every=int(trainer_cfg.trainer.get("adv_grad_every", 0)),
+        freeze_disc_in_gen_step=bool(trainer_cfg.trainer.get("freeze_disc_in_gen_step", False)),
         kl_annealing_epochs=int(trainer_cfg.trainer.get("kl_annealing_epochs", 0)),
         kl_beta_target=kl_beta_target,
     )

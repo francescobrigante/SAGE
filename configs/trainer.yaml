@@ -71,6 +71,8 @@ trainer:
   terminate_on_nan: true
   critic_diag_every_n_epochs: 0     # >0: stereo report of the WavTokenizer critic every N epochs (critic/* in W&B)
   adv_grad_every: 0                 # >0: adversarial share of the generator gradient every N generator updates (diag/*)
+  freeze_disc_in_gen_step: false    # true: critic frozen in the generator step (no D(real) graph, no critic weight
+                                    # gradients there); same generator gradient and updates (exact speed-up)
   detect_anomaly: false
   # no gradient_clip_val/algorithm: Lightning does not support them with manual optimization
 
