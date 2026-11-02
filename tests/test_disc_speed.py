@@ -1,7 +1,7 @@
 # ===============
 # Speed-up keys of the WavTokenizer critic, checked against the default critic on every stereo arm
-# layout (C0, A1, A2, A3, A4): freeze_disc_in_gen_step gives the same losses and the same generator
-# gradient bit for bit.
+# layout (C0, A1, A2, A3, A4): freeze_disc_in_gen_step and inplace_act give the same losses and the
+# same generator / critic gradients bit for bit.
 # ===============
 import types
 
@@ -47,6 +47,15 @@ def _gen_step(gan, real, fake, freeze=False):
     grads = [None if p.grad is None else p.grad.clone() for p in gan.parameters()]
     gan.zero_grad(set_to_none=True)
     return (adv.detach(), fm.detach()), fake.grad, grads
+
+
+def _disc_step(gan, real, fake):
+    """Critic side: the disc-step loss (fake detached) backward into the critic."""
+    dis, _, _ = gan.loss(reals=real, fakes=fake.detach())
+    dis.backward()
+    grads = [p.grad.clone() for p in gan.parameters()]
+    gan.zero_grad(set_to_none=True)
+    return dis.detach(), grads
 
 
 # ── frozen_parameters ────────────────────────────────────────────────────────
@@ -166,6 +175,47 @@ def test_trainer_default_is_off():
     from pathlib import Path
     cfg = OmegaConf.load(Path(__file__).parents[1] / "configs" / "trainer.yaml")
     assert cfg.trainer.freeze_disc_in_gen_step is False
+
+
+# ── inplace_act ──────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("arm", list(ARMS))
+def test_inplace_act_is_bit_identical(arm):
+    ref, ipl = _gan(arm), _gan(arm, inplace_act=True)
+    assert all(torch.equal(a, b) for a, b in zip(ref.state_dict().values(), ipl.state_dict().values()))
+    real, fake = _pair()
+    with torch.no_grad():
+        for fa, fb in zip(ref.discriminator(real), ipl.discriminator(real)):
+            assert all(torch.equal(ta, tb) for ta, tb in zip(fa, fb))
+    for freeze in (False, True):
+        (la, ga, da), (lb, gb, db) = _gen_step(ref, real, fake, freeze), _gen_step(ipl, real, fake, freeze)
+        assert all(torch.equal(a, b) for a, b in zip(la, lb))
+        assert torch.equal(ga, gb)
+        assert all((a is None and b is None) or torch.equal(a, b) for a, b in zip(da, db))
+    (dis_a, gr_a), (dis_b, gr_b) = _disc_step(ref, real, fake), _disc_step(ipl, real, fake)
+    assert torch.equal(dis_a, dis_b)
+    assert all(torch.equal(a, b) for a, b in zip(gr_a, gr_b))
+
+
+def test_inplace_act_reaches_every_branch():
+    gan = _gan("c0", inplace_act=True).discriminator
+    assert all(d.inplace_act for d in gan.vocos_mpd.discriminators)
+    assert all(d.inplace_act for d in gan.vocos_mrd.discriminators)
+    acts = [m for m in gan.dac_disc.modules() if isinstance(m, nn.LeakyReLU)]
+    assert acts and all(m.inplace for m in acts)
+
+
+def test_inplace_act_keeps_fewer_activations_for_the_backward():
+    def saved_bytes(gan, real, fake):
+        storages = {}                                    # distinct buffers kept alive for the backward
+        def pack(t):
+            storages[t.untyped_storage().data_ptr()] = t.untyped_storage().nbytes()
+            return t
+        with torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
+            out = gan.loss(reals=real, fakes=fake.detach())
+        return sum(storages.values())
+    real, fake = _pair()
+    assert saved_bytes(_gan("c0", inplace_act=True), real, fake) < 0.75 * saved_bytes(_gan("c0"), real, fake)
 
 
 if __name__ == "__main__":

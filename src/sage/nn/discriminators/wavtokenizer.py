@@ -54,6 +54,8 @@ class WavTokenizerDiscriminator(nn.Module):
             (one gain per stereo example, taken on L and R; M, S derived after it).
         mpd_stereo, mrd_stereo, dac_stereo: layout of each branch (see STEREO_MODES).
         dac_bands: band edges of the DAC MRDs as fractions of Nyquist (None = BANDS).
+        inplace_act: LeakyReLU in place in every branch (exact: same outputs and gradients, about
+            half the activation memory kept for the backward).
     """
 
     def __init__(
@@ -71,6 +73,7 @@ class WavTokenizerDiscriminator(nn.Module):
         mrd_stereo: str = "fold",
         dac_stereo: str = "fold",
         dac_bands: tp.Optional[list] = None,
+        inplace_act: bool = False,
     ):
         super().__init__()
         modes = {"mpd_stereo": mpd_stereo, "mrd_stereo": mrd_stereo, "dac_stereo": dac_stereo}
@@ -95,11 +98,13 @@ class WavTokenizerDiscriminator(nn.Module):
         self.dac_stereo = dac_stereo                # layout of the DAC complex MRDs
 
         # 1. Vocos MPD (from vocos_legacy)
-        self.vocos_mpd = MultiPeriodDiscriminator(periods=periods, in_channels=JOINT_CHANNELS.get(mpd_stereo, 1))
+        self.vocos_mpd = MultiPeriodDiscriminator(periods=periods, in_channels=JOINT_CHANNELS.get(mpd_stereo, 1),
+                                                  inplace_act=inplace_act)
 
         # 2. Vocos legacy mag-MRD (from vocos_legacy)
         self.vocos_mrd = MultiResolutionDiscriminator(resolutions=resolutions,
-                                                      in_channels=JOINT_CHANNELS.get(mrd_stereo, 1))
+                                                      in_channels=JOINT_CHANNELS.get(mrd_stereo, 1),
+                                                      inplace_act=inplace_act)
 
         # 3. DACDiscriminator
         if self.use_dac:
@@ -113,8 +118,13 @@ class WavTokenizerDiscriminator(nn.Module):
                 preprocess=False,  # applied by dac_input, where the gain can be shared
                 joint=dac_joint,
             )
+            if inplace_act:                                   # the LeakyReLU of DAC's WNConv2d blocks
+                for m in self.dac_disc.modules():
+                    if isinstance(m, nn.LeakyReLU):
+                        m.inplace = True
         # number of sub-discriminators per branch, in the order of forward's output
         self.group_sizes = {"mpd": len(periods), "mrd": len(resolutions), "dac": len(fft_sizes) if use_dac else 0}
+        self.inplace_act = inplace_act
 
     def _fold(self, x: torch.Tensor) -> torch.Tensor:
         """With fold_lrms on a stereo batch: (B, 2, T) → (2B, 2, T) = [L,R | M,S], M,S = L ± R."""

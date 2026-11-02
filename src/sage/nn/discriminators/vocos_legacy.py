@@ -6,7 +6,8 @@
 # The MRD here is phase-BLIND (`torch.stft(...).abs()`); this is exactly what makes the
 # WavTokenizer-full stack distinct from DAC (whose MRD is complex+banded). Used only by the
 # `wavtokenizer` composite discriminator. Inputs are mono (B, T), as in the original, or
-# (B, C, T) with `in_channels=C` for the joint stereo critics (the only change to the port).
+# (B, C, T) with `in_channels=C` for the joint stereo critics; `inplace_act` runs the LeakyReLU
+# in place (same values and gradients, one stored activation per layer instead of two).
 # =============================================================================
 
 from typing import List, Optional, Tuple
@@ -21,10 +22,11 @@ class MultiPeriodDiscriminator(nn.Module):
     """Multi-Period Discriminator (HiFi-GAN), optionally conditional via an embedding table."""
 
     def __init__(self, periods: Tuple[int, ...] = (2, 3, 5, 7, 11), num_embeddings: Optional[int] = None,
-                 in_channels: int = 1):
+                 in_channels: int = 1, inplace_act: bool = False):
         super().__init__()
         self.discriminators = nn.ModuleList(
-            [DiscriminatorP(period=p, in_channels=in_channels, num_embeddings=num_embeddings) for p in periods]
+            [DiscriminatorP(period=p, in_channels=in_channels, num_embeddings=num_embeddings, inplace_act=inplace_act)
+             for p in periods]
         )
 
     def forward(
@@ -48,9 +50,11 @@ class DiscriminatorP(nn.Module):
         stride: int = 3,
         lrelu_slope: float = 0.1,
         num_embeddings: Optional[int] = None,
+        inplace_act: bool = False,
     ):
         super().__init__()
         self.period = period
+        self.inplace_act = inplace_act                       # LeakyReLU in place on the conv output
         self.convs = nn.ModuleList(
             [
                 weight_norm(Conv2d(in_channels, 32, (kernel_size, 1), (stride, 1), padding=(kernel_size // 2, 0))),
@@ -81,7 +85,7 @@ class DiscriminatorP(nn.Module):
 
         for i, l in enumerate(self.convs):
             x = l(x)
-            x = torch.nn.functional.leaky_relu(x, self.lrelu_slope)
+            x = torch.nn.functional.leaky_relu(x, self.lrelu_slope, inplace=self.inplace_act)
             if i > 0:
                 fmap.append(x)
         if cond_embedding_id is not None:
@@ -104,10 +108,12 @@ class MultiResolutionDiscriminator(nn.Module):
         resolutions: Tuple[Tuple[int, int, int], ...] = ((1024, 256, 1024), (2048, 512, 2048), (512, 128, 512)),
         num_embeddings: Optional[int] = None,
         in_channels: int = 1,
+        inplace_act: bool = False,
     ):
         super().__init__()
         self.discriminators = nn.ModuleList(
-            [DiscriminatorR(resolution=r, in_channels=in_channels, num_embeddings=num_embeddings)
+            [DiscriminatorR(resolution=r, in_channels=in_channels, num_embeddings=num_embeddings,
+                            inplace_act=inplace_act)
              for r in resolutions]
         )
 
@@ -131,11 +137,13 @@ class DiscriminatorR(nn.Module):
         in_channels: int = 1,
         num_embeddings: Optional[int] = None,
         lrelu_slope: float = 0.1,
+        inplace_act: bool = False,
     ):
         super().__init__()
         self.resolution = resolution                         # (n_fft, hop_length, win_length)
         self.in_channels = in_channels
         self.lrelu_slope = lrelu_slope
+        self.inplace_act = inplace_act                       # LeakyReLU in place on the conv output
         self.convs = nn.ModuleList(
             [
                 weight_norm(nn.Conv2d(in_channels, channels, kernel_size=(7, 5), stride=(2, 2), padding=(3, 2))),
@@ -159,7 +167,7 @@ class DiscriminatorR(nn.Module):
             x = x.unsqueeze(1)                               # (B, 1, F, N)
         for l in self.convs:
             x = l(x)
-            x = torch.nn.functional.leaky_relu(x, self.lrelu_slope)
+            x = torch.nn.functional.leaky_relu(x, self.lrelu_slope, inplace=self.inplace_act)
             fmap.append(x)
         if cond_embedding_id is not None:
             emb = self.emb(cond_embedding_id)
