@@ -2,7 +2,7 @@
 # Stereo keys of the WavTokenizer discriminator (PLAN_WAVTOKENIZER_STEREO M2): defaults equal to
 # the paper's critic (signature of main's code), the shared DAC gain (ILD and Side level survive,
 # no 1/eps gradient on mono tracks), the joint critics (both channels used, M/S magnitudes see the
-# inter-channel phase), dac_bands, and the guard rails on invalid combinations.
+# inter-channel phase), and the guard rails on invalid combinations.
 # ===============
 import json
 from pathlib import Path
@@ -20,7 +20,6 @@ PAPER = dict(channels=2, sample_rate=44100, periods=[2, 3, 5, 7, 11], fft_sizes=
 SMALL = dict(channels=2, sample_rate=44100, periods=[2, 3], resolutions=[(512, 128, 512)], fft_sizes=[512],
              preprocess=True, fold_lrms=True)
 A1 = dict(preprocess_gain="shared")
-A2 = dict(preprocess_gain="shared", mpd_stereo="lr", mrd_stereo="lrms", dac_stereo="lr")
 A3 = dict(preprocess_gain="shared", mpd_stereo="lrms", mrd_stereo="lrms", dac_stereo="lrms")
 T = 8192
 
@@ -116,7 +115,7 @@ def test_defaults_give_main_generator_gradient_bit_for_bit(case):
 def test_explicit_default_keys_are_bit_identical():
     x = _stereo()
     a = _disc()
-    b = _disc(preprocess_gain="per_channel", mpd_stereo="fold", mrd_stereo="fold", dac_stereo="fold", dac_bands=None)
+    b = _disc(preprocess_gain="per_channel", mpd_stereo="fold", mrd_stereo="fold", dac_stereo="fold")
     b.load_state_dict(a.state_dict())
     for fa, fb in zip(a(x), b(x)):
         assert all(torch.equal(ta, tb) for ta, tb in zip(fa, fb))
@@ -205,18 +204,17 @@ def test_per_channel_gain_explodes_on_mono_tracks_shared_does_not():
 def test_digital_silence_gives_finite_gradients():
     real, fake = _stereo(), _stereo(seed=3)
     real[..., T // 4: T // 2] = 0.0                                          # a silent stretch
-    for kw in ({}, A1, A2):
+    for kw in ({}, A1, A3):
         assert torch.isfinite(torch.tensor(_adv_grad_norm(kw, real, fake)))
     silent = torch.zeros(2, 2, T)                                            # a fully silent crop: both modes
-    for kw in ({}, A1, A2):                                                  # amplify the fake to 0.8, but stay finite
+    for kw in ({}, A1, A3):                                                  # amplify the fake to 0.8, but stay finite
         assert torch.isfinite(torch.tensor(_adv_grad_norm(kw, silent, 1e-7 * _stereo(seed=4))))
 
 
 # ── 6-7. joint critics ───────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("arm", [A2, A3], ids=["A2", "A3"])
-def test_joint_critics_use_both_channels(arm):
-    disc, x = _disc(**arm), _stereo().requires_grad_(True)
+def test_joint_critics_use_both_channels():
+    disc, x = _disc(**A3), _stereo().requires_grad_(True)
     fmaps = disc(x)
     assert len(fmaps) == len(SMALL["periods"]) + len(SMALL["resolutions"]) + len(SMALL["fft_sizes"])
     assert all(fm[-1].shape[0] == x.shape[0] for fm in fmaps)                # one row per stereo example
@@ -234,13 +232,13 @@ def test_joint_critics_use_both_channels(arm):
 def test_magnitude_mrd_on_lrms_sees_cos_ipd_but_not_its_sign():
     """|M|, |S| per bin depend on cos(IPD) only. Exact for a tone on a bin centre (12 periods per
     rectangular 512-sample frame: no leakage), away from the reflect-padded edge frames."""
-    disc = _disc(**A2)
+    disc = _disc(**A3)
     mrd = disc.vocos_mrd.discriminators[0]                                   # resolution (512, 128, 512)
     f0 = 12 * 44100 / 512
     t = torch.arange(T, dtype=torch.float64) / 44100
     tone = lambda phi: torch.stack([torch.cos(2 * torch.pi * f0 * t),                         # noqa: E731
                                     torch.cos(2 * torch.pi * f0 * t + phi)]).unsqueeze(0).float()
-    spec = lambda phi: mrd.spectrogram(disc._joint(tone(phi), "lrms"))[..., 4:-4]               # noqa: E731
+    spec = lambda phi: mrd.spectrogram(disc._joint(tone(phi)))[..., 4:-4]                       # noqa: E731
     assert spec(0.0).shape[1] == 4                                           # |L|, |R|, |M|, |S|
     assert not torch.allclose(spec(0.0), spec(torch.pi / 2), rtol=1e-2, atol=1e-2)
     assert torch.allclose(spec(torch.pi / 2), spec(-torch.pi / 2), rtol=1e-4, atol=1e-2)   # documented limit
@@ -248,49 +246,43 @@ def test_magnitude_mrd_on_lrms_sees_cos_ipd_but_not_its_sign():
 
 def test_joint_layouts_add_few_parameters():
     n = lambda d: sum(p.numel() for p in d.parameters())                    # noqa: E731
-    c0, a2, a3 = (n(WavTokenizerDiscriminator(**{**PAPER, **kw})) for kw in ({}, A2, A3))
-    assert 0 < a2 - c0 < 100_000 and a3 > a2
+    c0, a3 = (n(WavTokenizerDiscriminator(**{**PAPER, **kw})) for kw in ({}, A3))
+    assert 0 < a3 - c0 < 0.01 * c0                                          # only the first layers widen
 
 
 def test_fold_lrms_only_touches_the_branches_that_fold():
-    """In A2/A3 every branch is joint: fold_lrms has no effect."""
+    """In A3 every branch is joint: fold_lrms has no effect."""
     x = _stereo()
-    on, off = _disc(**A2), _disc(**A2, fold_lrms=False)
+    on, off = _disc(**A3), _disc(**A3, fold_lrms=False)
     off.load_state_dict(on.state_dict())
     for fa, fb in zip(on(x), off(x)):
         assert torch.equal(fa[-1], fb[-1])
 
 
-# ── 9-10. checkpoints and bands ──────────────────────────────────────────────
+# ── 9. checkpoints ───────────────────────────────────────────────────────────
 
 def test_init_from_disc_refuses_a_critic_of_another_layout(tmp_path):
     import train
     c0 = WavTokenizerGANLoss(loss_type="rpgan", **PAPER)
     ckpt = tmp_path / "c0.ckpt"
     torch.save({"state_dict": {f"engine.loss_manager.discriminator.{k}": v for k, v in c0.state_dict().items()}}, ckpt)
-    a2 = WavTokenizerGANLoss(loss_type="rpgan", **{**PAPER, **A2})
-    wrapper = SimpleNamespace(engine=SimpleNamespace(loss_manager=SimpleNamespace(discriminator=a2)))
+    a3 = WavTokenizerGANLoss(loss_type="rpgan", **{**PAPER, **A3})
+    wrapper = SimpleNamespace(engine=SimpleNamespace(loss_manager=SimpleNamespace(discriminator=a3)))
     with pytest.raises(RuntimeError, match="size mismatch"):
         train._load_discriminator_weights(wrapper, str(ckpt))
 
 
-def test_dac_bands_reach_the_dac_mrds():
-    disc = _disc(dac_bands=[0.0, 0.25, 0.5, 1.0])
-    mrd = disc.dac_disc.discriminators[0]
-    n = 512 // 2 + 1
-    assert mrd.bands == [(0, int(0.25 * n)), (int(0.25 * n), int(0.5 * n)), (int(0.5 * n), n)]
-    assert len(mrd.band_convs) == 3
-
-
 # ── guard rails ──────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("bad", [dict(mpd_stereo="ms"), dict(mrd_stereo="lr"), dict(preprocess_gain="global"),
-                                 dict(dac_stereo="lr"),                       # joint DAC with per-channel gain
-                                 dict(channels=1, mpd_stereo="lr")])
+@pytest.mark.parametrize("bad", [dict(mpd_stereo="ms"), dict(preprocess_gain="global"),
+                                 dict(mpd_stereo="lr"), dict(mrd_stereo="lr"),   # [L, R] layout: not a mode
+                                 dict(dac_stereo="lr", preprocess_gain="shared"),
+                                 dict(dac_stereo="lrms"),                     # joint DAC with per-channel gain
+                                 dict(channels=1, mpd_stereo="lrms")])
 def test_invalid_combinations_are_refused(bad):
     with pytest.raises(ValueError):
         WavTokenizerDiscriminator(**{**SMALL, **bad})
 
 
 def test_joint_dac_without_preprocess_is_allowed():
-    WavTokenizerDiscriminator(**{**SMALL, "preprocess": False, "dac_stereo": "lr"})
+    WavTokenizerDiscriminator(**{**SMALL, "preprocess": False, "dac_stereo": "lrms"})

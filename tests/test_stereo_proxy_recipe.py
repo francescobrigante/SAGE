@@ -81,18 +81,13 @@ def test_proxy_keeps_the_paper_discriminator(proxy):
     assert proxy[disc + "weights.feature_matching"] == 0.2
 
 
-# ── Arms A1-A4: only the discriminator keys of each arm differ from C0 ───────
+# ── Arms A1, A3: only the discriminator keys of each arm differ from C0 ──────
 
 DISC = "trainer.loss_config.discriminator.config."
 ARMS = {
     "a1": {"preprocess_gain": "shared"},
-    "a2": {"preprocess_gain": "shared", "mpd_stereo": "lr", "mrd_stereo": "lrms", "dac_stereo": "lr",
-           "fused_bias_act": False, "fused_bias_grad": False},     # joint critics: no Triton bias + LeakyReLU
     "a3": {"preprocess_gain": "shared", "mpd_stereo": "lrms", "mrd_stereo": "lrms", "dac_stereo": "lrms",
-           "fused_bias_act": False, "fused_bias_grad": False},
-    "a4": {"preprocess_gain": "shared", "resolutions": [[2048, 512, 2048], [4096, 1024, 4096], [1024, 256, 1024]],
-           "fft_sizes": [4096, 2048, 1024],
-           "dac_bands": [0.0, 0.011337868, 0.045351474, 0.181405896, 0.453514739, 1.0]},
+           "fused_bias_act": False, "fused_bias_grad": False},     # joint critics: no Triton bias + LeakyReLU
 }
 
 
@@ -113,12 +108,3 @@ def test_arm_builds_its_discriminator(arm):
     cfg = _compose(f"+experiment=stereo_proxy_{arm}")
     disc_cfg = cfg["trainer"]["loss_config"]["discriminator"]["config"]
     WavTokenizerGANLoss(channels=2, sample_rate=44100, **disc_cfg)       # as LossManager builds it
-
-
-def test_a4_bands_hold_enough_bins_for_every_window():
-    """Each DAC band must hold at least 4 STFT bins at every window length (512 would give 2 below 250 Hz)."""
-    edges = ARMS["a4"]["dac_bands"]
-    for n_fft in ARMS["a4"]["fft_sizes"]:
-        n = n_fft // 2 + 1
-        bins = [int(hi * n) - int(lo * n) for lo, hi in zip(edges[:-1], edges[1:])]
-        assert min(bins) >= 4, (n_fft, bins)

@@ -1,6 +1,6 @@
 # ===============
 # Speed-up keys of the WavTokenizer critic, checked against the default critic on every stereo arm
-# layout (C0, A1, A2, A3, A4): freeze_disc_in_gen_step and inplace_act give the same losses and the
+# layout (C0, A1, A3): freeze_disc_in_gen_step and inplace_act give the same losses and the
 # same generator / critic gradients bit for bit; channels_last gives them to float rounding, and its
 # weights stay channels-last through .to(), load_state_dict and the optimizer state. The discriminator
 # step keys: dis_loss and fused_feature_matching are bit-exact.
@@ -26,10 +26,7 @@ BASE = dict(channels=2, sample_rate=44100, periods=[2, 3], resolutions=[(512, 12
 ARMS = {
     "c0": {},
     "a1": dict(preprocess_gain="shared"),
-    "a2": dict(preprocess_gain="shared", mpd_stereo="lr", mrd_stereo="lrms", dac_stereo="lr"),
     "a3": dict(preprocess_gain="shared", mpd_stereo="lrms", mrd_stereo="lrms", dac_stereo="lrms"),
-    "a4": dict(preprocess_gain="shared", resolutions=[(1024, 256, 1024)], fft_sizes=[1024],
-               dac_bands=[0.0, 0.011337868, 0.045351474, 0.181405896, 0.453514739, 1.0]),
 }
 T = 8192
 CL_RTOL = 1e-5            # channels_last vs default, float32 on CPU
@@ -412,7 +409,7 @@ def test_fused_feature_matching_keeps_int8_signs_for_the_backward():
 
 
 def test_branch_streams_is_a_noop_on_cpu():
-    ref, st = _gan("a2"), _gan("a2", branch_streams=True)
+    ref, st = _gan("a3"), _gan("a3", branch_streams=True)
     real, fake = _pair()
     a = _dis_grads(ref, lambda g, r, f: g.dis_loss(r, f), real, fake)
     b = _dis_grads(st, lambda g, r, f: g.dis_loss(r, f), real, fake)
@@ -420,7 +417,7 @@ def test_branch_streams_is_a_noop_on_cpu():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA streams")
-@pytest.mark.parametrize("arm", ["c0", "a2"])
+@pytest.mark.parametrize("arm", ["c0", "a3"])
 def test_branch_streams_same_scores_and_gradients_on_cuda(arm):
     torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = True, False
     ref, st = _gan(arm).cuda(), _gan(arm, branch_streams=True).cuda()
@@ -655,7 +652,7 @@ TRAINER_SPEED_KEYS = ("freeze_disc_in_gen_step", "disc_step_loss_only", "ema_for
                       "ddp_gradient_as_bucket_view", "ddp_broadcast_buffers")
 # Recipes with the speed-ups on, and whether they keep the fused keys (fold critics only).
 RECIPES = {"pretrain": True, "decoder_ft": True, "stereo_proxy": True, "stereo_proxy_a1": True,
-           "stereo_proxy_a2": False, "stereo_proxy_a3": False, "stereo_proxy_a4": True}
+           "stereo_proxy_a3": False}
 
 
 def _compose(*overrides):
@@ -675,7 +672,7 @@ def _yaml_keys(d, prefix=""):
     return out
 
 
-@pytest.mark.parametrize("arm", ["stereo_proxy", "stereo_proxy_a2", "stereo_proxy_a4", "pretrain"])
+@pytest.mark.parametrize("arm", ["stereo_proxy", "stereo_proxy_a3", "pretrain"])
 @pytest.mark.parametrize("speedup", ["critic_fast", "critic_fast_fused"])
 def test_speedup_override_changes_only_speed_keys(arm, speedup):
     """+speedup=... adds the speed keys to the plain recipe (+speedup=legacy) and changes nothing else."""
