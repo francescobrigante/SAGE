@@ -46,7 +46,7 @@ def _normalize_ae_key_value(key: str, value: Any) -> tuple[str, Any]:
     return key, value
 
 
-def _extract_autoencoder_state(state_dict: Dict[str, Any]) -> Dict[str, Any]:
+def _extract_autoencoder_state(state_dict: Dict[str, Any], use_ema: bool = True) -> Dict[str, Any]:
     """Strip trainer-specific prefixes so checkpoints load into a bare ``SAGEAutoencoder``.
 
     Lightning checkpoints store model weights under entries such as
@@ -60,7 +60,9 @@ def _extract_autoencoder_state(state_dict: Dict[str, Any]) -> Dict[str, Any]:
       NCCL/DDP compatibility; converted back with ``torch.view_as_complex``.
 
     Prioritizes Exponential Moving Average (EMA) weights if present in the
-    checkpoint for maximum reconstruction fidelity.
+    checkpoint for maximum reconstruction fidelity; ``use_ema=False`` takes the
+    training weights instead (e.g. early checkpoints, whose EMA is still close
+    to the initialization).
     """
     # 1. Try to extract EMA weights (preferred for evaluation)
     ema_prefixes = (
@@ -72,7 +74,7 @@ def _extract_autoencoder_state(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     )
     cleaned: Dict[str, Any] = {}
 
-    for key, value in state_dict.items():
+    for key, value in (state_dict.items() if use_ema else ()):
         for prefix in ema_prefixes:
             if key.startswith(prefix):
                 stripped = key[len(prefix):]
@@ -297,8 +299,9 @@ class SAGE:
         chunk_seconds: Optional[float] = DEFAULT_CHUNK_SECONDS,
         chunk_margin_seconds: float = DEFAULT_CHUNK_MARGIN_SECONDS,
         precision: Optional[str] = _precision.DEFAULT_PRECISION,
+        use_ema: bool = True,
     ) -> "SAGE":
-        """Load a SAGE checkpoint (EMA weights when present).
+        """Load a SAGE checkpoint (EMA weights when present, unless ``use_ema=False``).
 
         Args:
             checkpoint_path: Lightning checkpoint written by ``train.py``.
@@ -319,10 +322,12 @@ class SAGE:
                 ``None``: PyTorch's flags as they are, as in the paper's reconstruction and probing
                 tables. The TF32 switches are set during :meth:`encode` / :meth:`decode` only and
                 restored afterwards; they are process-wide while those calls run.
+            use_ema: Load the EMA weights when the checkpoint has them (default); ``False`` loads the
+                training weights.
         """
         return cls(checkpoint_path, device=device, strict=strict, varlen=varlen, sdpa=sdpa,
                    chunk_seconds=chunk_seconds, chunk_margin_seconds=chunk_margin_seconds,
-                   precision=precision)
+                   precision=precision, use_ema=use_ema)
 
     def __init__(
         self,
@@ -335,6 +340,7 @@ class SAGE:
         chunk_seconds: Optional[float] = DEFAULT_CHUNK_SECONDS,
         chunk_margin_seconds: float = DEFAULT_CHUNK_MARGIN_SECONDS,
         precision: Optional[str] = _precision.DEFAULT_PRECISION,
+        use_ema: bool = True,
     ) -> None:
         _precision.check_precision(precision)
         self.checkpoint_path = Path(checkpoint_path)
@@ -359,7 +365,7 @@ class SAGE:
             if stft_cfg is not None:
                 self.autoencoder.set_stft_config(stft_cfg)
             state_dict = ckpt.get("state_dict", ckpt)
-            cleaned_state = _extract_autoencoder_state(state_dict)
+            cleaned_state = _extract_autoencoder_state(state_dict, use_ema=use_ema)
             missing, unexpected = self.autoencoder.load_state_dict(cleaned_state, strict=strict)
             if missing:
                 warnings.warn(f"Missing keys: {missing}")

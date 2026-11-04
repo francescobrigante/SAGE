@@ -15,6 +15,7 @@ from sage.nn.discriminators.types import (
     get_sigmoid_relgan_losses,
 )
 from sage.nn.discriminators.dac import DACDiscriminator, peak_normalize
+from sage.nn.discriminators.fused_act import fuse_bias_act
 from sage.nn.discriminators.vocos_legacy import MultiPeriodDiscriminator, MultiResolutionDiscriminator
 
 
@@ -27,6 +28,33 @@ STEREO_MODES = {
 }
 JOINT_CHANNELS = {"lr": 2, "lrms": 4}
 PREPROCESS_GAINS = ("per_channel", "shared")
+
+
+class _L1Mean(torch.autograd.Function):
+    """mean |a - b| with the backward of (a - b).abs().mean(): the same value and the same gradients
+    bit for bit, but it keeps the sign of a - b in int8 for the backward instead of the float32 a - b."""
+
+    @staticmethod
+    def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        d = a - b
+        ctx.save_for_backward(torch.sign(d).to(torch.int8))
+        ctx.numel, ctx.dtype = d.numel(), d.dtype
+        return d.abs().mean()
+
+    @staticmethod
+    def backward(ctx, g: torch.Tensor):
+        (sign,) = ctx.saved_tensors
+        grad = sign.to(ctx.dtype) * (g / ctx.numel)          # MeanBackward then AbsBackward, as autograd
+        return (grad if ctx.needs_input_grad[0] else None,
+                -grad if ctx.needs_input_grad[1] else None)
+
+
+def _channels_last_conv_inputs(conv: nn.Conv2d, args: tuple) -> tuple:
+    """Forward pre-hook of channels_last: the (weight_norm-recomputed) weight and the input in NHWC."""
+    if not isinstance(conv.weight, nn.Parameter):          # weight_norm's recomputed weight (a parameter is NHWC)
+        conv.weight = conv.weight.contiguous(memory_format=torch.channels_last)
+    return tuple(a.contiguous(memory_format=torch.channels_last) if torch.is_tensor(a) and a.dim() == 4 else a
+                 for a in args)
 
 
 class WavTokenizerDiscriminator(nn.Module):
@@ -54,6 +82,18 @@ class WavTokenizerDiscriminator(nn.Module):
             (one gain per stereo example, taken on L and R; M, S derived after it).
         mpd_stereo, mrd_stereo, dac_stereo: layout of each branch (see STEREO_MODES).
         dac_bands: band edges of the DAC MRDs as fractions of Nyquist (None = BANDS).
+        inplace_act: LeakyReLU in place in every branch (exact: same outputs and gradients, about
+            half the activation memory kept for the backward).
+        channels_last: 2-D convolution weights in channels-last (NHWC) layout, so cuDNN runs the
+            convolutions in NHWC (same function, another summation order: float rounding differs).
+        branch_streams: on CUDA, each sub-discriminator runs on its own stream, so the small ones
+            overlap with the large ones (same kernels, same outputs and gradients).
+        fused_bias_act: on float32 CUDA inputs (no autocast), each conv followed by a LeakyReLU runs
+            bias-free and a Triton kernel adds the bias and applies the LeakyReLU in one pass (same
+            arithmetic: same outputs and gradients bit for bit). Elsewhere (CPU, autocast): plain path.
+        fused_bias_grad: with fused_bias_act, the bias-gradient sum is fused into the LeakyReLU
+            backward kernel on NHWC tensors (channels_last); the bias gradients are summed in another
+            order (float rounding differs), every other value is unchanged.
     """
 
     def __init__(
@@ -71,8 +111,15 @@ class WavTokenizerDiscriminator(nn.Module):
         mrd_stereo: str = "fold",
         dac_stereo: str = "fold",
         dac_bands: tp.Optional[list] = None,
+        inplace_act: bool = False,
+        channels_last: bool = False,
+        branch_streams: bool = False,
+        fused_bias_act: bool = False,
+        fused_bias_grad: bool = False,
     ):
         super().__init__()
+        if fused_bias_grad and not fused_bias_act:
+            raise ValueError("fused_bias_grad needs fused_bias_act=true")
         modes = {"mpd_stereo": mpd_stereo, "mrd_stereo": mrd_stereo, "dac_stereo": dac_stereo}
         for key, mode in modes.items():
             if mode not in STEREO_MODES[key]:
@@ -95,11 +142,13 @@ class WavTokenizerDiscriminator(nn.Module):
         self.dac_stereo = dac_stereo                # layout of the DAC complex MRDs
 
         # 1. Vocos MPD (from vocos_legacy)
-        self.vocos_mpd = MultiPeriodDiscriminator(periods=periods, in_channels=JOINT_CHANNELS.get(mpd_stereo, 1))
+        self.vocos_mpd = MultiPeriodDiscriminator(periods=periods, in_channels=JOINT_CHANNELS.get(mpd_stereo, 1),
+                                                  inplace_act=inplace_act)
 
         # 2. Vocos legacy mag-MRD (from vocos_legacy)
         self.vocos_mrd = MultiResolutionDiscriminator(resolutions=resolutions,
-                                                      in_channels=JOINT_CHANNELS.get(mrd_stereo, 1))
+                                                      in_channels=JOINT_CHANNELS.get(mrd_stereo, 1),
+                                                      inplace_act=inplace_act)
 
         # 3. DACDiscriminator
         if self.use_dac:
@@ -113,8 +162,29 @@ class WavTokenizerDiscriminator(nn.Module):
                 preprocess=False,  # applied by dac_input, where the gain can be shared
                 joint=dac_joint,
             )
+            if inplace_act:                                   # the LeakyReLU of DAC's WNConv2d blocks
+                for m in self.dac_disc.modules():
+                    if isinstance(m, nn.LeakyReLU):
+                        m.inplace = True
         # number of sub-discriminators per branch, in the order of forward's output
         self.group_sizes = {"mpd": len(periods), "mrd": len(resolutions), "dac": len(fft_sizes) if use_dac else 0}
+        self.inplace_act = inplace_act
+        self.channels_last = channels_last
+        self.branch_streams = branch_streams
+        self.fused_bias_act = fused_bias_act
+        self.fused_bias_grad = fused_bias_grad
+        if fused_bias_act:            # after inplace_act: the fused convs take over the LeakyReLU's settings
+            fuse_bias_act(self, fused_grad=fused_bias_grad)
+        self._streams: tp.Dict[torch.device, tp.List[torch.cuda.Stream]] = {}   # one per sub-discriminator
+        if channels_last:
+            # 4-D parameters (weight_norm's v and g) in NHWC, kept by .to(device), load_state_dict and
+            # the optimizer state. weight_norm recomputes a contiguous (NCHW) weight before every call
+            # (torch._weight_norm on CUDA), so each Conv2d also gets a pre-hook, run after weight_norm's,
+            # that hands cuDNN an NHWC weight and input: no NCHW<->NHWC transposes around the kernels.
+            self.to(memory_format=torch.channels_last)
+            for m in self.modules():
+                if isinstance(m, nn.Conv2d):
+                    m.register_forward_pre_hook(_channels_last_conv_inputs)
 
     def _fold(self, x: torch.Tensor) -> torch.Tensor:
         """With fold_lrms on a stereo batch: (B, 2, T) → (2B, 2, T) = [L,R | M,S], M,S = L ± R."""
@@ -170,25 +240,61 @@ class WavTokenizerDiscriminator(nn.Module):
         x_dac = self._as_channels(x_fold)                                     # (2B, 2, T) or (B, C, T)
         x_rows = self._rows(x_fold)                                           # (rows, T), for the folded branches
         fmaps = []
+        streams = self._branch_streams(x)
+        calls = iter(streams) if streams else None
+
+        def run(d, inp):
+            return d(inp) if calls is None else self._on_stream(d, inp, next(calls))
 
         # Run Vocos MPD
         x_mpd = x_rows if self.mpd_stereo == "fold" else self._joint(x, self.mpd_stereo)   # (rows, T) | (B, 2|4, T)
         for d in self.vocos_mpd.discriminators:
-            _, fmap = d(x_mpd)
+            _, fmap = run(d, x_mpd)
             fmaps.append(fmap)
 
         # Run Vocos legacy mag-MRD
         x_mrd = x_rows if self.mrd_stereo == "fold" else self._joint(x, self.mrd_stereo)   # (rows, T) | (B, 4, T)
         for d in self.vocos_mrd.discriminators:
-            _, fmap = d(x_mrd)
+            _, fmap = run(d, x_mrd)
             fmaps.append(fmap)
 
         # Run DACDiscriminator
         if self.use_dac:
-            dac_fmaps = self.dac_disc(self.dac_input(x, folded=x_dac))
+            if calls is None:
+                dac_fmaps = self.dac_disc(self.dac_input(x, folded=x_dac))
+            else:                     # DACDiscriminator.forward without preprocess: one MRD per stream
+                x_in = self.dac_input(x, folded=x_dac)
+                dac_fmaps = [run(d, x_in) for d in self.dac_disc.discriminators]
             fmaps.extend(dac_fmaps)
 
+        if streams:                   # the caller's stream waits for every branch before using the fmaps
+            caller = torch.cuda.current_stream(x.device)
+            for s in streams:
+                caller.wait_stream(s)
+            for fmap in fmaps:
+                for t in fmap:
+                    t.record_stream(caller)
         return fmaps
+
+    def _branch_streams(self, x: torch.Tensor) -> tp.Optional[tp.List[torch.cuda.Stream]]:
+        """branch_streams on a CUDA input: one stream per sub-discriminator, created once per device."""
+        use = self.branch_streams and x.is_cuda and not (
+            self.use_dac and (self.dac_disc.preprocess_enabled or self.dac_disc.use_checkpoint))
+        if not use:
+            return None
+        if x.device not in self._streams:
+            n = sum(self.group_sizes.values())
+            self._streams[x.device] = [torch.cuda.Stream(x.device) for _ in range(n)]
+        return self._streams[x.device]
+
+    @staticmethod
+    def _on_stream(d: nn.Module, inp: torch.Tensor, stream: torch.cuda.Stream):
+        """d(inp) on `stream`, after the work the caller's stream has queued so far. Its backward runs
+        on the same stream (autograd follows the forward's streams and syncs the gradients)."""
+        stream.wait_stream(torch.cuda.current_stream(inp.device))
+        inp.record_stream(stream)                     # made on the caller's stream, read on this one
+        with torch.cuda.stream(stream):
+            return d(inp)
 
 
 def _lsgan_losses(scores_real: torch.Tensor, scores_fake: torch.Tensor) -> tp.Tuple[torch.Tensor, torch.Tensor]:
@@ -217,8 +323,13 @@ class WavTokenizerGANLoss(nn.Module):
         loss_type: tp.Literal["hinge", "rpgan", "sigmoid_relgan", "lsgan"] = "hinge",
         use_hinge: tp.Optional[bool] = None,
         normalize_losses: bool = False,
+        fused_feature_matching: bool = False,
         **discriminator_kwargs,
     ):
+        """
+        fused_feature_matching: the L1 feature matching keeps the sign of the difference (int8) for the
+            backward instead of the float32 difference: same loss and gradients bit for bit, less memory.
+        """
         super().__init__()
         if use_hinge is not None:
             loss_type = "hinge" if use_hinge else "lsgan"
@@ -229,11 +340,13 @@ class WavTokenizerGANLoss(nn.Module):
         self.loss_type = loss_type
         self._loss_fn = _LOSS_DISPATCH[loss_type]
         self.normalize_losses = normalize_losses
-        self.fm_reduction = (
-            (lambda x, y: (x - y).abs().mean() / (x.abs().mean() + 1e-3))
-            if normalize_losses
-            else (lambda x, y: (x - y).abs().mean())
-        )
+        self.fused_feature_matching = fused_feature_matching
+        if normalize_losses:
+            self.fm_reduction = lambda x, y: (x - y).abs().mean() / (x.abs().mean() + 1e-3)
+        elif fused_feature_matching:
+            self.fm_reduction = _L1Mean.apply
+        else:
+            self.fm_reduction = lambda x, y: (x - y).abs().mean()
         self.discriminator = WavTokenizerDiscriminator(**discriminator_kwargs)
 
     def forward(self, fake: torch.Tensor, real: torch.Tensor) -> tp.Tuple[tp.List[tp.List[torch.Tensor]], tp.List[tp.List[torch.Tensor]]]:
@@ -261,6 +374,17 @@ class WavTokenizerGANLoss(nn.Module):
 
         k = len(d_fake)
         return dis_loss / k, adv_loss / k, fm_loss / k
+
+    def dis_loss(self, reals: torch.Tensor, fakes: torch.Tensor) -> torch.Tensor:
+        """The first output of loss() alone, for the discriminator step: the same forwards (real, then
+        fake) and the same loss, without the adversarial and feature-matching terms of the generator,
+        which the discriminator step drops (they would keep every feature-map difference in memory)."""
+        d_real = self.discriminator(reals)
+        d_fake = self.discriminator(fakes)
+        dis_loss = torch.zeros((), device=reals.device)
+        for fr, fg in zip(d_real, d_fake):
+            dis_loss = dis_loss + self._loss_fn(fr[-1], fg[-1])[0]
+        return dis_loss / len(d_fake)
 
     def discriminator_loss(self, fake: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
         d_fake = self.discriminator(fake.clone().detach())

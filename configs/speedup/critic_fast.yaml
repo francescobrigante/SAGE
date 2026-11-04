@@ -1,0 +1,22 @@
+# @package _global_
+# =============================================================================
+# Exact speed-ups of the WavTokenizer critic, on top of any recipe that uses it (pretrain, decoder_ft,
+# stereo_proxy C0/A1-A4): same losses and updates as the plain recipe, up to float rounding
+# (channels_last: another summation order). tests/test_disc_speed.py checks each key. Measured on the
+# full training step (1 A100, local/disc_speed): +37 % it/s on C0, A1, A4 and +36 % on A2, A3.
+# The recipes already have these keys (speedup/recipe.yaml); after +speedup=legacy it adds them alone.
+#
+#   python train.py +experiment=stereo_proxy "+speedup=[legacy,critic_fast]" trainer.trainer.num_gpus=2
+# =============================================================================
+trainer:
+  trainer:
+    freeze_disc_in_gen_step: true     # no critic weight gradients / D(real) graph in the generator step
+    disc_step_loss_only: true         # discriminator step: only the critic loss, not the dropped generator terms
+    ema_foreach: true                 # EMA update as multi-tensor ops
+  loss_config:
+    discriminator:
+      config:
+        inplace_act: true             # in-place LeakyReLU
+        fused_feature_matching: true  # L1 feature matching keeps int8 signs for the backward
+        channels_last: true           # NHWC convolutions (weight_norm weight re-laid out by a pre-hook)
+        branch_streams: true          # one CUDA stream per sub-discriminator

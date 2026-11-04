@@ -81,13 +81,19 @@ def seed_everything(s: int) -> None:
 def atomic_save_npy(path: Path, data: np.ndarray) -> None:
     """Save numpy array atomically (PID-unique tmp → os.replace).
 
-    np.save always appends .npy if the path doesn't already end in .npy,
-    so we keep .npy in the tmp name to avoid a double-extension mismatch.
+    The tmp name ends in .tmp, not .npy, and is written through a file handle (np.save
+    appends .npy only to path names): a write that fails (e.g. quota exceeded) never
+    leaves a partial file that the merge's glob("*.npy") would read as an embedding.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / f"{path.stem}.{os.getpid()}.npy"
-    np.save(str(tmp), data)
-    os.replace(tmp, path)
+    tmp = path.parent / f"{path.name}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "wb") as f:
+            np.save(f, data)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def write_csv(path: Path, fieldnames: list[str], rows: list[dict]) -> None:

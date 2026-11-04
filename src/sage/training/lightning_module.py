@@ -115,6 +115,10 @@ class SAGELightningModule(pl.LightningModule):
         pre_transform_spec: Optional[dict] = None,
         accumulate_grad_batches: int = 1,
         adv_grad_every: int = 0,
+        freeze_disc_in_gen_step: bool = False,
+        disc_step_loss_only: bool = False,
+        log_on_device: bool = False,
+        detach_step_output: bool = False,
     ):
         super().__init__()
         self.automatic_optimization = False
@@ -127,6 +131,12 @@ class SAGELightningModule(pl.LightningModule):
         self.model_channels = model_channels
         self.stft_params = stft_params
         self.sample_rate = sample_rate
+        # True: the train/* values are summed on the GPU and copied to the host once per Lightning log
+        # flush (Trainer log_every_n_steps), not with one .item() each per batch; same logged values
+        self.log_on_device = bool(log_on_device)
+        # True: training_step returns the loss detached, so DDP's forward does not walk the autograd
+        # graph of a backward already done (Lightning's pre-backward walk is the one that counts)
+        self.detach_step_output = bool(detach_step_output)
 
         # Store raw specs (may be None). We normalize in configure_optimizers.
         self._optimizer_spec = optimizer_spec
@@ -150,6 +160,8 @@ class SAGELightningModule(pl.LightningModule):
             audio_channels=audio_channels,
             stft_params=stft_params,
             adv_grad_every=adv_grad_every,
+            freeze_disc_in_gen_step=freeze_disc_in_gen_step,
+            disc_step_loss_only=disc_step_loss_only,
         )
 
         # Set optional spectrogram normalization on the core autoencoder
@@ -170,11 +182,11 @@ class SAGELightningModule(pl.LightningModule):
         # semantic gate, discriminator warm-up). Lightning's global_step counts every
         # optimizer.step() (generator + projection head + discriminator), so it is not used.
         self.gen_step = 0
-        # Accumulate metrics to log once per optimizer step.
-        self._log_accum_gen: Dict[str, float] = {}
-        self._log_accum_disc: Dict[str, float] = {}
-        self._log_accum_gen_count = 0
-        self._log_accum_disc_count = 0
+        # Accumulate metrics to log once per optimizer step (log_on_device: once per log flush).
+        # Values are floats, or 0-dim GPU tensors with log_on_device.
+        self._log_accum = {"gen": {}, "disc": {}}
+        self._log_count = {"gen": 0, "disc": 0}
+        self._step_phase = "gen"   # phase of the current batch, read by the DDP skip-idle hook
 
         # Make the model DDP-compatible if it contains ComplexFloat parameters
         from sage.nn.complex.ddp import make_complex_model_ddp_compatible
@@ -210,6 +222,7 @@ class SAGELightningModule(pl.LightningModule):
 
         checkpoint["inference_config"] = {k: v for k, v in inference_cfg.items() if v is not None}
         checkpoint["gen_step"] = int(self.gen_step)
+        checkpoint["loop_state"] = self._loop_state()
 
     def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
         # Pre-release checkpoints have no "gen_step": the generator LR scheduler (first in the
@@ -220,6 +233,9 @@ class SAGELightningModule(pl.LightningModule):
             self.gen_step = int(checkpoint["lr_schedulers"][0].get("last_epoch", 0))
         else:
             warn("checkpoint has neither gen_step nor LR scheduler state: gen_step restarts at 0", prefix="RESUME")
+        # Pre-fix checkpoints have no loop_state: the alternation restarts with a generator batch.
+        if "loop_state" in checkpoint:
+            self._restore_loop_state(checkpoint["loop_state"])
         # Keys of pre-release checkpoints owned by no current module (sage/compat.py);
         # removed before Lightning's strict load_state_dict.
         removed = drop_legacy_state_keys(checkpoint.get("state_dict", {}))
@@ -233,6 +249,20 @@ class SAGELightningModule(pl.LightningModule):
         ema_keys = [k for k in list(state) if k.startswith(prefix)]
         if ema_keys:
             checkpoint["_ema_state"] = {k[len(prefix):]: state.pop(k) for k in ema_keys}
+
+    def _loop_state(self) -> Dict[str, Any]:
+        """G/D alternation and accumulation windows, saved so that a resumed run continues with the
+        right phase."""
+        return {"disc_phase": bool(self._disc_phase), "accum_steps_gen": int(self._accum_steps_gen),
+                "accum_steps_disc": int(self._accum_steps_disc)}
+
+    def _restore_loop_state(self, state: Dict[str, Any]) -> None:
+        self._disc_phase = bool(state["disc_phase"])
+        # The grads of an open window are not in the checkpoint: the window restarts empty.
+        open_windows = {k: v for k, v in state.items() if k.startswith("accum_steps") and v}
+        if open_windows:
+            warn(f"open accumulation windows dropped at resume (their grads are not saved): {open_windows}",
+                 prefix="RESUME")
 
     def configure_optimizers(self):
         """
@@ -390,6 +420,112 @@ class SAGELightningModule(pl.LightningModule):
             kl_module.update_weight(annealed)
         self.log("train/kl_weight", annealed, on_epoch=True, prog_bar=False, sync_dist=True)
 
+    def _critic_grads(self) -> Optional[list]:
+        """Copies of the critic's grads (None where unset): with accumulate_grad_batches = 1 the
+        discriminator window is closed at a generator batch, so every entry is None and nothing is copied."""
+        if not self.use_disc:
+            return None
+        return [None if p.grad is None else p.grad.clone() for p in self.discriminator.parameters()]
+
+    def _restore_critic_grads(self, grads: Optional[list]) -> None:
+        if grads is None:
+            return
+        for p, g in zip(self.discriminator.parameters(), grads):
+            p.grad = g
+
+    def _scale_partial_window(self, params, steps: int) -> None:
+        """A window closed after steps < accumulate_grad_batches micro-batches holds the sum of
+        loss / accumulate_grad_batches: rescale it to the mean of its own micro-batches."""
+        if 0 < steps < self.accumulate_grad_batches:
+            for p in params:
+                if p.grad is not None:
+                    p.grad.mul_(self.accumulate_grad_batches / steps)
+
+    def _step_disc(self, opt_disc, sched_disc) -> None:
+        self._scale_partial_window(self.discriminator.parameters(), self._accum_steps_disc)
+        if self.clip_grad_norm > 0.0:
+            torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), self.clip_grad_norm)
+        opt_disc.step()
+        if sched_disc is not None:
+            sched_disc.step()
+        opt_disc.zero_grad()
+        self._accum_steps_disc = 0
+        # Log once per optimizer step (log_on_device: at Lightning's log batches, in training_step).
+        if not self.log_on_device:
+            self._log_window("disc", {"train/disc_lr": opt_disc.param_groups[0]["lr"]})
+
+    def _step_gen(self, opt_gen, opt_aux, sched_gen, sched_aux) -> None:
+        aux_params = [p for g in opt_aux.param_groups for p in g["params"]] if opt_aux is not None else []
+        self._scale_partial_window(list(self.autoencoder.parameters()) + aux_params, self._accum_steps_gen)
+        if self.clip_grad_norm > 0.0:
+            torch.nn.utils.clip_grad_norm_(self.autoencoder.parameters(), self.clip_grad_norm)
+            # The projection head of opt_aux is clipped on its own: the autoencoder's norm is unchanged.
+            if aux_params:
+                torch.nn.utils.clip_grad_norm_(aux_params, self.clip_grad_norm)
+        opt_gen.step()
+        self.gen_step += 1
+        # Generator weights just changed → EMA may advance this batch.
+        self._ema_update_this_batch = True
+        if opt_aux is not None:
+            opt_aux.step()
+        if sched_gen is not None:
+            sched_gen.step()
+        if opt_aux is not None and sched_aux is not None:
+            sched_aux.step()
+        opt_gen.zero_grad()
+        if opt_aux is not None:
+            opt_aux.zero_grad()
+        self._accum_steps_gen = 0
+        # Log once per optimizer step (log_on_device: at Lightning's log batches, in training_step).
+        if not self.log_on_device:
+            self._log_window("gen", self._lrs(opt_gen, None, opt_aux))
+
+    def _lrs(self, opt_gen, opt_disc, opt_aux) -> Dict[str, float]:
+        """train/{gen,disc,aux}_lr of the optimizers that are not None."""
+        opts = {"gen": opt_gen, "disc": opt_disc, "aux": opt_aux}
+        return {f"train/{name}_lr": opt.param_groups[0]["lr"] for name, opt in opts.items() if opt is not None}
+
+    def _log_add(self, phase: str, values: Dict[str, torch.Tensor]) -> None:
+        """Add one batch's values to the log window of its phase: floats (.item(), one host sync each),
+        or 0-dim float32 sums kept on the GPU with log_on_device."""
+        window = self._log_accum[phase]
+        for name, value in values.items():
+            key = f"train/{name}"
+            v = value.detach().float().reshape(()) if self.log_on_device else value.detach().item()
+            window[key] = window[key] + v if key in window else v
+        self._log_count[phase] += 1
+
+    def _log_window(self, phase: str, extra: Dict[str, float]) -> None:
+        """Log `extra` and the mean of the window of `phase` (its closing batch included), then open a new one."""
+        n = self._log_count[phase]
+        log_dict = dict(extra)
+        log_dict.update({key: value / n for key, value in self._log_accum[phase].items()} if n else {})
+        self.log_dict(log_dict, prog_bar=True, on_step=True)
+        self._log_accum[phase], self._log_count[phase] = {}, 0
+
+    def _lightning_logs_this_batch(self) -> bool:
+        """True when Lightning sends the step metrics to the logger at the end of this batch
+        (every Trainer log_every_n_steps batches)."""
+        connector = getattr(self.trainer, "_logger_connector", None)
+        return True if connector is None else bool(connector.should_update_logs)
+
+    def _log_flush_device(self, lrs: Dict[str, float]) -> None:
+        """log_on_device: the means of both windows, copied to the host in ONE transfer, plus the
+        current learning rates. Values go to Lightning as CPU tensors (a float would be re-sent to the
+        GPU with a blocking copy). A phase without batches in the window keeps its last logged value."""
+        keys, sums = [], []
+        for phase in ("gen", "disc"):
+            for key, value in self._log_accum[phase].items():
+                keys.append((phase, key))
+                sums.append(value)
+        host = torch.stack(sums).cpu() if sums else None
+        log_dict = {key: torch.tensor(value) for key, value in lrs.items()}
+        for i, (phase, key) in enumerate(keys):
+            log_dict[key] = host[i] / self._log_count[phase]
+        self.log_dict(log_dict, prog_bar=True, on_step=True)
+        self._log_accum = {"gen": {}, "disc": {}}
+        self._log_count = {"gen": 0, "disc": 0}
+
     def training_step(self, batch, batch_idx):
         # Per-batch G/D alternation, decoupled from global_step (which advances by a
         # variable number of optimizer.step() per batch when opt_aux is active).
@@ -400,6 +536,7 @@ class SAGELightningModule(pl.LightningModule):
         self._ema_update_this_batch = False
         out = self.engine.compute(batch, gen_step=self.gen_step, disc_phase=self._disc_phase)
         phase = out["phase"]
+        self._step_phase = phase   # read by the DDP skip-idle hook during manual_backward
         loss_info = out["loss_info"]
         stats = out["stats"]
 
@@ -430,37 +567,22 @@ class SAGELightningModule(pl.LightningModule):
         else:
             sched_gen, sched_disc, sched_aux = schedulers, None, None
 
+        # Under DDP every micro-batch all-reduces its grads. DDP's no_sync cannot skip it: the backward runs
+        # inside DDP's forward, whose end primes the reducer for the next backward, no_sync or not.
+
         # DISC step
         if phase == "disc" and self.use_disc:
             disc_loss = out["disc_total"]
 
             if self._accum_steps_disc == 0:
                 opt_disc.zero_grad()
+            closes = (self._accum_steps_disc + 1) % accum_batches == 0 or is_last_batch
             self.manual_backward(disc_loss / accum_batches)
             self._accum_steps_disc += 1
-            if (self._accum_steps_disc % accum_batches == 0) or is_last_batch:
-                if self.clip_grad_norm > 0.0:
-                    torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), self.clip_grad_norm)
-                opt_disc.step()
-                if sched_disc is not None:
-                    sched_disc.step()
-                opt_disc.zero_grad()
-                self._accum_steps_disc = 0
-                # Log once per optimizer step.
-                log_dict = {}
-                log_dict["train/disc_lr"] = opt_disc.param_groups[0]["lr"]
-                if self._log_accum_disc_count > 0:
-                    for key, value in self._log_accum_disc.items():
-                        log_dict[key] = value / self._log_accum_disc_count
-                self.log_dict(log_dict, prog_bar=True, on_step=True)
-                self._log_accum_disc = {}
-                self._log_accum_disc_count = 0
-
-            # breakdown disc
-            for name, value in out["disc_breakdown"].items():
-                key = f"train/{name}"
-                self._log_accum_disc[key] = self._log_accum_disc.get(key, 0.0) + value.detach().item()
-            self._log_accum_disc_count += 1
+            # breakdown disc: accumulated before the window closes, so its log includes this batch
+            self._log_add("disc", out["disc_breakdown"])
+            if closes:
+                self._step_disc(opt_disc, sched_disc)
 
         # GEN step
         else:
@@ -477,48 +599,31 @@ class SAGELightningModule(pl.LightningModule):
                 opt_gen.zero_grad()
                 if opt_aux is not None:
                     opt_aux.zero_grad()
+            closes = (self._accum_steps_gen + 1) % accum_batches == 0 or is_last_batch
+            # The adversarial terms also fill the critic's grads, which no optimizer step uses: they are
+            # dropped, so an open discriminator window (accumulate_grad_batches > 1) keeps only its own.
+            critic_grads = self._critic_grads()
             self.manual_backward(gen_loss / accum_batches)  # fills grads on AE + alignment modules (same graph)
+            self._restore_critic_grads(critic_grads)
             self._accum_steps_gen += 1
-            if (self._accum_steps_gen % accum_batches == 0) or is_last_batch:
-                if self.clip_grad_norm > 0.0:
-                    torch.nn.utils.clip_grad_norm_(self.autoencoder.parameters(), self.clip_grad_norm)
-                opt_gen.step()
-                self.gen_step += 1
-                # Generator weights just changed → EMA may advance this batch.
-                self._ema_update_this_batch = True
-                if opt_aux is not None:
-                    opt_aux.step()
-                if sched_gen is not None:
-                    sched_gen.step()
-                if opt_aux is not None and sched_aux is not None:
-                    sched_aux.step()
-                opt_gen.zero_grad()
-                if opt_aux is not None:
-                    opt_aux.zero_grad()
-                self._accum_steps_gen = 0
-                # Log once per optimizer step.
-                log_dict = {}
-                log_dict["train/gen_lr"] = opt_gen.param_groups[0]["lr"]
-                if opt_aux is not None:
-                    log_dict["train/aux_lr"] = opt_aux.param_groups[0]["lr"]
-                if self._log_accum_gen_count > 0:
-                    for key, value in self._log_accum_gen.items():
-                        log_dict[key] = value / self._log_accum_gen_count
-                self.log_dict(log_dict, prog_bar=True, on_step=True)
-                self._log_accum_gen = {}
-                self._log_accum_gen_count = 0
+            # logging richiesto: loss, latent_std, data_std + breakdown gen, accumulated before the
+            # window closes, so its log includes this batch
+            self._log_add("gen", {"loss": gen_loss, "latent_std": stats["latent_std"],
+                                  "data_std": stats["data_std"], **out["gen_breakdown"]})
+            if closes:
+                self._step_gen(opt_gen, opt_aux, sched_gen, sched_aux)
 
-            # logging richiesto: loss, latent_std, data_std
-            self._log_accum_gen["train/loss"] = self._log_accum_gen.get("train/loss", 0.0) + gen_loss.detach().item()
-            self._log_accum_gen["train/latent_std"] = self._log_accum_gen.get("train/latent_std", 0.0) + stats["latent_std"].detach().item()
-            self._log_accum_gen["train/data_std"] = self._log_accum_gen.get("train/data_std", 0.0) + stats["data_std"].detach().item()
-
-            # breakdown gen
-            for name, value in out["gen_breakdown"].items():
-                key = f"train/{name}"
-                self._log_accum_gen[key] = self._log_accum_gen.get(key, 0.0) + value.detach().item()
-            self._log_accum_gen_count += 1
-        return out["gen_total"] if out["gen_total"] is not None else out["disc_total"]
+        # No window stays open across the end of the epoch: the other phase's partial window is
+        # stepped too (with accumulate_grad_batches = 1 it is always closed already).
+        if is_last_batch:
+            if self.use_disc and self._accum_steps_disc > 0:
+                self._step_disc(opt_disc, sched_disc)
+            if self._accum_steps_gen > 0:
+                self._step_gen(opt_gen, opt_aux, sched_gen, sched_aux)
+        if self.log_on_device and self._lightning_logs_this_batch():
+            self._log_flush_device(self._lrs(opt_gen, opt_disc, opt_aux))
+        loss = out["gen_total"] if out["gen_total"] is not None else out["disc_total"]
+        return loss.detach() if self.detach_step_output else loss
 
     def validation_step(self, batch, batch_idx):
         val_loss_dict = self.engine.compute_validation(batch)

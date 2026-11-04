@@ -30,6 +30,13 @@ The recipes (`configs/experiment/pretrain.yaml`, `decoder_ft.yaml`) hold every v
 Table 6; `tests/test_recipes.py` checks them. The batch size is global, so fewer GPUs run
 the same recipe.
 
+The recipes also turn on the exact speed-ups of `configs/speedup/recipe.yaml` (the keys of
+`critic_fast_fused` and `loop_fast`: the critic and the training loop around it), which came
+after the paper. They train the same losses and updates up to float rounding (+43 % it/s on
+the stereo proxy, 2 A100s). `+speedup=legacy`, given after the experiment
+(`+experiment=pretrain +speedup=legacy`), turns them all off: the training loop of the paper
+runs.
+
 ## Reconstruction (Table 2)
 
 Five evaluation sets (`configs/dataset/`), two protocols:

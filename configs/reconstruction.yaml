@@ -21,6 +21,8 @@ varlen: null                # sage only: variable-length attention preset (sage/
 deterministic: false        # sage only: decode the posterior mean instead of a sampled z (the paper samples z)
 sdpa: null                  # sage only: attention through F.scaled_dot_product_attention (same formula, faster);
                             # null = on, false = the original attention
+use_ema: true               # sage only: the EMA weights when the checkpoint has them; false = the training weights
+                            # (early checkpoints, whose EMA is still close to the initialization); name gets -raw
 seed: 0                     # the random parts (SAGE's z, SAME's noise, the CLAP crop of FAD-CLAP), re-seeded
                             # for every file from this value and the file name
 output_dir: ${paths.eval_output}/recon_${dataset.name}
