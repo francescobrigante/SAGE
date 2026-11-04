@@ -67,10 +67,25 @@ trainer:
   clip_grad_norm: 20.0
   use_ema: true
   ema_decay: 0.9998                # EMA of the generator weights, updated on generator steps (Table 6)
+  ema_foreach: false                # true: the EMA update as multi-tensor ops (same values, fewer kernel launches)
   kl_annealing_epochs: 0
   terminate_on_nan: true
   critic_diag_every_n_epochs: 0     # >0: stereo report of the WavTokenizer critic every N epochs (critic/* in W&B)
   adv_grad_every: 0                 # >0: adversarial share of the generator gradient every N generator updates (diag/*)
+  freeze_disc_in_gen_step: false    # true: critic frozen in the generator step (no D(real) graph, no critic weight
+                                    # gradients there); same generator gradient and updates (exact speed-up)
+  disc_step_loss_only: false        # true: the discriminator step computes only the critic loss (critic.dis_loss),
+                                    # not the dropped generator terms; same loss and critic gradients (exact)
+  # Training-loop speed keys (configs/speedup/loop_fast.yaml turns the exact ones on; so do the recipes)
+  log_every_n_batches: 0            # >0: train/* summed on the GPU, logged every N batches with one host copy
+                                    # (sets the Trainer's log_every_n_steps; 0 = .item() per value, log_interval)
+  progress_bar_refresh_rate: 1      # TQDM refresh every N batches
+  lr_monitor: true                  # false: no LearningRateMonitor (the module logs train/{gen,disc,aux}_lr)
+  detach_step_output: false         # true: training_step returns the loss detached (no 2nd DDP graph walk)
+  ddp_skip_idle_buckets: false      # true: DDP hook that skips the all-reduce of the idle model's buckets
+                                    # (needs freeze_disc_in_gen_step and ddp_find_unused_parameters_true)
+  ddp_gradient_as_bucket_view: false  # true: gradients are views of the DDP buckets (no copy, less memory)
+  ddp_broadcast_buffers: true       # false: no buffer broadcast at every forward (the buffers are constants)
   detect_anomaly: false
   # no gradient_clip_val/algorithm: Lightning does not support them with manual optimization
 

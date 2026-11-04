@@ -45,6 +45,7 @@ OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${m
 
 from sage.training.callbacks import DatasetEpochSetter, MultiCorpusEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger
 from sage.training.stereo_diagnostics import StereoCriticDiagnostics
+from sage.training.ddp_hooks import build_ddp_strategy
 from sage.training.resume import (find_resume_checkpoint, is_slurm_requeue, read_run_id, resume_run_dir,
                                   should_auto_resume)
 from sage.training.data.dataset import MultiCorpusDataset
@@ -470,6 +471,10 @@ def main(cfg: DictConfig):
         accumulate_grad_batches=int(trainer_cfg.trainer.get("accumulate_grad_batches", 1)),
         clip_grad_norm=float(trainer_cfg.trainer.get("clip_grad_norm", 0.0)),
         adv_grad_every=int(trainer_cfg.trainer.get("adv_grad_every", 0)),
+        freeze_disc_in_gen_step=bool(trainer_cfg.trainer.get("freeze_disc_in_gen_step", False)),
+        disc_step_loss_only=bool(trainer_cfg.trainer.get("disc_step_loss_only", False)),
+        log_on_device=int(trainer_cfg.trainer.get("log_every_n_batches", 0)) > 0,
+        detach_step_output=bool(trainer_cfg.trainer.get("detach_step_output", False)),
         kl_annealing_epochs=int(trainer_cfg.trainer.get("kl_annealing_epochs", 0)),
         kl_beta_target=kl_beta_target,
     )
@@ -534,14 +539,16 @@ def main(cfg: DictConfig):
             every_n_epochs=int(pl_trainer_cfg.get("save_every_n_epochs", 3)),
             auto_insert_metric_name=False,
         ),
-        LearningRateMonitor(logging_interval="step"),
         TableOnlyModelSummary(max_depth=2),
-        TQDMProgressBar(refresh_rate=1),
+        TQDMProgressBar(refresh_rate=int(pl_trainer_cfg.get("progress_bar_refresh_rate", 1))),
         # Multi-corpus advances both the rotating sampler and the dataset children;
         # single-corpus advances only the dataset crops. Both keep val at epoch 0.
         MultiCorpusEpochSetter() if multi_corpus else DatasetEpochSetter(),
         CompressionStatsLogger(train_dl=train_dl, console=console),
     ]
+
+    if bool(pl_trainer_cfg.get("lr_monitor", True)):   # false: the module already logs train/*_lr
+        callbacks.insert(2, LearningRateMonitor(logging_interval="step"))
 
     critic_diag_every = int(pl_trainer_cfg.get("critic_diag_every_n_epochs", 0))
     if critic_diag_every > 0:
@@ -550,7 +557,7 @@ def main(cfg: DictConfig):
     use_ema = bool(pl_trainer_cfg.get("use_ema", True))
     ema_decay = float(pl_trainer_cfg["ema_decay"])       # configs/trainer.yaml: 0.9998 (Table 6)
     if use_ema and ema_decay > 0:
-        callbacks.append(EMACallback(decay=ema_decay))
+        callbacks.append(EMACallback(decay=ema_decay, foreach=bool(pl_trainer_cfg.get("ema_foreach", False))))
 
     # Validation demo callback
     demo_cfg = OmegaConf.to_container(cfg.data.get("demo", {}), resolve=True) or {}
@@ -642,13 +649,19 @@ def main(cfg: DictConfig):
         accelerator=req_accelerator,
         devices=int(pl_trainer_cfg.get("num_gpus", 1)),
         num_nodes=int(pl_trainer_cfg.get("num_nodes", 1)),
-        strategy=pl_trainer_cfg.get("strategy", "auto"),
+        strategy=build_ddp_strategy(
+            pl_trainer_cfg.get("strategy", "auto"), wrapper,
+            skip_idle_buckets=bool(pl_trainer_cfg.get("ddp_skip_idle_buckets", False)),
+            gradient_as_bucket_view=bool(pl_trainer_cfg.get("ddp_gradient_as_bucket_view", False)),
+            broadcast_buffers=bool(pl_trainer_cfg.get("ddp_broadcast_buffers", True)),
+            freeze_disc_in_gen_step=bool(pl_trainer_cfg.get("freeze_disc_in_gen_step", False))),
         max_epochs=int(pl_trainer_cfg.get("epochs", 50)),
         max_steps=int(pl_trainer_cfg.get("max_steps", -1)),
         precision=requested_precision,
         logger=logger,
         callbacks=callbacks,
-        log_every_n_steps=int(pl_trainer_cfg.get("log_interval", 1)),
+        # log_every_n_batches > 0: the train/* values are summed on the GPU and logged every N batches
+        log_every_n_steps=int(pl_trainer_cfg.get("log_every_n_batches", 0)) or int(pl_trainer_cfg.get("log_interval", 1)),
         num_sanity_val_steps=int(pl_trainer_cfg.get("num_sanity_val_steps", 0)),
         gradient_clip_val=float(pl_trainer_cfg.get("gradient_clip_val", 0.0)),
         detect_anomaly=bool(pl_trainer_cfg.get("detect_anomaly", False)),

@@ -35,6 +35,24 @@ def select_training_phase(use_disc: bool, warmup_mode: str, disc_phase: bool, wa
     return "disc" if is_disc else "gen"
 
 
+@contextlib.contextmanager
+def frozen_parameters(module: Optional[nn.Module], enabled: bool = True):
+    """Turn off requires_grad on the trainable parameters of ``module`` for the block, then restore it.
+
+    Ops run inside the block record no gradient path to those parameters: a forward that touches
+    nothing else that requires grad builds no graph at all, and the later backward skips their
+    weight gradients. The values computed are the same.
+    """
+    params = [p for p in module.parameters() if p.requires_grad] if (enabled and module is not None) else []
+    for p in params:
+        p.requires_grad_(False)
+    try:
+        yield
+    finally:
+        for p in params:
+            p.requires_grad_(True)
+
+
 class AutoencoderEngine(nn.Module):
     """
     - builds the discriminator, the losses and the validation metrics
@@ -58,9 +76,17 @@ class AutoencoderEngine(nn.Module):
                  audio_channels: Optional[int] = None,
                  stft_params: Optional[dict] = None,
                  adv_grad_every: int = 0,
+                 freeze_disc_in_gen_step: bool = False,
+                 disc_step_loss_only: bool = False,
                  ):
         super().__init__()
         self.adv_grad_every = int(adv_grad_every)  # >0: adversarial gradient share every N generator updates
+        # True: the critic's parameters are frozen while the generator step runs it, so D(real) builds
+        # no graph and the generator backward computes no critic weight gradient (discarded anyway)
+        self.freeze_disc_in_gen_step = bool(freeze_disc_in_gen_step)
+        # True: the discriminator step computes only the discriminator loss (critic.dis_loss), not the
+        # generator terms it would drop: same loss and critic gradients, less memory and traffic
+        self.disc_step_loss_only = bool(disc_step_loss_only)
         self.autoencoder = autoencoder
         self.teacher_model = teacher_model
         self.sample_rate = sample_rate
@@ -114,6 +140,17 @@ class AutoencoderEngine(nn.Module):
             audio_channels=self.audio_channels
         )
         self.use_disc = self.loss_manager.use_disc
+
+    def _disc_step_loss(self, reals: torch.Tensor, fakes: torch.Tensor) -> torch.Tensor:
+        """Loss of the discriminator step: loss()[0] by default, the critic's dis_loss with
+        disc_step_loss_only."""
+        disc = self.loss_manager.discriminator
+        if not self.disc_step_loss_only:
+            return disc.loss(reals=reals, fakes=fakes)[0]
+        if not hasattr(disc, "dis_loss"):
+            raise ValueError(f"disc_step_loss_only needs a critic with dis_loss (WavTokenizerGANLoss), "
+                             f"got {type(disc).__name__}")
+        return disc.dis_loss(reals, fakes)
 
     @torch.no_grad()
     def _encode_teacher_if_needed(self, encoder_input):
@@ -282,13 +319,15 @@ class AutoencoderEngine(nn.Module):
 
         if disc_step:
             # decoded is detached (no_grad forward) → disc.loss() updates only the disc
-            loss_dis, _, _ = self.loss_manager.discriminator.loss(reals=orig_waveforms, fakes=decoded)
+            loss_dis = self._disc_step_loss(orig_waveforms, decoded)
             loss_info["loss_dis"] = loss_dis
             disc_total, disc_breakdown = self.loss_manager.losses_disc(loss_info)
         else:
             if self.use_disc:
                 if warmed_up:
-                    _, loss_adv, feat_match = self.loss_manager.discriminator.loss(reals=orig_waveforms, fakes=decoded)
+                    with frozen_parameters(self.loss_manager.discriminator, self.freeze_disc_in_gen_step):
+                        _, loss_adv, feat_match = self.loss_manager.discriminator.loss(reals=orig_waveforms,
+                                                                                        fakes=decoded)
                 else:
                     loss_adv = torch.zeros((), device=decoded.device)
                     feat_match = torch.zeros((), device=decoded.device)

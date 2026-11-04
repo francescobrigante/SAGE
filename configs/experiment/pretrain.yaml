@@ -10,8 +10,11 @@
 # one used for the released checkpoint; tests/test_recipes.py checks them against
 # Table 6. The batch size is GLOBAL: it is split over all devices (paper: 16 A100,
 # 4 nodes x 4, 8 segments per GPU), so the recipe runs unchanged on other hardware.
+# The exact speed-ups of configs/speedup/recipe.yaml are on (critic_fast_fused + loop_fast): same
+# losses and updates up to float rounding; `+speedup=legacy` runs the training loop of the paper run.
 # =============================================================================
 defaults:
+  - /speedup/recipe                   # exact speed-ups: critic_fast_fused + loop_fast
   - override /models: swin_real_swiglu_xsa
   - override /data: multicorpus
 

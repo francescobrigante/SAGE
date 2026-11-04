@@ -129,9 +129,10 @@ class EMACallback(Callback):
     and audio demos are generated using the smoothed weights.
     Injects the EMA state dict into the Lightning checkpoint automatically.
     """
-    def __init__(self, decay: float = 0.9999):
+    def __init__(self, decay: float = 0.9999, foreach: bool = False):
         super().__init__()
         self.decay = decay
+        self.foreach = foreach      # one multi-tensor mul_/add_ over all weights (same values, ~800 fewer launches)
         self.ema_state_dict = {}
         self.original_state_dict = None
 
@@ -173,6 +174,9 @@ class EMACallback(Callback):
             return
 
         decay = self.decay
+        if self.foreach:
+            self._update_foreach(model.state_dict())
+            return
         with torch.no_grad():
             for k, v in model.state_dict().items():
                 if k in self.ema_state_dict:
@@ -181,6 +185,22 @@ class EMACallback(Callback):
                         ema_v.mul_(decay).add_(v.detach(), alpha=1.0 - decay)
                     else:
                         ema_v.copy_(v.detach())
+
+    @torch.no_grad()
+    def _update_foreach(self, live: dict) -> None:
+        """The per-tensor update of on_train_batch_end as multi-tensor ops: same element-wise math."""
+        ema, src = [], []
+        for k, v in live.items():
+            if k not in self.ema_state_dict:
+                continue
+            if v.dtype.is_floating_point or v.dtype.is_complex:
+                ema.append(self.ema_state_dict[k])
+                src.append(v.detach())
+            else:
+                self.ema_state_dict[k].copy_(v.detach())
+        if ema:
+            torch._foreach_mul_(ema, self.decay)
+            torch._foreach_add_(ema, src, alpha=1.0 - self.decay)
 
     def on_validation_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         model = getattr(pl_module, "autoencoder", None)

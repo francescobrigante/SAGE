@@ -1,0 +1,30 @@
+# @package _global_
+# =============================================================================
+# Every speed-up key back to its plain value (configs/trainer.yaml and the critic defaults): the
+# training loop of the paper runs and of the recipes before the speed-ups, which pretrain and
+# decoder_ft (and the stereo_proxy arms) now turn on (speedup/recipe.yaml). Put it after the experiment;
+# "+speedup=[legacy,critic_fast]" then adds one override alone.
+#
+#   python train.py +experiment=pretrain +speedup=legacy trainer.trainer.num_gpus=4 ++trainer.trainer.num_nodes=4
+# =============================================================================
+trainer:
+  trainer:
+    freeze_disc_in_gen_step: false
+    disc_step_loss_only: false
+    ema_foreach: false
+    log_every_n_batches: 0
+    progress_bar_refresh_rate: 1
+    lr_monitor: true
+    detach_step_output: false
+    ddp_skip_idle_buckets: false
+    ddp_gradient_as_bucket_view: false
+    ddp_broadcast_buffers: true
+  loss_config:
+    discriminator:
+      config:
+        inplace_act: false
+        fused_feature_matching: false
+        channels_last: false
+        branch_streams: false
+        fused_bias_act: false
+        fused_bias_grad: false

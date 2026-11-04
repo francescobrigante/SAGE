@@ -322,3 +322,26 @@ def test_tables_read_any_mteb_revision_and_never_bold_the_oracle(tmp_path, capsy
     out = capsys.readouterr().out
     assert "| clap | 0.900" in out and "**0.600**" in out           # oracle shown, best autoencoder bolded
     assert "| sage | -0.100 | 0.200 | 3.000 | 9.000 |" in out.replace("**", "")   # mono reference excluded
+
+
+def test_use_ema_false_loads_the_training_weights():
+    import torch
+    from sage.inference import _extract_autoencoder_state
+    state = {"engine.autoencoder.encoder.w": torch.zeros(2), "engine.autoencoder_ema.ema_model.encoder.w": torch.ones(2),
+             "engine.loss_manager.discriminator.w": torch.full((2,), 7.0)}
+    assert torch.equal(_extract_autoencoder_state(state)["encoder.w"], torch.ones(2))            # EMA by default
+    assert torch.equal(_extract_autoencoder_state(state, use_ema=False)["encoder.w"], torch.zeros(2))
+    assert set(_extract_autoencoder_state(state, use_ema=False)) == {"encoder.w"}
+
+
+def test_use_ema_is_a_sage_setting_and_part_of_the_manifest(tmp_path):
+    from types import SimpleNamespace
+    with initialize_config_dir(config_dir=str(CONFIGS), version_base=None):
+        cfg = compose("reconstruction", ["dataset=moisesdb_mix", "model=identity", "use_ema=false",
+                                         f"paths.eval_output={tmp_path}", f"dataset.data_dir={tmp_path}"])
+    with pytest.raises(SystemExit, match="use_ema apply to model=sage only"):
+        reconstruction._args_from_cfg(cfg)
+    (tmp_path / "run.json").write_text(json.dumps({"model": "sage", "seed": 0}))   # written before the key
+    reconstruction._check_manifest(tmp_path, SimpleNamespace(model="sage", seed=0, use_ema=True), rank=0)
+    with pytest.raises(SystemExit, match="other settings"):
+        reconstruction._check_manifest(tmp_path, SimpleNamespace(model="sage", seed=0, use_ema=False), rank=0)
