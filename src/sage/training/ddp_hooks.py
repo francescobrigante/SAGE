@@ -20,7 +20,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 
-from sage.utils.console import ok
+from sage.utils.console import ok, warn
 
 DDP_STRATEGIES = {"ddp": False, "ddp_find_unused_parameters_false": False, "ddp_find_unused_parameters_true": True}
 
@@ -89,13 +89,15 @@ def skip_idle_buckets_hook(state: IdleBucketState, bucket: dist.GradBucket) -> t
 def build_ddp_strategy(name: str, module: nn.Module, skip_idle_buckets: bool = False,
                        gradient_as_bucket_view: bool = False, broadcast_buffers: bool = True,
                        freeze_disc_in_gen_step: bool = False):
-    """The Trainer strategy: `name` unchanged when every DDP key has its default, else a DDPStrategy
-    with the same find_unused_parameters and the requested DDP arguments / communication hook.
+    """The Trainer strategy: `name` unchanged when every DDP key has its default or the strategy is not
+    DDP (the recipes turn the ddp_* keys on; a non-DDP strategy has nothing to apply them to), else a
+    DDPStrategy with the same find_unused_parameters and the requested DDP arguments / communication hook.
     Lightning registers communication hooks only on CUDA devices (DDPStrategy._register_ddp_hooks)."""
     if not (skip_idle_buckets or gradient_as_bucket_view or not broadcast_buffers):
         return name
     if name not in DDP_STRATEGIES:
-        raise ValueError(f"ddp_* keys need a DDP strategy ({sorted(DDP_STRATEGIES)}), got strategy={name!r}")
+        warn(f"strategy={name!r} is not DDP ({sorted(DDP_STRATEGIES)}): the ddp_* keys are ignored")
+        return name
     from pytorch_lightning.strategies import DDPStrategy
     kwargs = dict(find_unused_parameters=DDP_STRATEGIES[name], gradient_as_bucket_view=gradient_as_bucket_view,
                   broadcast_buffers=broadcast_buffers)

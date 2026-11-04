@@ -204,8 +204,8 @@ def test_build_ddp_strategy():
         build_ddp_strategy("ddp_find_unused_parameters_true", m, skip_idle_buckets=True)
     with pytest.raises(ValueError, match="find_unused_parameters_true"):
         build_ddp_strategy("ddp", m, skip_idle_buckets=True, freeze_disc_in_gen_step=True)
-    with pytest.raises(ValueError, match="DDP strategy"):
-        build_ddp_strategy("auto", m, broadcast_buffers=False)
+    assert build_ddp_strategy("auto", m, skip_idle_buckets=True, gradient_as_bucket_view=True,
+                              broadcast_buffers=False, freeze_disc_in_gen_step=True) == "auto"   # keys ignored
 
 
 # ── DDP exactness, 2 gloo processes ──────────────────────────────────────────
