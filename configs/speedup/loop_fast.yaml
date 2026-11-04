@@ -4,8 +4,9 @@
 # recipe with the WavTokenizer critic: same updates bit for bit as the plain recipe (the logged
 # train/* values are window means of the same numbers). tests/test_loop_speed.py checks each key.
 # ddp_skip_idle_buckets needs freeze_disc_in_gen_step, so this override turns it on as well.
+# The recipes (pretrain, decoder_ft and the stereo_proxy arms) already have these keys (speedup/recipe.yaml).
 #
-#   python train.py +experiment=stereo_proxy "+speedup=[critic_fast,loop_fast]" trainer.trainer.num_gpus=2
+#   python train.py +experiment=stereo_proxy "+speedup=[legacy,critic_fast,loop_fast]" trainer.trainer.num_gpus=2
 # =============================================================================
 trainer:
   trainer:

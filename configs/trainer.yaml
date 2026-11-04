@@ -76,7 +76,7 @@ trainer:
                                     # gradients there); same generator gradient and updates (exact speed-up)
   disc_step_loss_only: false        # true: the discriminator step computes only the critic loss (critic.dis_loss),
                                     # not the dropped generator terms; same loss and critic gradients (exact)
-  # Training-loop speed keys (configs/speedup/loop_fast.yaml turns the exact ones on)
+  # Training-loop speed keys (configs/speedup/loop_fast.yaml turns the exact ones on; so do the recipes)
   log_every_n_batches: 0            # >0: train/* summed on the GPU, logged every N batches with one host copy
                                     # (sets the Trainer's log_every_n_steps; 0 = .item() per value, log_interval)
   progress_bar_refresh_rate: 1      # TQDM refresh every N batches

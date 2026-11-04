@@ -10,9 +10,12 @@
 # post-net is attached to the decoder, and the discriminator restarts from scratch;
 # learning rate 1e-4, with schedule and warm-up restarted. Only the decoder trains.
 # The released checkpoint is epoch 992 of this phase. Differences from phase 1 are
-# checked by tests/test_recipes.py; everything else is the trainer.yaml default.
+# checked by tests/test_recipes.py; everything else is the trainer.yaml default, except the
+# exact speed-ups of configs/speedup/recipe.yaml (critic_fast_fused + loop_fast): same losses and
+# updates up to float rounding; `+speedup=legacy` runs the training loop of the paper run.
 # =============================================================================
 defaults:
+  - /speedup/recipe                   # exact speed-ups: critic_fast_fused + loop_fast
   - override /models: swin_real_swiglu_xsa
   - override /data: multicorpus
 

@@ -4,8 +4,9 @@
 # stereo_proxy C0/A1-A4): same losses and updates as the plain recipe, up to float rounding
 # (channels_last: another summation order). tests/test_disc_speed.py checks each key. Measured on the
 # full training step (1 A100, local/disc_speed): +37 % it/s on C0, A1, A4 and +36 % on A2, A3.
+# The recipes already have these keys (speedup/recipe.yaml); after +speedup=legacy it adds them alone.
 #
-#   python train.py +experiment=stereo_proxy +speedup=critic_fast trainer.trainer.num_gpus=2
+#   python train.py +experiment=stereo_proxy "+speedup=[legacy,critic_fast]" trainer.trainer.num_gpus=2
 # =============================================================================
 trainer:
   trainer:

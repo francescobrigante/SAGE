@@ -86,8 +86,10 @@ def test_proxy_keeps_the_paper_discriminator(proxy):
 DISC = "trainer.loss_config.discriminator.config."
 ARMS = {
     "a1": {"preprocess_gain": "shared"},
-    "a2": {"preprocess_gain": "shared", "mpd_stereo": "lr", "mrd_stereo": "lrms", "dac_stereo": "lr"},
-    "a3": {"preprocess_gain": "shared", "mpd_stereo": "lrms", "mrd_stereo": "lrms", "dac_stereo": "lrms"},
+    "a2": {"preprocess_gain": "shared", "mpd_stereo": "lr", "mrd_stereo": "lrms", "dac_stereo": "lr",
+           "fused_bias_act": False, "fused_bias_grad": False},     # joint critics: no Triton bias + LeakyReLU
+    "a3": {"preprocess_gain": "shared", "mpd_stereo": "lrms", "mrd_stereo": "lrms", "dac_stereo": "lrms",
+           "fused_bias_act": False, "fused_bias_grad": False},
     "a4": {"preprocess_gain": "shared", "resolutions": [[2048, 512, 2048], [4096, 1024, 4096], [1024, 256, 1024]],
            "fft_sizes": [4096, 2048, 1024],
            "dac_bands": [0.0, 0.011337868, 0.045351474, 0.181405896, 0.453514739, 1.0]},

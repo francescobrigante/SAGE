@@ -43,9 +43,10 @@ def test_loop_fast_changes_only_loop_keys(arm):
     from hydra import compose, initialize_config_dir
     from omegaconf import OmegaConf
     with initialize_config_dir(config_dir=str(CONFIGS), version_base=None):
-        ref = OmegaConf.to_container(compose("main", [f"+experiment={arm}", "+speedup=critic_fast"]), resolve=False)
-        fast = OmegaConf.to_container(compose("main", [f"+experiment={arm}", "+speedup=[critic_fast,loop_fast]"]),
-                                      resolve=False)
+        ref = OmegaConf.to_container(compose("main", [f"+experiment={arm}", "+speedup=[legacy,critic_fast]"]),
+                                     resolve=False)
+        fast = OmegaConf.to_container(
+            compose("main", [f"+experiment={arm}", "+speedup=[legacy,critic_fast,loop_fast]"]), resolve=False)
     t = fast["trainer"]["trainer"]
     assert t["log_every_n_batches"] == 1 and t["ddp_skip_idle_buckets"] and t["freeze_disc_in_gen_step"]
     for k in LOOP_KEYS:

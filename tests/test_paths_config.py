@@ -46,6 +46,7 @@ def test_no_config_outside_paths_holds_an_absolute_path():
         if f.parent.name == "paths":
             continue
         raw = OmegaConf.to_container(OmegaConf.load(f), resolve=False)
+        raw.pop("defaults", None)                    # config names (/group/name), not files
         bad = [s for s in _strings(raw) if s.startswith(("/", "~"))]
         assert not bad, f"{f.relative_to(REPO)}: {bad}"
 

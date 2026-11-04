@@ -6,9 +6,10 @@
 # (1.4e-5 to 2.1e-5 apart as one vector, the fused sums the closer ones to float64). Measured on the full
 # training step (1 A100, local/disc_speed/fused): +6.0 % it/s on C0 (the fold critic of pretrain and
 # decoder_ft) and A4, but -2.1 % on A2 (joint critics: a smaller forward, bound by the CPU), so it is
-# not part of critic_fast. Use it with the fold critics only.
+# not part of critic_fast. Use it with the fold critics only: the recipes have these keys (speedup/recipe.yaml),
+# and the joint arms stereo_proxy_a2 and _a3 turn the two fused keys off again.
 #
-#   python train.py +experiment=pretrain +speedup=critic_fast_fused
+#   python train.py +experiment=pretrain "+speedup=[legacy,critic_fast_fused]"
 # =============================================================================
 defaults:
   - critic_fast

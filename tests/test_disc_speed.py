@@ -9,14 +9,16 @@
 # gradients bit for bit; with a Triton other than the tested version it falls back to the plain path.
 # ===============
 import contextlib
+import inspect
 import types
+from pathlib import Path
 
 import pytest
 import torch
 import torch.nn as nn
 
 from sage.nn.discriminators.fused_act import BiasLeakyReLUConv2d
-from sage.nn.discriminators.wavtokenizer import WavTokenizerGANLoss
+from sage.nn.discriminators.wavtokenizer import WavTokenizerDiscriminator, WavTokenizerGANLoss
 from sage.training.engine import AutoencoderEngine, frozen_parameters
 
 BASE = dict(channels=2, sample_rate=44100, periods=[2, 3], resolutions=[(512, 128, 512)], fft_sizes=[512],
@@ -642,27 +644,92 @@ def test_ema_foreach_is_bit_identical():
 
 # ── +speedup overrides ───────────────────────────────────────────────────────
 
+CONFIGS = Path(__file__).parents[1] / "configs"
+CRITIC_SPEED_KEYS = ("inplace_act", "fused_feature_matching", "channels_last", "branch_streams")
+FUSED_SPEED_KEYS = ("fused_bias_act", "fused_bias_grad")
+TRAINER_SPEED_KEYS = ("freeze_disc_in_gen_step", "disc_step_loss_only", "ema_foreach", "log_every_n_batches",
+                      "progress_bar_refresh_rate", "lr_monitor", "detach_step_output", "ddp_skip_idle_buckets",
+                      "ddp_gradient_as_bucket_view", "ddp_broadcast_buffers")
+# Recipes with the speed-ups on, and whether they keep the fused keys (fold critics only).
+RECIPES = {"pretrain": True, "decoder_ft": True, "stereo_proxy": True, "stereo_proxy_a1": True,
+           "stereo_proxy_a2": False, "stereo_proxy_a3": False, "stereo_proxy_a4": True}
+
+
+def _compose(*overrides):
+    from hydra import compose, initialize_config_dir
+    from omegaconf import OmegaConf
+    with initialize_config_dir(config_dir=str(CONFIGS), version_base=None):
+        cfg = OmegaConf.to_container(compose("main", list(overrides)), resolve=False)
+    return cfg, cfg["trainer"]["trainer"], cfg["trainer"]["loss_config"]["discriminator"]["config"]
+
+
+def _yaml_keys(d, prefix=""):
+    """Dotted leaf keys of a speedup file (its defaults list aside)."""
+    out = set()
+    for k, v in d.items():
+        if k != "defaults":
+            out |= _yaml_keys(v, f"{prefix}{k}.") if isinstance(v, dict) else {prefix + k}
+    return out
+
+
 @pytest.mark.parametrize("arm", ["stereo_proxy", "stereo_proxy_a2", "stereo_proxy_a4", "pretrain"])
 @pytest.mark.parametrize("speedup", ["critic_fast", "critic_fast_fused"])
 def test_speedup_override_changes_only_speed_keys(arm, speedup):
-    """+speedup=... adds the speed keys and changes nothing else of the recipe."""
-    from hydra import compose, initialize_config_dir
-    from omegaconf import OmegaConf
-    from pathlib import Path
-    with initialize_config_dir(config_dir=str(Path(__file__).parents[1] / "configs"), version_base=None):
-        ref = OmegaConf.to_container(compose("main", [f"+experiment={arm}"]), resolve=False)
-        fast = OmegaConf.to_container(compose("main", [f"+experiment={arm}", f"+speedup={speedup}"]), resolve=False)
-    t, d = fast["trainer"]["trainer"], fast["trainer"]["loss_config"]["discriminator"]["config"]
+    """+speedup=... adds the speed keys to the plain recipe (+speedup=legacy) and changes nothing else."""
+    ref, ref_t, ref_d = _compose(f"+experiment={arm}", "+speedup=legacy")
+    fast, t, d = _compose(f"+experiment={arm}", f"+speedup=[legacy,{speedup}]")
     assert t["freeze_disc_in_gen_step"] and t["disc_step_loss_only"] and t["ema_foreach"]
-    keys = ("inplace_act", "fused_feature_matching", "channels_last", "branch_streams")
-    keys += ("fused_bias_act", "fused_bias_grad") if speedup.endswith("fused") else ()
+    keys = CRITIC_SPEED_KEYS + (FUSED_SPEED_KEYS if speedup.endswith("fused") else ())
     assert all(d[k] is True for k in keys)
-    assert speedup.endswith("fused") or "fused_bias_act" not in d
+    assert speedup.endswith("fused") or d["fused_bias_act"] is False
     for k in ("freeze_disc_in_gen_step", "disc_step_loss_only", "ema_foreach"):
-        t[k] = ref["trainer"]["trainer"][k]
+        t[k] = ref_t[k]
     for k in keys:
-        d.pop(k)
+        d[k] = ref_d[k]
     assert fast == ref
+
+
+# ── speed-ups on in the recipes, +speedup=legacy turns them off ─────────────
+
+@pytest.mark.parametrize("recipe", list(RECIPES))
+def test_recipe_has_the_speedups_on(recipe):
+    """The recipe = recipe + legacy + critic_fast_fused + loop_fast, except the fused keys, off on the joint
+    critics: speedup/recipe.yaml holds the keys of those two files, and they still apply after legacy."""
+    rec, t, d = _compose(f"+experiment={recipe}")
+    fast, _, fast_d = _compose(f"+experiment={recipe}", "+speedup=[legacy,critic_fast_fused,loop_fast]")
+    assert t["freeze_disc_in_gen_step"] and t["log_every_n_batches"] == 1 and t["ddp_skip_idle_buckets"]
+    assert all(d[k] is True for k in CRITIC_SPEED_KEYS)
+    assert all(d[k] is RECIPES[recipe] for k in FUSED_SPEED_KEYS)
+    for k in FUSED_SPEED_KEYS:
+        fast_d[k] = d[k]
+    assert fast == rec
+
+
+@pytest.mark.parametrize("recipe", list(RECIPES))
+def test_legacy_turns_every_speedup_off(recipe):
+    """+speedup=legacy: every speed key at its plain value (trainer.yaml, the critic's constructor), which
+    the recipes had before the speed-ups; nothing else of the recipe changes."""
+    from omegaconf import OmegaConf
+    plain_t = OmegaConf.load(CONFIGS / "trainer.yaml").trainer
+    plain_d = {n: p.default for cls in (WavTokenizerGANLoss, WavTokenizerDiscriminator)
+               for n, p in inspect.signature(cls.__init__).parameters.items()}
+    rec, rec_t, rec_d = _compose(f"+experiment={recipe}")
+    leg, t, d = _compose(f"+experiment={recipe}", "+speedup=legacy")
+    assert all(t[k] == plain_t[k] for k in TRAINER_SPEED_KEYS)
+    assert all(d[k] is plain_d[k] is False for k in CRITIC_SPEED_KEYS + FUSED_SPEED_KEYS)
+    for k in TRAINER_SPEED_KEYS:
+        t[k] = rec_t[k]
+    for k in CRITIC_SPEED_KEYS + FUSED_SPEED_KEYS:
+        d[k] = rec_d[k]
+    assert leg == rec
+
+
+def test_legacy_covers_every_speedup_key():
+    """A speed key added to an override must be added to legacy.yaml too."""
+    from omegaconf import OmegaConf
+    files = [OmegaConf.to_container(OmegaConf.load(f)) for f in sorted((CONFIGS / "speedup").glob("*.yaml"))]
+    legacy = OmegaConf.to_container(OmegaConf.load(CONFIGS / "speedup" / "legacy.yaml"))
+    assert set().union(*map(_yaml_keys, files)) == _yaml_keys(legacy)
 
 
 if __name__ == "__main__":

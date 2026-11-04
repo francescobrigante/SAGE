@@ -18,3 +18,5 @@ trainer:
         mpd_stereo: lrms
         mrd_stereo: lrms
         dac_stereo: lrms
+        fused_bias_act: false         # joint critics: the Triton kernel is -2.1 % it/s here (CPU-bound forward)
+        fused_bias_grad: false

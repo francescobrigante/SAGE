@@ -1,0 +1,29 @@
+# @package _global_
+# =============================================================================
+# The speed-ups the recipes turn on (pretrain, decoder_ft, and through pretrain the stereo_proxy arms):
+# critic_fast_fused + loop_fast, key for key (tests/test_disc_speed.py checks it). Written out instead of
+# including those two files: a file merged twice in one composition does not apply its new subtrees
+# again (Hydra 1.3), so "+speedup=[legacy,critic_fast_fused]" on a recipe would silently stay legacy.
+# The joint-critic arms (stereo_proxy_a2, _a3) turn the fused keys off again.
+# =============================================================================
+trainer:
+  trainer:
+    freeze_disc_in_gen_step: true
+    disc_step_loss_only: true
+    ema_foreach: true
+    log_every_n_batches: 1
+    progress_bar_refresh_rate: 50
+    lr_monitor: false
+    detach_step_output: true
+    ddp_skip_idle_buckets: true
+    ddp_gradient_as_bucket_view: true
+    ddp_broadcast_buffers: false
+  loss_config:
+    discriminator:
+      config:
+        inplace_act: true
+        fused_feature_matching: true
+        channels_last: true
+        branch_streams: true
+        fused_bias_act: true
+        fused_bias_grad: true
