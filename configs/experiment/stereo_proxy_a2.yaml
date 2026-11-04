@@ -1,0 +1,20 @@
+# @package _global_
+# =============================================================================
+# Stereo-discriminator proxy, arm A2 = A1 + every critic joint by the non-linearity rule:
+# MPD on [L, R]; magnitude MRD on [|L|, |R|, |M|, |S|]; DAC complex MRD on Re/Im of [L, R].
+# fold_lrms has no effect here (no branch folds). Differs from C0 only in the keys below.
+# =============================================================================
+defaults:
+  - stereo_proxy
+  - _self_
+
+trainer:
+  wandb:
+    name: stereo_proxy_a2
+  loss_config:
+    discriminator:
+      config:
+        preprocess_gain: shared
+        mpd_stereo: lr
+        mrd_stereo: lrms
+        dac_stereo: lr

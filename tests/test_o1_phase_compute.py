@@ -91,6 +91,7 @@ def _make_engine(use_disc=True, warmup_steps=0):
     eng.audio_channels = 2
     eng.sample_rate = 44100
     eng.stft_params = {"n_fft": 2048, "hop_length": 512}
+    eng.adv_grad_every = 0
     return eng
 
 

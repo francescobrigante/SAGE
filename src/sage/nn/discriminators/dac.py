@@ -18,6 +18,30 @@ from sage.nn.discriminators.types import (
 )
 from sage.nn.discriminators.oobleck import MPD, MSD, MRD
 
+PREPROCESS_PEAK = 0.8      # peak level after the DAC normalisation
+PREPROCESS_EPS = 1e-9
+
+
+def peak_normalize(y: torch.Tensor, shared: bool = False) -> torch.Tensor:
+    """DAC preprocess: DC removal per channel, then peak normalisation to PREPROCESS_PEAK.
+
+    Args:
+        y: (B, T) or (B, C, T) waveform.
+        shared: False = one gain per (example, channel), the DAC original: it erases the
+            inter-channel level (ILD) and the Side level of a folded [L, R | M, S] batch.
+            True = one gain per example over all its channels: the ratios between them survive.
+
+    Returns:
+        Tensor of the shape of y.
+    """
+    y = y - y.mean(dim=-1, keepdims=True)
+    if shared:
+        peak = y.abs().flatten(1).max(dim=-1)[0].view(-1, *([1] * (y.dim() - 1)))   # (B, 1[, 1])
+    else:
+        peak = y.abs().max(dim=-1, keepdim=True)[0]                                # (B[, C], 1)
+    return PREPROCESS_PEAK * y / (peak + PREPROCESS_EPS)
+
+
 class DACDiscriminator(nn.Module):
     def __init__(
         self,
@@ -29,6 +53,7 @@ class DACDiscriminator(nn.Module):
         bands: list = BANDS,
         use_checkpoint: bool = False,
         preprocess: bool = True,
+        joint: bool = False,
     ):
         """Discriminator that combines multiple discriminators.
 
@@ -44,7 +69,10 @@ class DACDiscriminator(nn.Module):
         sample_rate : int, optional
             Sampling rate of audio in Hz, by default 44100
         bands : list, optional
-            Bands to run MRD at, by default `BANDS`
+            Bands to run MRD at, by default `BANDS` (fractions of Nyquist)
+        joint : bool, optional
+            If True the MRDs see all `channels` together (Re/Im of every channel stacked
+            in the first convolution) instead of one channel per batch row.
         """
         super().__init__()
         self.use_checkpoint = use_checkpoint
@@ -54,15 +82,12 @@ class DACDiscriminator(nn.Module):
         discs = []
         discs += [MPD(p, channels=channels) for p in periods]
         discs += [MSD(r, sample_rate=sample_rate, channels=channels) for r in rates]
-        discs += [MRD(f, sample_rate=sample_rate, bands=bands, channels=channels) for f in fft_sizes]
+        discs += [MRD(f, sample_rate=sample_rate, bands=bands, channels=channels, joint=joint) for f in fft_sizes]
         self.discriminators = nn.ModuleList(discs)
 
     def preprocess(self, y):
-        # Remove DC offset
-        y = y - y.mean(dim=-1, keepdims=True)
-        # Peak normalize the volume of input audio
-        y = 0.8 * y / (y.abs().max(dim=-1, keepdim=True)[0] + 1e-9)
-        return y
+        # DC removal + per-(example, channel) peak normalisation, as in DAC
+        return peak_normalize(y)
 
     def forward(self, x):
         if self.preprocess_enabled:

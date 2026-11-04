@@ -33,7 +33,7 @@ from sage.training.engine import AutoencoderEngine
 from sage.model.autoencoder import SAGEAutoencoder
 from sage.inference import encode_audio as inference_encode_audio, decode_audio as inference_decode_audio
 from sage.compat import drop_legacy_state_keys
-from sage.utils.console import ok, warn
+from sage.utils.console import info, ok, warn
 from sage.training.loggers import log_metric, log_histogram, log_point_cloud, log_image, log_audio, logger_project_name
 from sage.utils.audio import trim_to_shortest
 
@@ -114,6 +114,7 @@ class SAGELightningModule(pl.LightningModule):
         aux_scheduler_spec: Optional[dict] = None,    # scheduler for aux; if None → uses global scheduler_spec
         pre_transform_spec: Optional[dict] = None,
         accumulate_grad_batches: int = 1,
+        adv_grad_every: int = 0,
     ):
         super().__init__()
         self.automatic_optimization = False
@@ -147,7 +148,8 @@ class SAGELightningModule(pl.LightningModule):
             latent_mask_ratio=latent_mask_ratio,
             teacher_model=teacher_model,
             audio_channels=audio_channels,
-            stft_params=stft_params
+            stft_params=stft_params,
+            adv_grad_every=adv_grad_every,
         )
 
         # Set optional spectrogram normalization on the core autoencoder
@@ -463,6 +465,13 @@ class SAGELightningModule(pl.LightningModule):
         # GEN step
         else:
             gen_loss = out["gen_total"]
+            # Straight to the logger: self.log(on_step=True) would re-send the cached value at every
+            # later step of the epoch, and keep a stale mono/stereo share when a batch lacks that kind.
+            for key, value in out.get("diag", {}).items():
+                log_metric(self.logger, f"diag/{key}", value)
+            if out.get("diag") and self.global_rank == 0:
+                info(f"gen_step {self.gen_step}: " + " ".join(f"{k}={v:.4g}" for k, v in out["diag"].items()),
+                     prefix="DIAG")
 
             if self._accum_steps_gen == 0:
                 opt_gen.zero_grad()

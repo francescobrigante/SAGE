@@ -24,12 +24,19 @@ from sage.utils.console import warn
 
 # ── Channel fed to the embedders ─────────────────────────────────────────────
 # Every embedder (MERT / PANN / CLAP) and CDPAM reduce stereo to one channel;
-# the paper uses the mono downmix (L+R)/2. The metric functions keep a `channel`
-# argument; "side" = (L-R)/2 is not exposed by the evaluator (the paper has no
-# Side-channel FAD) but left for analysis.
+# the paper uses the mono downmix (L+R)/2. `channel=side` of the evaluator and of
+# build_references feeds "side" = (L-R)/2 instead; every artefact of a Side run
+# carries the suffix of channel_suffix, so it is never scored against Mid references.
 CHANNEL_MID  = "mid"
 CHANNEL_SIDE = "side"
 CHANNELS     = (CHANNEL_MID, CHANNEL_SIDE)
+
+
+def channel_suffix(channel: str) -> str:
+    """'' for the Mid (the paper's names), '-side' for the Side: appended to run, embedding and stats names."""
+    if channel not in CHANNELS:
+        raise ValueError(f"channel must be one of {CHANNELS}, got {channel!r}")
+    return "" if channel == CHANNEL_MID else f"-{channel}"
 
 
 def downmix(wav: torch.Tensor, channel: str = CHANNEL_MID) -> torch.Tensor:

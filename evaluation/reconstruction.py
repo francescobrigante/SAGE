@@ -41,7 +41,7 @@ from tqdm import tqdm
 
 from evaluation.codecs import ADAPTERS, adapter_kwargs, build_adapter
 from evaluation.common import (CLAP_AUDIO_NAME, CLAP_GUD_NAME, CLAP_MUSIC_NAME, MERT_NAME, AudioDataset, append_csv,
-                               atomic_save_npy, collect_clip_files, collect_fma_files, file_seed, first_item, load_or_embed,
+                               atomic_save_npy, channel_suffix, collect_clip_files, collect_fma_files, file_seed, first_item, load_or_embed,
                                seed_everything, set_metric_weights, silence_output, target_cache_path,
                                write_csv)
 from evaluation.metrics.clap import cosine_sim, embed_clap, embed_clap_gud
@@ -79,8 +79,8 @@ def _load_done(parts: Path) -> set[str]:
 
 # Run settings that change the numbers: a run resumed into the same folder must keep them.
 _MANIFEST_KEYS = ("model", "checkpoint", "varlen", "deterministic", "sdpa", "protocol", "data_dir", "fma_csv",
-                  "max_files", "skip_cdpam", "sdr_only", "compute_ms_metrics", "seed")
-_MANIFEST_DEFAULTS = {"sdpa": False}      # keys added later: a manifest without them ran with this value
+                  "max_files", "skip_cdpam", "sdr_only", "compute_ms_metrics", "seed", "channel")
+_MANIFEST_DEFAULTS = {"sdpa": False, "channel": "mid"}   # keys added later: a manifest without them ran with this value
 
 
 def _check_manifest(parts: Path, args: SimpleNamespace, rank: int = 0, timeout: float = 600.0) -> None:
@@ -134,6 +134,10 @@ def _args_from_cfg(cfg: DictConfig) -> SimpleNamespace:
         raise SystemExit("checkpoint, varlen, deterministic and sdpa apply to model=sage only")
     else:
         checkpoint = None
+    try:
+        channel_suffix(cfg.channel)
+    except ValueError as e:
+        raise SystemExit(f"channel={cfg.channel}: {e}")
     return SimpleNamespace(
         model=cfg.model, checkpoint=checkpoint, varlen=cfg.varlen, deterministic=bool(cfg.deterministic),
         sdpa=cfg.model == "sage" and cfg.sdpa is not False,         # null = on for sage; off for the other models
@@ -144,7 +148,7 @@ def _args_from_cfg(cfg: DictConfig) -> SimpleNamespace:
         output_dir=Path(cfg.output_dir), name=cfg.name, device=cfg.device, num_workers=int(cfg.num_workers),
         max_files=int(cfg.max_files), skip_cdpam=bool(cfg.skip_cdpam), sdr_only=bool(cfg.sdr_only),
         compute_ms_metrics=bool(cfg.compute_ms_metrics), seed=int(cfg.seed), resume=bool(cfg.resume),
-        merge=bool(cfg.merge))
+        merge=bool(cfg.merge), channel=str(cfg.channel))
 
 
 # ── Merge: per-rank rows → final CSVs, embeddings → FAD ──────────────────────
@@ -173,6 +177,7 @@ def _fad_from_stats(data_dir: Path, model_name: str, pred_emb_dir: Path, csv_pat
 
 def _merge(metrics_dir: Path, args: SimpleNamespace) -> None:
     parts = metrics_dir / "parts"
+    suffix = channel_suffix(args.channel)                 # Side predictions vs Side references only
     _check_manifest(parts, args)
     n_done = len(_load_done(parts))
     for name, cols in CSV_SCHEMA.items():
@@ -189,7 +194,8 @@ def _merge(metrics_dir: Path, args: SimpleNamespace) -> None:
         for emb_name, csv_name in FAD_CSV.items():
             emb_dir = parts / "pred" / emb_name
             if args.protocol == "clips":
-                _fad_from_stats(args.data_dir.expanduser().resolve(), emb_name, emb_dir, metrics_dir / csv_name)
+                _fad_from_stats(args.data_dir.expanduser().resolve(), emb_name + suffix, emb_dir,
+                                metrics_dir / csv_name)
                 continue
             npys = sorted(emb_dir.glob("*.npy")) if emb_dir.is_dir() else []
             if npys and len(npys) != n_done:
@@ -198,8 +204,9 @@ def _merge(metrics_dir: Path, args: SimpleNamespace) -> None:
                 warn(f"No {'cache dir' if args.cache_dir is None else 'pred embeddings'} — "
                      f"{csv_name} skipped.", prefix="MERGE")
                 continue
-            compute_fad_from_embeddings(SimpleNamespace(name=emb_name), [Path(f.stem) for f in npys], npys,
-                                        args.cache_dir.expanduser().resolve(), metrics_dir / csv_name, emb_name)
+            compute_fad_from_embeddings(SimpleNamespace(name=emb_name + suffix), [Path(f.stem) for f in npys], npys,
+                                        args.cache_dir.expanduser().resolve(), metrics_dir / csv_name,
+                                        emb_name + suffix)
     (metrics_dir / "_done").touch()
     ok(f"_done → {metrics_dir}", prefix="MERGE")
 
@@ -209,7 +216,8 @@ def _merge(metrics_dir: Path, args: SimpleNamespace) -> None:
 def run(cfg: DictConfig) -> None:
     set_metric_weights(cfg.paths)
     args = _args_from_cfg(cfg)
-    name = args.name or (args.checkpoint.stem if args.model == "sage" else args.model)
+    suffix = channel_suffix(args.channel)
+    name = (args.name or (args.checkpoint.stem if args.model == "sage" else args.model)) + suffix
     metrics_dir = args.output_dir.expanduser().resolve() / name / "metrics"
     if args.merge:
         if not (metrics_dir / "parts").is_dir():
@@ -275,10 +283,18 @@ def run(cfg: DictConfig) -> None:
                         prefetch_factor=4 if args.num_workers > 0 else None)
 
     def reference(ml, embed_fn, wav_ref, stem, model_name):
-        """Target embedding: cached (fma) or shipped with the clip set (clips)."""
+        """Target embedding of the same channel: cached (fma) or shipped with the clip set (clips)."""
         if args.protocol == "fma":
-            return load_or_embed(ml, embed_fn, wav_ref, sr, device, target_cache_path(cache_dir, model_name, stem))
-        return _load_ref_emb(data_dir, model_name, stem)
+            return load_or_embed(ml, embed_fn, wav_ref, sr, device,
+                                 target_cache_path(cache_dir, model_name + suffix, stem))
+        return _load_ref_emb(data_dir, model_name + suffix, stem)
+
+    # The embedders read args.channel (mid = the paper's downmix), passed positionally.
+    ch = args.channel
+    e_clap = lambda ml, w, s, d: embed_clap(ml, w, s, d, ch)                       # noqa: E731
+    e_mert = lambda ml, w, s, d: embed_mert_framewise(ml, w, s, d, ch)             # noqa: E731
+    e_gud = lambda w, s, d: embed_clap_gud(w, s, d, ch)                             # noqa: E731
+    e_pann = lambda w, s, d: embed_pann(w, s, d, ch)                                # noqa: E731
 
     processed = skipped = 0
     t0 = time.time()
@@ -313,7 +329,8 @@ def run(cfg: DictConfig) -> None:
             if not args.skip_cdpam and not args.sdr_only:
                 try:
                     append_csv(parts_dir / f"cdpam.{rank}.csv", CSV_SCHEMA["cdpam"],
-                               {"file": stem, "cdpam": cdpam_score(wav_ref, pred, sr, device=device)})
+                               {"file": stem, "cdpam": cdpam_score(wav_ref, pred, sr, device=device,
+                                                                   channel=ch)})
                 except Exception as e:
                     warn(f"CDPAM {stem}: {e}", prefix="CDPAM")
 
@@ -322,28 +339,28 @@ def run(cfg: DictConfig) -> None:
                 try:
                     for ml, csv_name, emb_name in ((clap_music_ml, "clap_music", CLAP_MUSIC_NAME),
                                                    (clap_audio_ml, "clap_audio", CLAP_AUDIO_NAME)):
-                        target = reference(ml, embed_clap, wav_ref, stem, emb_name)
-                        p_emb = embed_clap(ml, pred, sr, device)
+                        target = reference(ml, e_clap, wav_ref, stem, emb_name)
+                        p_emb = e_clap(ml, pred, sr, device)
                         if target is not None:
                             append_csv(parts_dir / f"{csv_name}.{rank}.csv", CSV_SCHEMA[csv_name],
                                        {"file": stem, "cosine": float(cosine_sim(target.mean(0), p_emb.mean(0)))})
                     # FAD sources; PANN is written last, after every other artefact of the file.
                     if args.protocol == "fma":
-                        reference(mert_ml, embed_mert_framewise, wav_ref, stem, MERT_NAME)
+                        reference(mert_ml, e_mert, wav_ref, stem, MERT_NAME)
                     atomic_save_npy(pred_root / MERT_NAME / f"{stem}.npy",
-                                    embed_mert_framewise(mert_ml, pred, sr, device).astype(np.float16))
+                                    e_mert(mert_ml, pred, sr, device).astype(np.float16))
                     # LAION-CLAP embeds a random 10 s crop of longer audio (np.random): reference and
                     # prediction draw their crops from separate seeds, whether or not the reference is cached.
                     if args.protocol == "fma":
                         np.random.seed(seed % 2**32)
-                        reference(None, lambda ml, w, s, d: embed_clap_gud(w, s, d), wav_ref, stem, CLAP_GUD_NAME)
+                        reference(None, lambda ml, w, s, d: e_gud(w, s, d), wav_ref, stem, CLAP_GUD_NAME)
                     np.random.seed((seed + 1) % 2**32)
                     atomic_save_npy(pred_root / CLAP_GUD_NAME / f"{stem}.npy",
-                                    embed_clap_gud(pred, sr, device).astype(np.float16))
+                                    e_gud(pred, sr, device).astype(np.float16))
                     if args.protocol == "fma":
-                        reference(None, lambda ml, w, s, d: embed_pann(w, s, d), wav_ref, stem, PANN_NAME)
+                        reference(None, lambda ml, w, s, d: e_pann(w, s, d), wav_ref, stem, PANN_NAME)
                     atomic_save_npy(pred_root / PANN_NAME / f"{stem}.npy",
-                                    embed_pann(pred, sr, device).astype(np.float16))
+                                    e_pann(pred, sr, device).astype(np.float16))
                 except Exception as e:
                     warn(f"Embedding error {stem}: {e} — the file will be retried on resume", prefix="EMBED")
                     complete = False

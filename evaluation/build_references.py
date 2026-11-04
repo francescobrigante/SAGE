@@ -13,6 +13,7 @@
 #   embeddings/clap-laion-audio-gud/{stem}.npy  (1, 512)         → FAD-CLAP
 #   embeddings/pann-cnn14-16k/{stem}.npy        (1, 2048)        → FAD-PANN
 #   stats_ours/<embedder>/{mu,cov}.npy          Fréchet reference statistics of the three FADs
+# With channel=side the embedders read (L-R)/2 and every folder above is <embedder>-side.
 #
 # The embeddings come from the same functions the evaluator applies to the
 # reconstructions, so references and predictions live in the same space.
@@ -31,7 +32,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from evaluation.common import (CLAP_AUDIO_NAME, CLAP_GUD_NAME, CLAP_MUSIC_NAME, MERT_NAME, AudioDataset,
-                               atomic_save_npy, collect_clip_files, file_seed, first_item, seed_everything,
+                               atomic_save_npy, channel_suffix, collect_clip_files, file_seed, first_item, seed_everything,
                                set_metric_weights, silence_output)
 from evaluation.metrics.clap import embed_clap, embed_clap_gud
 from evaluation.metrics.fad import PANN_NAME, compute_incremental_stats, embed_mert_framewise, embed_pann, get_pann_model
@@ -41,8 +42,8 @@ EMBEDDERS = (CLAP_AUDIO_NAME, CLAP_MUSIC_NAME, MERT_NAME, CLAP_GUD_NAME, PANN_NA
 STATS_EMBEDDERS = (MERT_NAME, CLAP_GUD_NAME, PANN_NAME)          # the three FADs
 
 
-def _write_stats(emb_root: Path, stats_root: Path) -> None:
-    for name in STATS_EMBEDDERS:
+def _write_stats(emb_root: Path, stats_root: Path, suffix: str = "") -> None:
+    for name in (n + suffix for n in STATS_EMBEDDERS):
         npys = sorted((emb_root / name).glob("*.npy"))
         mu, cov = compute_incremental_stats(npys) if npys else (None, None)
         if mu is None:
@@ -61,6 +62,11 @@ def run(cfg: DictConfig) -> None:
                          "(the fma protocol caches its targets during the evaluation)")
     if not cfg.dataset.data_dir:
         raise SystemExit(f"dataset={cfg.dataset.name}: its data folder is not set (configs/paths)")
+    try:
+        suffix = channel_suffix(cfg.channel)
+    except ValueError as e:
+        raise SystemExit(f"channel={cfg.channel}: {e}")
+    ch = cfg.channel
     set_metric_weights(cfg.paths)
     data_dir = Path(cfg.dataset.data_dir).expanduser().resolve()
     emb_root = data_dir / "embeddings"
@@ -71,7 +77,7 @@ def run(cfg: DictConfig) -> None:
     if not files:
         raise SystemExit(f"No WAV files found in {data_dir}")
     if cfg.resume:
-        files = [f for f in files if not all((emb_root / n / f"{f.stem}.npy").exists() for n in EMBEDDERS)]
+        files = [f for f in files if not all((emb_root / (n + suffix) / f"{f.stem}.npy").exists() for n in EMBEDDERS)]
     info(f"{len(files)} files to embed.", prefix="REFS")
 
     from fadtk.model_loader import CLAPLaionModel, MERTModel
@@ -83,11 +89,11 @@ def run(cfg: DictConfig) -> None:
         ml.model.to(device)
     get_pann_model(device)                                        # fail fast on a missing checkpoint
     embedders = {                                                 # name → wav [C, T] → (N, D)
-        CLAP_AUDIO_NAME: lambda wav: embed_clap(clap_audio, wav, sr, device),
-        CLAP_MUSIC_NAME: lambda wav: embed_clap(clap_music, wav, sr, device),
-        MERT_NAME:       lambda wav: embed_mert_framewise(mert, wav, sr, device),
-        CLAP_GUD_NAME:   lambda wav: embed_clap_gud(wav, sr, device),
-        PANN_NAME:       lambda wav: embed_pann(wav, sr, device),
+        CLAP_AUDIO_NAME + suffix: lambda wav: embed_clap(clap_audio, wav, sr, device, ch),
+        CLAP_MUSIC_NAME + suffix: lambda wav: embed_clap(clap_music, wav, sr, device, ch),
+        MERT_NAME + suffix:       lambda wav: embed_mert_framewise(mert, wav, sr, device, ch),
+        CLAP_GUD_NAME + suffix:   lambda wav: embed_clap_gud(wav, sr, device, ch),
+        PANN_NAME + suffix:       lambda wav: embed_pann(wav, sr, device, ch),
     }
     ok("Embedding models ready.", prefix="REFS")
 
@@ -118,7 +124,7 @@ def run(cfg: DictConfig) -> None:
                 info(f"{processed}/{len(files)} ({time.time() - t0:.0f}s)", prefix="REFS")
     ok(f"Embeddings done — processed: {processed}  skipped: {skipped}", prefix="REFS")
 
-    _write_stats(emb_root, data_dir / "stats_ours")
+    _write_stats(emb_root, data_dir / "stats_ours", suffix)
     ok(f"References ready under {data_dir}", prefix="REFS")
 
 
