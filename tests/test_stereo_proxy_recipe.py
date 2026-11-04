@@ -108,3 +108,14 @@ def test_arm_builds_its_discriminator(arm):
     cfg = _compose(f"+experiment=stereo_proxy_{arm}")
     disc_cfg = cfg["trainer"]["loss_config"]["discriminator"]["config"]
     WavTokenizerGANLoss(channels=2, sample_rate=44100, **disc_cfg)       # as LossManager builds it
+
+
+def test_a3_fm_is_a3_with_the_feature_matching_weight_1():
+    """A3+FM changes nothing of A3 but the run name and the feature-matching weight (0.2 -> 1.0)."""
+    a3 = _flatten(_compose("+experiment=stereo_proxy_a3"))
+    fm = _flatten(_compose("+experiment=stereo_proxy_a3_fm"))
+    weight = "trainer.loss_config.discriminator.weights.feature_matching"
+    changed = {k for k in fm.keys() | a3.keys() if fm.get(k) != a3.get(k)}
+    assert changed == {"trainer.wandb.name", weight}, sorted(changed)
+    assert (a3[weight], fm[weight]) == (0.2, 1.0)
+    assert fm["trainer.wandb.name"] == "stereo_proxy_a3_fm"
