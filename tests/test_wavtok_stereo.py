@@ -102,11 +102,13 @@ GRAD_CASES = json.loads(SIGNATURE.read_text())["grad_cases"]
 @pytest.mark.parametrize("case", GRAD_CASES, ids=[c["name"] for c in GRAD_CASES])
 def test_defaults_give_main_generator_gradient_bit_for_bit(case):
     """Same graph order as main: the gradient reaching the generator is equal bit for bit, and its
-    float64 sums match those computed with main's code (tests/data, make_disc_signature.py)."""
+    float64 sums match those computed with main's code (tests/data, make_disc_signature.py) up to the
+    float32 rounding of the CPU kernels: the signed sum cancels, so its tolerance is relative to
+    sum(|g|) (AVX2 vs AVX512 kernels: 4e-7 of it)."""
     grad, losses = _grad_case(case)
     grad_main_order, _ = _grad_case(case, forward=_main_order_forward)
     assert torch.equal(grad, grad_main_order)
-    assert float(grad.double().sum()) == pytest.approx(case["grad_sum"], rel=1e-5, abs=1e-9)
+    assert float(grad.double().sum()) == pytest.approx(case["grad_sum"], abs=1e-5 * case["grad_abs_sum"])
     assert float(grad.double().abs().sum()) == pytest.approx(case["grad_abs_sum"], rel=1e-5)
     assert losses == pytest.approx(case["loss"], rel=1e-5)
 
