@@ -1,0 +1,48 @@
+# @package _global_
+# =============================================================================
+# Stereo-discriminator proxy, decoder fine-tune: the phase-2 recipe (decoder_ft.yaml) at the scale
+# of the proxy, from a proxy run of arm A3+FM (stereo_proxy_a3_fm).
+#
+#   python train.py +experiment=stereo_proxy_ft init_from=<A3+FM proxy checkpoint> \
+#       trainer.trainer.num_gpus=2
+#
+# init_from is mandatory (`init_from=`, not `+init_from=`: the key exists). As in decoder_ft: the EMA
+# autoencoder of the checkpoint (same model, swin_real_swiglu_xsa), encoder frozen, KL and semantic
+# terms off, a zero-initialised post-net, and a re-initialised critic. Data and global batch 16 are
+# those of stereo_proxy (FMA-medium), and the critic and its loss weights those of
+# stereo_proxy_a3_fm. 30 epochs (~37k batches, ~19k generator updates).
+# tests/test_stereo_proxy_recipe.py checks these keys.
+# =============================================================================
+defaults:
+  - decoder_ft
+  - override /data: fma
+  - _self_
+
+init_from: ???                        # the A3+FM proxy checkpoint to fine-tune
+
+data:
+  train_dataloader:
+    batch_size: 16                    # global batch of the proxy
+  eval_dataloader:
+    batch_size: 16
+
+trainer:
+  wandb:
+    name: stereo_proxy_ft
+  trainer:
+    epochs: 30
+    save_every_n_epochs: 5            # epoch_004 ... epoch_029
+    check_val_every_n_epoch: 1
+    critic_diag_every_n_epochs: 5     # read-only diagnostics, as in stereo_proxy
+    adv_grad_every: 500
+  loss_config:
+    discriminator:
+      config:                         # A3: shared DAC gain, every branch joint on [L, R, M, S]
+        preprocess_gain: shared
+        mpd_stereo: lrms
+        mrd_stereo: lrms
+        dac_stereo: lrms
+        fused_bias_act: false         # joint critics: the Triton kernel is -2.1 % it/s here (CPU-bound forward)
+        fused_bias_grad: false
+      weights:
+        feature_matching: 1.0         # A3+FM (adversarial 0.1, from decoder_ft)

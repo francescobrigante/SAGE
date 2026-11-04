@@ -4,7 +4,7 @@
 # critic_fast_fused + loop_fast, key for key (tests/test_disc_speed.py checks it). Written out instead of
 # including those two files: a file merged twice in one composition does not apply its new subtrees
 # again (Hydra 1.3), so "+speedup=[legacy,critic_fast_fused]" on a recipe would silently stay legacy.
-# The joint-critic arms (stereo_proxy_a2, _a3) turn the fused keys off again.
+# The joint-critic arms (stereo_proxy_a3 and its variants) turn the fused keys off again.
 # =============================================================================
 trainer:
   trainer:

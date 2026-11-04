@@ -81,18 +81,13 @@ def test_proxy_keeps_the_paper_discriminator(proxy):
     assert proxy[disc + "weights.feature_matching"] == 0.2
 
 
-# ── Arms A1-A4: only the discriminator keys of each arm differ from C0 ───────
+# ── Arms A1, A3: only the discriminator keys of each arm differ from C0 ──────
 
 DISC = "trainer.loss_config.discriminator.config."
 ARMS = {
     "a1": {"preprocess_gain": "shared"},
-    "a2": {"preprocess_gain": "shared", "mpd_stereo": "lr", "mrd_stereo": "lrms", "dac_stereo": "lr",
-           "fused_bias_act": False, "fused_bias_grad": False},     # joint critics: no Triton bias + LeakyReLU
     "a3": {"preprocess_gain": "shared", "mpd_stereo": "lrms", "mrd_stereo": "lrms", "dac_stereo": "lrms",
-           "fused_bias_act": False, "fused_bias_grad": False},
-    "a4": {"preprocess_gain": "shared", "resolutions": [[2048, 512, 2048], [4096, 1024, 4096], [1024, 256, 1024]],
-           "fft_sizes": [4096, 2048, 1024],
-           "dac_bands": [0.0, 0.011337868, 0.045351474, 0.181405896, 0.453514739, 1.0]},
+           "fused_bias_act": False, "fused_bias_grad": False},     # joint critics: no Triton bias + LeakyReLU
 }
 
 
@@ -115,10 +110,75 @@ def test_arm_builds_its_discriminator(arm):
     WavTokenizerGANLoss(channels=2, sample_rate=44100, **disc_cfg)       # as LossManager builds it
 
 
-def test_a4_bands_hold_enough_bins_for_every_window():
-    """Each DAC band must hold at least 4 STFT bins at every window length (512 would give 2 below 250 Hz)."""
-    edges = ARMS["a4"]["dac_bands"]
-    for n_fft in ARMS["a4"]["fft_sizes"]:
-        n = n_fft // 2 + 1
-        bins = [int(hi * n) - int(lo * n) for lo, hi in zip(edges[:-1], edges[1:])]
-        assert min(bins) >= 4, (n_fft, bins)
+def test_a3_fm_is_a3_with_the_feature_matching_weight_1():
+    """A3+FM changes nothing of A3 but the run name and the feature-matching weight (0.2 -> 1.0)."""
+    a3 = _flatten(_compose("+experiment=stereo_proxy_a3"))
+    fm = _flatten(_compose("+experiment=stereo_proxy_a3_fm"))
+    weight = "trainer.loss_config.discriminator.weights.feature_matching"
+    changed = {k for k in fm.keys() | a3.keys() if fm.get(k) != a3.get(k)}
+    assert changed == {"trainer.wandb.name", weight}, sorted(changed)
+    assert (a3[weight], fm[weight]) == (0.2, 1.0)
+    assert fm["trainer.wandb.name"] == "stereo_proxy_a3_fm"
+
+
+# ── Decoder fine-tune on the proxy: decoder_ft with the data of C0 and the critic of A3+FM ──
+
+FT_KEYS = {
+    "init_from": "???",
+    "trainer.wandb.name": "stereo_proxy_ft",
+    "trainer.trainer.epochs": 30,
+    "trainer.trainer.save_every_n_epochs": 5,
+    "trainer.trainer.check_val_every_n_epoch": 1,
+    "trainer.trainer.critic_diag_every_n_epochs": 5,
+    "trainer.trainer.adv_grad_every": 500,
+    **{DISC + k: v for k, v in ARMS["a3"].items()},
+    "trainer.loss_config.discriminator.weights.feature_matching": 1.0,
+}
+
+
+@pytest.fixture(scope="module")
+def proxy_ft():
+    return _compose("+experiment=stereo_proxy_ft")
+
+
+def test_ft_differs_from_decoder_ft_only_in_the_proxy_keys(proxy_ft):
+    ft, ref = _flatten(proxy_ft), _flatten(_compose("+experiment=decoder_ft"))
+    changed = {k for k in ft.keys() | ref.keys() if ft.get(k) != ref.get(k) and not k.startswith("data.")}
+    assert changed == set(FT_KEYS), sorted(changed ^ set(FT_KEYS))
+    for k, v in FT_KEYS.items():
+        assert ft[k] == v, k
+
+
+def test_ft_init_from_is_mandatory():
+    import train
+    from omegaconf.errors import MissingMandatoryValue
+    with initialize_config_dir(config_dir=str(CONFIG_DIR), version_base=None):
+        cfg = compose(config_name="main", overrides=["+experiment=stereo_proxy_ft"])
+        given = compose(config_name="main", overrides=["+experiment=stereo_proxy_ft", "init_from=/runs/a3_fm.ckpt"])
+    with pytest.raises(MissingMandatoryValue):
+        train._init_from(cfg)
+    assert train._init_from(given) == "/runs/a3_fm.ckpt"
+    assert given.init_from_ema is True and given.init_from_disc is False   # EMA in, critic re-initialised
+
+
+def test_ft_data_and_model_are_those_of_the_proxy(proxy_ft):
+    proxy = _compose("+experiment=stereo_proxy")
+    assert proxy_ft["data"] == proxy["data"]                                 # FMA-medium, global batch 16
+    model, model_proxy = proxy_ft["models"]["model"], proxy["models"]["model"]
+    assert model["decoder"]["use_postnet"] is True                           # the only new module, zero-init
+    without_postnet = lambda m: {**m, "decoder": {**m["decoder"], "use_postnet": None}}   # noqa: E731
+    assert without_postnet(model) == without_postnet(model_proxy)            # the proxy checkpoint loads
+
+
+def test_ft_critic_and_weights_are_those_of_a3_fm(proxy_ft):
+    a3_fm = _compose("+experiment=stereo_proxy_a3_fm")
+    disc, disc_fm = (c["trainer"]["loss_config"]["discriminator"] for c in (proxy_ft, a3_fm))
+    assert disc == disc_fm
+    assert (disc["weights"]["adversarial"], disc["weights"]["feature_matching"]) == (0.1, 1.0)
+
+
+def test_ft_trains_only_the_decoder(proxy_ft):
+    t = proxy_ft["trainer"]
+    assert t["trainer"]["freeze_encoder"] is True
+    assert t["loss_config"]["bottleneck"]["weights"]["kl"] == 0.0
+    assert "semantic_distill" not in t["loss_config"]

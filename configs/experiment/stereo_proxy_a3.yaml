@@ -1,8 +1,8 @@
 # @package _global_
 # =============================================================================
 # Stereo-discriminator proxy, arm A3 = A1 + every critic joint with M, S given to all:
-# MPD on [L, R, M, S]; magnitude MRD as A2; DAC complex MRD on Re/Im of [L, R, M, S].
-# For MPD and DAC, M and S are linear in L, R: A3 - A2 tests conditioning, not information.
+# MPD on [L, R, M, S]; magnitude MRD on [|L|, |R|, |M|, |S|]; DAC complex MRD on Re/Im of [L, R, M, S].
+# fold_lrms has no effect here (no branch folds). Differs from C0 only in the keys below.
 # =============================================================================
 defaults:
   - stereo_proxy

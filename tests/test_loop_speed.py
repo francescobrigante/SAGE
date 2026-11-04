@@ -38,7 +38,7 @@ def test_trainer_defaults_are_todays_loop():
     assert t.ddp_broadcast_buffers is True
 
 
-@pytest.mark.parametrize("arm", ["stereo_proxy", "stereo_proxy_a2", "pretrain"])
+@pytest.mark.parametrize("arm", ["stereo_proxy", "stereo_proxy_a3", "pretrain"])
 def test_loop_fast_changes_only_loop_keys(arm):
     from hydra import compose, initialize_config_dir
     from omegaconf import OmegaConf

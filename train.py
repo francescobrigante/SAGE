@@ -143,6 +143,13 @@ class TableOnlyModelSummary(pl.Callback):
             console.print(summary_str)
 
 
+def _init_from(cfg: DictConfig):
+    """The ``init_from`` checkpoint of a fine-tune, or None. A recipe that declares it mandatory
+    (``init_from: ???``, e.g. stereo_proxy_ft) raises MissingMandatoryValue until it is set, instead of
+    silently training from scratch (OmegaConf.select alone returns the default for a ``???`` value)."""
+    return OmegaConf.select(cfg, "init_from", default=None, throw_on_missing=True)
+
+
 def _load_autoencoder_weights(wrapper, ckpt_file: str, use_ema: bool = True) -> None:
     """Load ONLY the autoencoder weights from a checkpoint into the wrapper.
 
@@ -253,12 +260,13 @@ def main(cfg: DictConfig):
     #    A resumed run continues in its own folder.
     run_root = Path(get_original_cwd()) / "runs" / run_name
     ckpt_path = OmegaConf.select(cfg, "ckpt_path", default=None)
+    init_from = _init_from(cfg)                       # a mandatory init_from (???) fails here, before the run folder
     requeued = is_slurm_requeue()
     if not ckpt_path and (requeued or bool(OmegaConf.select(cfg, "auto_resume", default=True))):
         found = find_resume_checkpoint(run_root)
         if found is not None:
             if should_auto_resume(found, requeued=requeued, chosen_name=bool(user_run_name),
-                                  init_from=OmegaConf.select(cfg, "init_from", default=None)):
+                                  init_from=init_from):
                 ckpt_path = str(found)
                 ok(f"auto_resume: continuing {found} (auto_resume=false or another trainer.wandb.name "
                    "starts over)", prefix="TRAINER")
@@ -603,7 +611,6 @@ def main(cfg: DictConfig):
     if is_bf16 and has_complex_params:
         warn("bf16 + complex detected: convolutions will use torch.complex64 (complex-bfloat16 not supported).", prefix="TRAINER")
 
-    init_from = OmegaConf.select(cfg, "init_from", default=None)
     init_from_ema = bool(OmegaConf.select(cfg, "init_from_ema", default=True))
     init_from_disc = bool(OmegaConf.select(cfg, "init_from_disc", default=False))
     if ckpt_path:

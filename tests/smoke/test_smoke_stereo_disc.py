@@ -27,14 +27,9 @@ def _weights(ckpt):
     return {k: v for k, v in sd.items() if k.startswith(("engine.autoencoder.", "engine.loss_manager.discriminator."))}
 
 
-# A4 keeps its own scales (only the MPD is cut to one period); the others use the one-per-branch critic.
-SCALES = {"a4": ["++trainer.loss_config.discriminator.config.periods=[2]"]}
-
-
-@pytest.mark.parametrize("arm", ["c0", "a1", "a2", "a3", "a4"])
+@pytest.mark.parametrize("arm", ["c0", "a1", "a3"])
 def test_arm_trains_with_the_diagnostics_on(arm, audio_dir, tmp_path):
-    disc = SCALES.get(arm, SMOKE_DISC)
-    ckpt = run_training(_arm(arm) + GATE_OPEN + TINY_MODEL + disc + _data_overrides(audio_dir) + RUN + DIAG_ON,
+    ckpt = run_training(_arm(arm) + GATE_OPEN + TINY_MODEL + SMOKE_DISC + _data_overrides(audio_dir) + RUN + DIAG_ON,
                         tmp_path)
     w = _weights(ckpt)
     assert any(k.startswith("engine.loss_manager.discriminator.") for k in w)
@@ -57,7 +52,7 @@ def test_diagnostics_do_not_change_what_is_trained(audio_dir, tmp_path, monkeypa
     calls = {"adversarial_gradient_share": 0, "critic_stereo_report": 0}
     _count_calls(monkeypatch, engine, "adversarial_gradient_share", calls)
     _count_calls(monkeypatch, diag, "critic_stereo_report", calls)
-    base = _arm("a2") + GATE_OPEN + TINY_MODEL + SMOKE_DISC + _data_overrides(audio_dir) + RUN
+    base = _arm("a3") + GATE_OPEN + TINY_MODEL + SMOKE_DISC + _data_overrides(audio_dir) + RUN
     (tmp_path / "on").mkdir(), (tmp_path / "off").mkdir()
     on = _weights(run_training(base + DIAG_ON, tmp_path / "on"))
     ran = dict(calls)

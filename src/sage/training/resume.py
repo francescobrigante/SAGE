@@ -44,8 +44,9 @@ def should_auto_resume(found: Path, *, requeued: bool, chosen_name: bool, init_f
     if init_from:
         raise SystemExit(
             f"This run name already has a checkpoint ({found}), and +init_from={init_from} asks for a "
-            "new start. To continue the run, drop +init_from; to start a new run from init_from, set "
-            "another trainer.wandb.name or auto_resume=false.")
+            "new start. To continue the run, drop +init_from (init_from=null if the recipe declares it, "
+            "e.g. stereo_proxy_ft); to start a new run from init_from, set another trainer.wandb.name or "
+            "auto_resume=false.")
     return True
 
 

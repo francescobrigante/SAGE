@@ -14,7 +14,7 @@ from sage.nn.discriminators.wavtokenizer import WavTokenizerGANLoss
 SMALL = dict(channels=2, sample_rate=44100, periods=[2, 3], resolutions=[(512, 128, 512)], fft_sizes=[512],
              preprocess=True, fold_lrms=True, loss_type="rpgan")
 ARMS = {"C0": {}, "A1": dict(preprocess_gain="shared"),
-        "A2": dict(preprocess_gain="shared", mpd_stereo="lr", mrd_stereo="lrms", dac_stereo="lr")}
+        "A3": dict(preprocess_gain="shared", mpd_stereo="lrms", mrd_stereo="lrms", dac_stereo="lrms")}
 T = 8192
 
 
@@ -92,7 +92,7 @@ def test_callback_reports_on_its_epochs_only(monkeypatch):
     logged = []
     monkeypatch.setattr(diag, "log_metric", lambda logger, key, value: logged.append(key))
     cb = diag.StereoCriticDiagnostics(every_n_epochs=5)
-    module = SimpleNamespace(discriminator=_gan("A2"), device=torch.device("cpu"))
+    module = SimpleNamespace(discriminator=_gan("A3"), device=torch.device("cpu"))
     cb.on_validation_batch_end(None, module, None, (None, _batch()), batch_idx=0)
     for epoch, expect in ((3, False), (4, True)):
         logged.clear()

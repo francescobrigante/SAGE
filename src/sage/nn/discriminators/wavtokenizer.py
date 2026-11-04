@@ -9,7 +9,6 @@ import torch.nn as nn
 from einops import rearrange
 
 from sage.nn.discriminators.types import (
-    BANDS,
     get_hinge_losses,
     get_relativistic_losses,
     get_sigmoid_relgan_losses,
@@ -20,13 +19,13 @@ from sage.nn.discriminators.vocos_legacy import MultiPeriodDiscriminator, MultiR
 
 
 # Stereo layout of each branch: "fold" = one channel per batch row (the paper's critic, with
-# fold_lrms adding the M, S rows); "lr" / "lrms" = the channels enter the first layer together.
+# fold_lrms adding the M, S rows); "lrms" = L, R, M, S enter the first layer together.
 STEREO_MODES = {
-    "mpd_stereo": ("fold", "lr", "lrms"),
-    "mrd_stereo": ("fold", "lrms"),       # |M|, |S| add information only after the magnitude
-    "dac_stereo": ("fold", "lr", "lrms"),
+    "mpd_stereo": ("fold", "lrms"),
+    "mrd_stereo": ("fold", "lrms"),
+    "dac_stereo": ("fold", "lrms"),
 }
-JOINT_CHANNELS = {"lr": 2, "lrms": 4}
+JOINT_CHANNELS = {"lrms": 4}
 PREPROCESS_GAINS = ("per_channel", "shared")
 
 
@@ -66,8 +65,8 @@ class WavTokenizerDiscriminator(nn.Module):
 
     Inputs can be mono (B, T) or stereo/multi-channel (B, C, T). By default every branch
     folds the channels into the batch (with fold_lrms, the rows are L, R, M, S): no critic
-    sees L and R together. The *_stereo keys make a branch joint instead: [L, R] ("lr") or
-    [L, R, M, S] ("lrms", M, S = (L ± R) / 2) enter its first layer together.
+    sees L and R together. The *_stereo keys make a branch joint instead: [L, R, M, S]
+    ("lrms", M, S = (L ± R) / 2) enter its first layer together.
 
     Args:
         channels: audio channels of the input.
@@ -81,7 +80,6 @@ class WavTokenizerDiscriminator(nn.Module):
         preprocess_gain: "per_channel" (DAC original: erases ILD and Side level) or "shared"
             (one gain per stereo example, taken on L and R; M, S derived after it).
         mpd_stereo, mrd_stereo, dac_stereo: layout of each branch (see STEREO_MODES).
-        dac_bands: band edges of the DAC MRDs as fractions of Nyquist (None = BANDS).
         inplace_act: LeakyReLU in place in every branch (exact: same outputs and gradients, about
             half the activation memory kept for the backward).
         channels_last: 2-D convolution weights in channels-last (NHWC) layout, so cuDNN runs the
@@ -110,7 +108,6 @@ class WavTokenizerDiscriminator(nn.Module):
         mpd_stereo: str = "fold",
         mrd_stereo: str = "fold",
         dac_stereo: str = "fold",
-        dac_bands: tp.Optional[list] = None,
         inplace_act: bool = False,
         channels_last: bool = False,
         branch_streams: bool = False,
@@ -158,7 +155,6 @@ class WavTokenizerDiscriminator(nn.Module):
                 periods=[],  # Set to empty to avoid duplicate MPD instances (covered by Vocos MPD)
                 fft_sizes=fft_sizes,
                 sample_rate=sample_rate,
-                bands=BANDS if dac_bands is None else list(dac_bands),
                 preprocess=False,  # applied by dac_input, where the gain can be shared
                 joint=dac_joint,
             )
@@ -201,10 +197,8 @@ class WavTokenizerDiscriminator(nn.Module):
         return x.squeeze(1) if x.shape[1] == 1 else rearrange(x, "b c t -> (b c) t")
 
     @staticmethod
-    def _joint(x: torch.Tensor, mode: str) -> torch.Tensor:
-        """(B, 2, T) → [L, R] or [L, R, M, S] with M, S = (L ± R) / 2."""
-        if mode == "lr":
-            return x                                                          # (B, 2, T)
+    def _joint(x: torch.Tensor) -> torch.Tensor:
+        """(B, 2, T) → [L, R, M, S] with M, S = (L ± R) / 2."""
         left, right = x[:, 0], x[:, 1]
         return torch.stack([left, right, (left + right) / 2, (left - right) / 2], dim=1)   # (B, 4, T)
 
@@ -221,7 +215,7 @@ class WavTokenizerDiscriminator(nn.Module):
         """
         if self.dac_stereo != "fold":
             x = peak_normalize(x, shared=True) if self.preprocess else x      # (B, 2, T)
-            return self._joint(x, self.dac_stereo)                            # (B, 2|4, T)
+            return self._joint(x)                                             # (B, 4, T)
         if self.preprocess and self.preprocess_gain == "shared":
             x = peak_normalize(self._as_channels(x), shared=True)             # one gain per example, on L, R
             folded = None                                                     # M, S are derived after the gain
@@ -247,13 +241,13 @@ class WavTokenizerDiscriminator(nn.Module):
             return d(inp) if calls is None else self._on_stream(d, inp, next(calls))
 
         # Run Vocos MPD
-        x_mpd = x_rows if self.mpd_stereo == "fold" else self._joint(x, self.mpd_stereo)   # (rows, T) | (B, 2|4, T)
+        x_mpd = x_rows if self.mpd_stereo == "fold" else self._joint(x)                    # (rows, T) | (B, 4, T)
         for d in self.vocos_mpd.discriminators:
             _, fmap = run(d, x_mpd)
             fmaps.append(fmap)
 
         # Run Vocos legacy mag-MRD
-        x_mrd = x_rows if self.mrd_stereo == "fold" else self._joint(x, self.mrd_stereo)   # (rows, T) | (B, 4, T)
+        x_mrd = x_rows if self.mrd_stereo == "fold" else self._joint(x)                    # (rows, T) | (B, 4, T)
         for d in self.vocos_mrd.discriminators:
             _, fmap = run(d, x_mrd)
             fmaps.append(fmap)
