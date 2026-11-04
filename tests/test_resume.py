@@ -64,7 +64,7 @@ def test_a_requeue_always_resumes_a_relaunch_only_a_chosen_name():
 
 
 def test_a_new_init_from_never_resumes_silently_over_a_run():
-    with pytest.raises(SystemExit, match="drop \\+init_from.*another trainer.wandb.name or auto_resume=false"):
+    with pytest.raises(SystemExit, match="drop \\+init_from \\(init_from=null.*another trainer.wandb.name or auto_resume=false"):
         should_auto_resume(Path("runs/x/d1/checkpoints/last.ckpt"), requeued=False, chosen_name=True,
                            init_from="other_pretrain.ckpt")
 

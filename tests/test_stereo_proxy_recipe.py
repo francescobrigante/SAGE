@@ -119,3 +119,66 @@ def test_a3_fm_is_a3_with_the_feature_matching_weight_1():
     assert changed == {"trainer.wandb.name", weight}, sorted(changed)
     assert (a3[weight], fm[weight]) == (0.2, 1.0)
     assert fm["trainer.wandb.name"] == "stereo_proxy_a3_fm"
+
+
+# ── Decoder fine-tune on the proxy: decoder_ft with the data of C0 and the critic of A3+FM ──
+
+FT_KEYS = {
+    "init_from": "???",
+    "trainer.wandb.name": "stereo_proxy_ft",
+    "trainer.trainer.epochs": 30,
+    "trainer.trainer.save_every_n_epochs": 5,
+    "trainer.trainer.check_val_every_n_epoch": 1,
+    "trainer.trainer.critic_diag_every_n_epochs": 5,
+    "trainer.trainer.adv_grad_every": 500,
+    **{DISC + k: v for k, v in ARMS["a3"].items()},
+    "trainer.loss_config.discriminator.weights.feature_matching": 1.0,
+}
+
+
+@pytest.fixture(scope="module")
+def proxy_ft():
+    return _compose("+experiment=stereo_proxy_ft")
+
+
+def test_ft_differs_from_decoder_ft_only_in_the_proxy_keys(proxy_ft):
+    ft, ref = _flatten(proxy_ft), _flatten(_compose("+experiment=decoder_ft"))
+    changed = {k for k in ft.keys() | ref.keys() if ft.get(k) != ref.get(k) and not k.startswith("data.")}
+    assert changed == set(FT_KEYS), sorted(changed ^ set(FT_KEYS))
+    for k, v in FT_KEYS.items():
+        assert ft[k] == v, k
+
+
+def test_ft_init_from_is_mandatory():
+    import train
+    from omegaconf.errors import MissingMandatoryValue
+    with initialize_config_dir(config_dir=str(CONFIG_DIR), version_base=None):
+        cfg = compose(config_name="main", overrides=["+experiment=stereo_proxy_ft"])
+        given = compose(config_name="main", overrides=["+experiment=stereo_proxy_ft", "init_from=/runs/a3_fm.ckpt"])
+    with pytest.raises(MissingMandatoryValue):
+        train._init_from(cfg)
+    assert train._init_from(given) == "/runs/a3_fm.ckpt"
+    assert given.init_from_ema is True and given.init_from_disc is False   # EMA in, critic re-initialised
+
+
+def test_ft_data_and_model_are_those_of_the_proxy(proxy_ft):
+    proxy = _compose("+experiment=stereo_proxy")
+    assert proxy_ft["data"] == proxy["data"]                                 # FMA-medium, global batch 16
+    model, model_proxy = proxy_ft["models"]["model"], proxy["models"]["model"]
+    assert model["decoder"]["use_postnet"] is True                           # the only new module, zero-init
+    without_postnet = lambda m: {**m, "decoder": {**m["decoder"], "use_postnet": None}}   # noqa: E731
+    assert without_postnet(model) == without_postnet(model_proxy)            # the proxy checkpoint loads
+
+
+def test_ft_critic_and_weights_are_those_of_a3_fm(proxy_ft):
+    a3_fm = _compose("+experiment=stereo_proxy_a3_fm")
+    disc, disc_fm = (c["trainer"]["loss_config"]["discriminator"] for c in (proxy_ft, a3_fm))
+    assert disc == disc_fm
+    assert (disc["weights"]["adversarial"], disc["weights"]["feature_matching"]) == (0.1, 1.0)
+
+
+def test_ft_trains_only_the_decoder(proxy_ft):
+    t = proxy_ft["trainer"]
+    assert t["trainer"]["freeze_encoder"] is True
+    assert t["loss_config"]["bottleneck"]["weights"]["kl"] == 0.0
+    assert "semantic_distill" not in t["loss_config"]

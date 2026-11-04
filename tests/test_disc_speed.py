@@ -652,7 +652,8 @@ TRAINER_SPEED_KEYS = ("freeze_disc_in_gen_step", "disc_step_loss_only", "ema_for
                       "ddp_gradient_as_bucket_view", "ddp_broadcast_buffers")
 # Recipes with the speed-ups on, and whether they keep the fused keys (fold critics only).
 RECIPES = {"pretrain": True, "decoder_ft": True, "stereo_proxy": True, "stereo_proxy_a1": True,
-           "stereo_proxy_a3": False, "stereo_proxy_a3_fm": False}
+           "stereo_proxy_a3": False, "stereo_proxy_a3_fm": False,
+           "stereo_proxy_ft": False}
 
 
 def _compose(*overrides):
