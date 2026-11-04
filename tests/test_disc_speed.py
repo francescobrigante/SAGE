@@ -34,6 +34,7 @@ ARMS = {
 T = 8192
 CL_RTOL = 1e-5            # channels_last vs default, float32 on CPU
 CL_GRAD_ATOL = 1e-2       # critic weight gradients of either float32 layout vs float64, as one vector
+CL_GEN_ATOL = 1e-3        # generator gradient of either float32 layout vs float64 (median over CL_SEEDS)
 CL_SEEDS = 4              # batches over which the float32 layouts are compared
 
 
@@ -301,14 +302,16 @@ def _cl_errors(arm, seed):
 @pytest.mark.parametrize("arm", list(ARMS))
 def test_channels_last_matches_to_float_rounding(arm):
     """float32, over CL_SEEDS batches, both layouts against the float64 critic. Losses: per value.
-    Generator gradient (what trains SAGE): NHWC no farther than the default layout (median over the
-    batches; on one batch either layout can be the unlucky one, a pre-activation rounding across a
-    LeakyReLU kink). Critic weight gradients: on CPU the NHWC weight-gradient kernels are measurably
-    less accurate (median ~1e-3 vs ~1e-4 of the default, local/disc_speed/cl_seeds.py), so both
-    layouts only get the absolute bound CL_GRAD_ATOL; the GPU (cuDNN) check is in the same script."""
+    Generator gradient (what trains SAGE): both layouts within float32 rounding of the float64 critic,
+    CL_GEN_ATOL on the median over the batches (on one batch either layout can be the unlucky one, a
+    pre-activation rounding across a LeakyReLU kink). Both are 1e-4 .. 4e-4 on AVX512 and AVX2 CPU
+    kernels, but their ratio depends on the CPU (NHWC up to 4x the default on a GitHub runner), so the
+    bound is absolute. Critic weight gradients: on CPU the NHWC weight-gradient kernels are measurably
+    less accurate (median ~1e-3 vs ~1e-4 of the default), so both layouts only get the absolute bound
+    CL_GRAD_ATOL."""
     errs = [_cl_errors(arm, seed) for seed in range(1, CL_SEEDS + 1)]
     med = lambda name, i: sorted(e[name][i] for e in errs)[len(errs) // 2]
-    assert med("nhwc", 0) < 2 * med("default", 0) + 1e-6
+    assert med("default", 0) < CL_GEN_ATOL and med("nhwc", 0) < CL_GEN_ATOL
     assert all(e[name][1] < CL_GRAD_ATOL for e in errs for name in e)
 
 
