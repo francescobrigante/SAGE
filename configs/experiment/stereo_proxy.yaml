@@ -4,13 +4,15 @@
 # legacy stereo proxy (STEREO_N/B/C/D): global batch 16 (8 per GPU on 1 node x 2 GPUs, the same
 # per-GPU batch as the paper), 95 epochs (~118k batches, ~59k generator updates, LR ending at
 # ~88% of the peak with inv_gamma 2e5), a checkpoint every 10 epochs (epoch_089 is the paired
-# evaluation point). Losses and discriminator are those of pretrain.yaml, unchanged; the stereo
-# diagnostics of the critic are on (read-only).
+# evaluation point). Losses are those of pretrain.yaml; the discriminator is pinned to the paper's
+# (v0.2.0): every critic folds L, R, M, S into the batch as mono clips, per-channel DAC gain, feature
+# matching 0.2. The stereo arms (A1, A3, A3+FM) change it from here. The stereo diagnostics of the
+# critic are on (read-only).
 #
 #   python train.py +experiment=stereo_proxy trainer.trainer.num_gpus=2
 #
 # `+experiment=pretrain data=fma` alone would keep pretrain's global batch of 128.
-# tests/test_stereo_proxy_recipe.py checks that only the keys below differ from it.
+# tests/test_stereo_proxy_recipe.py checks that only the keys below differ from it (and the critic).
 # =============================================================================
 defaults:
   - pretrain
@@ -31,3 +33,14 @@ trainer:
     save_every_n_epochs: 10           # epoch_009 ... epoch_089
     critic_diag_every_n_epochs: 5     # read-only diagnostics (sage/training/stereo_diagnostics.py):
     adv_grad_every: 500               # they do not change what the run trains
+  loss_config:
+    discriminator:                    # C0 = the paper's discriminator
+      config:
+        preprocess_gain: per_channel
+        mpd_stereo: fold
+        mrd_stereo: fold
+        dac_stereo: fold
+        fused_bias_act: true          # speedup/recipe.yaml value for the folded critics
+        fused_bias_grad: true
+      weights:
+        feature_matching: 0.2

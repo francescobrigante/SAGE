@@ -2,7 +2,9 @@
 # The stereo-discriminator proxy recipe (configs/experiment/stereo_proxy.yaml) is the pretraining
 # recipe on FMA-medium at the legacy proxy scale: global batch 16, 95 epochs, a checkpoint every
 # 10 epochs. `+experiment=pretrain data=fma` alone composes batch 128 (the recipe overrides the
-# data group's batch), so the proxy needs its own file. Everything else must equal pretraining.
+# data group's batch), so the proxy needs its own file. Everything else must equal pretraining,
+# except the discriminator: C0 pins the paper's (folded mono critics, feature matching 0.2), while
+# pretraining uses the stereo critics of arm A3+FM with the weight chosen by the sweep (10).
 # ===============
 from pathlib import Path
 
@@ -14,15 +16,24 @@ import train  # noqa: F401  (registers the ${mul:} resolver)
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 
-# The only keys the proxy may change with respect to `+experiment=pretrain data=fma`.
+# The only keys the proxy may change with respect to `+experiment=pretrain data=fma`: the scale ...
 PROXY_KEYS = {
     "data.train_dataloader.batch_size": 16,
     "data.eval_dataloader.batch_size": 16,
     "trainer.trainer.epochs": 95,
     "trainer.trainer.save_every_n_epochs": 10,
     "trainer.trainer.critic_diag_every_n_epochs": 5,
-    "trainer.trainer.adv_grad_every": 500,
     "trainer.wandb.name": "stereo_proxy_c0",
+}
+# ... and the discriminator of C0, the paper's: every branch folds L, R, M, S into the batch.
+C0_DISC = {
+    "trainer.loss_config.discriminator.config.preprocess_gain": "per_channel",
+    "trainer.loss_config.discriminator.config.mpd_stereo": "fold",
+    "trainer.loss_config.discriminator.config.mrd_stereo": "fold",
+    "trainer.loss_config.discriminator.config.dac_stereo": "fold",
+    "trainer.loss_config.discriminator.config.fused_bias_act": True,
+    "trainer.loss_config.discriminator.config.fused_bias_grad": True,
+    "trainer.loss_config.discriminator.weights.feature_matching": 0.2,
 }
 
 
@@ -61,14 +72,16 @@ def test_pretrain_with_fma_alone_keeps_the_global_batch_of_128(pretrain_fma):
 def test_proxy_scale(proxy):
     for key, value in PROXY_KEYS.items():
         assert proxy[key] == value, key
+    assert proxy["trainer.trainer.adv_grad_every"] == 500
     assert proxy["data.fma_subset"] == "medium"
     assert proxy["trainer.scheduler.inv_gamma"] == 200000
     assert not proxy.get("data.multi_corpus.enabled", False)
 
 
-def test_proxy_differs_from_pretrain_only_in_the_scale(proxy, pretrain_fma):
+def test_proxy_differs_from_pretrain_only_in_the_scale_and_the_critic(proxy, pretrain_fma):
     changed = {k for k in proxy.keys() | pretrain_fma.keys() if proxy.get(k) != pretrain_fma.get(k)}
-    assert changed == set(PROXY_KEYS), sorted(changed ^ set(PROXY_KEYS))
+    expected = set(PROXY_KEYS) | set(C0_DISC)
+    assert changed == expected, sorted(changed ^ expected)
 
 
 def test_proxy_keeps_the_paper_discriminator(proxy):
@@ -78,7 +91,18 @@ def test_proxy_keeps_the_paper_discriminator(proxy):
     assert proxy[disc + "config.preprocess"] is True
     assert proxy[disc + "config.fold_lrms"] is True
     assert proxy[disc + "weights.adversarial"] == 0.1
-    assert proxy[disc + "weights.feature_matching"] == 0.2
+    for key, value in C0_DISC.items():
+        assert proxy[key] == value, key
+
+
+def test_pretrain_critic_is_the_sweep_winner(pretrain_fma):
+    """Pretraining = arm A3+FM with feature_matching 10 at full scale: same discriminator block."""
+    a3_fm = _flatten(_compose("+experiment=stereo_proxy_a3_fm",
+                              "trainer.loss_config.discriminator.weights.feature_matching=10.0"))
+    disc = "trainer.loss_config.discriminator."
+    keys = {k for k in a3_fm.keys() | pretrain_fma.keys() if k.startswith(disc)}
+    assert {k for k in keys if a3_fm.get(k) != pretrain_fma.get(k)} == set()
+    assert pretrain_fma[disc + "weights.feature_matching"] == 10.0
 
 
 # ── Arms A1, A3: only the discriminator keys of each arm differ from C0 ──────
@@ -121,18 +145,15 @@ def test_a3_fm_is_a3_with_the_feature_matching_weight_1():
     assert fm["trainer.wandb.name"] == "stereo_proxy_a3_fm"
 
 
-# ── Decoder fine-tune on the proxy: decoder_ft with the data of C0 and the critic of A3+FM ──
+# ── Decoder fine-tune on the proxy: decoder_ft (stereo critic, fm 5) with the data of C0 ──
 
 FT_KEYS = {
     "init_from": "???",
     "trainer.wandb.name": "stereo_proxy_ft",
-    "trainer.trainer.epochs": 30,
-    "trainer.trainer.save_every_n_epochs": 5,
+    "trainer.trainer.epochs": 180,
+    "trainer.trainer.save_every_n_epochs": 30,
     "trainer.trainer.check_val_every_n_epoch": 1,
     "trainer.trainer.critic_diag_every_n_epochs": 5,
-    "trainer.trainer.adv_grad_every": 500,
-    **{DISC + k: v for k, v in ARMS["a3"].items()},
-    "trainer.loss_config.discriminator.weights.feature_matching": 1.0,
 }
 
 
@@ -170,11 +191,11 @@ def test_ft_data_and_model_are_those_of_the_proxy(proxy_ft):
     assert without_postnet(model) == without_postnet(model_proxy)            # the proxy checkpoint loads
 
 
-def test_ft_critic_and_weights_are_those_of_a3_fm(proxy_ft):
+def test_ft_critic_is_that_of_a3_with_feature_matching_5(proxy_ft):
     a3_fm = _compose("+experiment=stereo_proxy_a3_fm")
     disc, disc_fm = (c["trainer"]["loss_config"]["discriminator"] for c in (proxy_ft, a3_fm))
-    assert disc == disc_fm
-    assert (disc["weights"]["adversarial"], disc["weights"]["feature_matching"]) == (0.1, 1.0)
+    assert disc["config"] == disc_fm["config"]
+    assert (disc["weights"]["adversarial"], disc["weights"]["feature_matching"]) == (0.1, 5.0)
 
 
 def test_ft_trains_only_the_decoder(proxy_ft):

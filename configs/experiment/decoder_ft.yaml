@@ -9,7 +9,10 @@
 # exactly as pretraining left it. KL and semantic terms are off, a zero-initialised
 # post-net is attached to the decoder, and the discriminator restarts from scratch;
 # learning rate 1e-4, with schedule and warm-up restarted. Only the decoder trains.
-# The released checkpoint is epoch 992 of this phase. Differences from phase 1 are
+# The discriminator is the stereo one of phase 1 (joint critics), with feature matching 5:
+# the fine-tune trains ~2x the generator updates of pretraining against a fresh critic, and 5 is
+# the weight validated for it. The paper fine-tune (folded mono critics, feature matching 0.2) is
+# the one of release v0.2.0, whose epoch 992 is the released checkpoint. Differences from phase 1 are
 # checked by tests/test_recipes.py; everything else is the trainer.yaml default, except the
 # exact speed-ups of configs/speedup/recipe.yaml (critic_fast_fused + loop_fast): same losses and
 # updates up to float rounding; `+speedup=legacy` runs the training loop of the paper run.
@@ -42,6 +45,7 @@ trainer:
     warmup_steps: 0
     save_every_n_epochs: 25
     check_val_every_n_epoch: 2
+    adv_grad_every: 500               # read-only: adversarial share of the generator gradient (diag/*)
     strategy: ddp_find_unused_parameters_true
     precision: "32"
     compile: false
@@ -78,7 +82,13 @@ trainer:
         periods: [2, 3, 5, 7, 11]
         fft_sizes: [2048, 1024, 512]
         preprocess: true
-        fold_lrms: true
+        fold_lrms: true               # no effect with joint critics
+        preprocess_gain: shared       # stereo critics, as in pretrain.yaml
+        mpd_stereo: lrms
+        mrd_stereo: lrms
+        dac_stereo: lrms
+        fused_bias_act: false
+        fused_bias_grad: false
       weights:
         adversarial: 0.1
-        feature_matching: 0.2
+        feature_matching: 5.0

@@ -1,14 +1,17 @@
 # @package _global_
 # =============================================================================
-# SAGE — phase 1: pretraining (paper Section 2.3, Table 6).
+# SAGE — phase 1: pretraining (paper Section 2.3, Table 6, with the stereo discriminator).
 #
 #   python train.py +experiment=pretrain trainer.trainer.num_gpus=4 ++trainer.trainer.num_nodes=4
 #
 # Trains the full system from scratch on the multi-corpus dataset: reconstruction
 # (L_STFT, L_mel, L_SD), KL, CLAP semantic distillation under the detached warm-up,
-# and the WavTokenizer discriminator (RpGAN) on L, R, M, S. Every value below is the
-# one used for the released checkpoint; tests/test_recipes.py checks them against
-# Table 6. The batch size is GLOBAL: it is split over all devices (paper: 16 A100,
+# and the WavTokenizer discriminator (RpGAN). Every value is the one of the paper (Table 6) except
+# the discriminator, which is stereo: each critic sees L, R, M and S of an example together
+# (joint critics, one DAC peak gain per example) instead of each channel as a separate mono clip,
+# and the feature-matching weight is 10 instead of 0.2. tests/test_recipes.py checks the values.
+# The paper recipe (folded mono critics, feature matching 0.2) is the one of release v0.2.0.
+# The batch size is GLOBAL: it is split over all devices (16 A100,
 # 4 nodes x 4, 8 segments per GPU), so the recipe runs unchanged on other hardware.
 # The exact speed-ups of configs/speedup/recipe.yaml are on (critic_fast_fused + loop_fast): same
 # losses and updates up to float rounding; `+speedup=legacy` runs the training loop of the paper run.
@@ -31,6 +34,7 @@ trainer:
     epochs: 500                       # 956 batches/epoch -> ~478k batches, ~239k generator updates
     save_every_n_epochs: 20
     check_val_every_n_epoch: 1
+    adv_grad_every: 500               # read-only: adversarial share of the generator gradient (diag/*)
     strategy: ddp_find_unused_parameters_true
     precision: "32"
     compile: false
@@ -63,7 +67,7 @@ trainer:
     total_iters: 1
     interval: step
 
-  # ── Loss, equation 2: (STFT, mel, SD, KL, sem, adv, fm) = (1, 0.5, 1, 1e-4, 1, 0.1, 0.2)
+  # ── Loss, equation 2: (STFT, mel, SD, KL, sem, adv, fm) = (1, 0.5, 1, 1e-4, 1, 0.1, 10)
   loss_config:
     spectral:
       weights:
@@ -89,14 +93,20 @@ trainer:
       # first 8,334 updates (= 25,000 optimizer steps of the paper run, which counted the
       # generator, projection-head and discriminator steps together; Table 6: ~8.3k).
       detach_warmup_steps: 8334
-    discriminator:                    # WavTokenizer composite discriminator, RpGAN
+    discriminator:                    # WavTokenizer composite discriminator, RpGAN, stereo critics
       type: wavtokenizer
       config:
         loss_type: rpgan
         periods: [2, 3, 5, 7, 11]
         fft_sizes: [2048, 1024, 512]
         preprocess: true
-        fold_lrms: true               # L, R, M, S folded into the batch
+        fold_lrms: true               # no effect with joint critics (no branch folds the channels)
+        preprocess_gain: shared       # one DAC peak gain per example on L, R: keeps ILD and Side level
+        mpd_stereo: lrms              # MPD on [L, R, M, S]
+        mrd_stereo: lrms              # magnitude MRD on [|L|, |R|, |M|, |S|]
+        dac_stereo: lrms              # DAC complex MRD on Re/Im of [L, R, M, S]
+        fused_bias_act: false         # joint critics: the Triton kernel is slower here (-2.1 % it/s)
+        fused_bias_grad: false
       weights:
         adversarial: 0.1              # L_adv
-        feature_matching: 0.2         # L_fm
+        feature_matching: 10.0        # L_fm: the paired term that carries the stereo image

@@ -4,6 +4,8 @@
 # With joint critics L_fm is the only paired adversarial term: it matches the critic's features of the
 # reconstruction to those of its own reference, and in A3 those features mix |L| and |R|, i.e. they carry
 # the pan that the unconditional adversarial term cannot ask for (Stable Audio Open's VAE uses 5.0).
+# The sweep on this arm (feature_matching=2, 5, 10, 20, 40 and adversarial=0.05, 0.2 as CLI overrides)
+# chose feature_matching 10 with adversarial 0.1: that is the discriminator of pretrain.yaml.
 # =============================================================================
 defaults:
   - stereo_proxy_a3
