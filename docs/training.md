@@ -3,9 +3,11 @@
 This guide covers data setup, the two training phases, checkpoint handling, and
 SLURM execution. Run all commands from the repository root.
 
-The paper recipes live in [configs/experiment/](../configs/experiment/) and
-correspond to Section 2.3 and Table 6. For evaluation after training, see
-[Paper runs](paper_runs.md).
+The recipes live in [configs/experiment/](../configs/experiment/) and follow
+Section 2.3 and Table 6 of the paper, with a stereo discriminator (see
+[Discriminator](#discriminator)). The exact recipes of the paper are those of
+release [v0.2.0](https://github.com/francescobrigante/SAGE/tree/v0.2.0). For
+evaluation after training, see [Paper runs](paper_runs.md).
 
 ## Environment
 
@@ -92,6 +94,58 @@ python train.py +experiment=decoder_ft +init_from="$PHASE1_CKPT" \
 The default run name is `sage_decoder_ft`. `+init_from` initializes model weights
 for a new phase; it does not restore optimizer state or the training step.
 Use a full training checkpoint here, rather than the exported inference checkpoint.
+
+## Discriminator
+
+Both recipes train against the WavTokenizer composite discriminator (multi-period,
+multi-resolution and DAC complex multi-resolution critics, RpGAN loss), made stereo:
+each critic sees the left, right, mid and side signals of an example together,
+instead of each channel as a separate mono clip, and the DAC preprocessing applies one
+peak gain per example, so inter-channel level differences survive it. The feature-matching
+term compares the critic's features of the reconstruction with those of its own
+reference, so it carries the stereo image; its weight is 10 in pretraining and 5 in the
+decoder fine-tuning (adversarial weight 0.1 in both).
+
+| Key (`trainer.loss_config.discriminator.`) | Recipes | Paper (v0.2.0) |
+|---|---|---|
+| `config.mpd_stereo`, `config.mrd_stereo`, `config.dac_stereo` | `lrms` (joint L, R, M, S) | `fold` |
+| `config.preprocess_gain` | `shared` | `per_channel` |
+| `config.fused_bias_act`, `config.fused_bias_grad` | `false` | `true` |
+| `weights.feature_matching` | 10 (pretraining), 5 (fine-tuning) | 0.2 |
+| `weights.adversarial` | 0.1 | 0.1 |
+
+To train with the paper's discriminator, override these keys on the command line, for example:
+
+```bash
+python train.py +experiment=pretrain trainer.trainer.num_gpus=4 \
+    trainer.loss_config.discriminator.config.mpd_stereo=fold \
+    trainer.loss_config.discriminator.config.mrd_stereo=fold \
+    trainer.loss_config.discriminator.config.dac_stereo=fold \
+    trainer.loss_config.discriminator.config.preprocess_gain=per_channel \
+    trainer.loss_config.discriminator.weights.feature_matching=0.2
+```
+
+Checkpoints of the two discriminators are not interchangeable (the joint critics have
+more input channels); the decoder fine-tuning starts a new discriminator in either case.
+Both recipes log the adversarial share of the generator gradient every 500 generator
+updates (`trainer.trainer.adv_grad_every`, W&B `diag/*`); it does not change training.
+
+## Training speed-ups
+
+The recipes turn on the exact speed-ups of
+[configs/speedup/recipe.yaml](../configs/speedup/recipe.yaml): a faster critic
+(`critic_fast`: in-place activations, fused feature matching, channels-last, parallel
+branches) and a lighter training loop (`loop_fast`: no discriminator gradients in the
+generator step, windowed logging, DDP bucket options). They train the same losses and
+updates up to float rounding. `+speedup=legacy`, given after the experiment, turns them
+all off:
+
+```bash
+python train.py +experiment=pretrain +speedup=legacy trainer.trainer.num_gpus=4
+```
+
+`"+speedup=[legacy,critic_fast]"` then adds one group back. The fused Triton kernels of
+`critic_fast_fused` speed up only the fold (mono) critics, so the recipes leave them off.
 
 ## GPU count and batch size
 
