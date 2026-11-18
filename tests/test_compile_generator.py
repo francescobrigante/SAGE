@@ -25,8 +25,11 @@ FP64_RTOL = 1e-12         # Σ|compiled − eager| / Σ|eager|, fp64 (aot_eager 
 
 @pytest.fixture(autouse=True)
 def _fresh_dynamo():
-    """Dynamo caches live on the forward code objects, shared by every instance of a class: start clean."""
+    """Dynamo caches live on the forward code objects, shared by every instance of a class, and its counters
+    are process-wide (reset() keeps them): start clean."""
+    from torch._dynamo.utils import counters
     torch._dynamo.reset()
+    counters.clear()
     yield
     torch._dynamo.reset()
 
@@ -186,7 +189,10 @@ def _errors(monkeypatch):
     return messages
 
 
-def test_a_compile_error_is_printed_and_the_module_runs_eagerly(monkeypatch):
+# suppress_errors=True: what importing stable_audio_3 (the SAME baseline) leaves in the process
+@pytest.mark.parametrize("suppress_errors", [False, True])
+def test_a_compile_error_is_printed_and_the_module_runs_eagerly(monkeypatch, suppress_errors):
+    monkeypatch.setattr(torch._dynamo.config, "suppress_errors", suppress_errors)
     messages = _errors(monkeypatch)
 
     def broken(gm, example_inputs):
@@ -202,7 +208,9 @@ def test_a_compile_error_is_printed_and_the_module_runs_eagerly(monkeypatch):
     assert len(messages) == 2                                  # eager from then on: no new attempt
 
 
-def test_the_recompile_limit_is_printed_once_and_new_signatures_run_eagerly(monkeypatch):
+@pytest.mark.parametrize("suppress_errors", [False, True])
+def test_the_recompile_limit_is_printed_once_and_new_signatures_run_eagerly(monkeypatch, suppress_errors):
+    monkeypatch.setattr(torch._dynamo.config, "suppress_errors", suppress_errors)
     messages = _errors(monkeypatch)
     monkeypatch.setattr(compile_mod, "GENERATOR_RECOMPILE_LIMIT", 1)
     graph_runs = []

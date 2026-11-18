@@ -31,7 +31,9 @@ class CompiledCall:
       new signature eagerly.
     - A compile error (dynamo or inductor) is printed and the module runs eagerly from then on. An error
       of the model itself then raises again from the eager call.
-    Errors in the compilation of the backward graph (built at the first backward) are not caught.
+    Both hold whatever the global dynamo config says: some libraries turn on ``suppress_errors`` at import
+    (stable_audio_3, the SAME baseline), which would hide the errors. Errors in the compilation of the
+    backward graph (built at the first backward) are not caught.
     """
 
     def __init__(self, module: nn.Module, name: str, compiled: Callable[..., Any]):
@@ -42,7 +44,7 @@ class CompiledCall:
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         try:
-            with torch._dynamo.config.patch(recompile_limit=GENERATOR_RECOMPILE_LIMIT,
+            with torch._dynamo.config.patch(recompile_limit=GENERATOR_RECOMPILE_LIMIT, suppress_errors=False,
                                             fail_on_recompile_limit_hit=not self.limit_hit):
                 return self.compiled(*args, **kwargs)
         except FailOnRecompileLimitHit:

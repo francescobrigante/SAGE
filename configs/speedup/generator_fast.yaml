@@ -5,9 +5,9 @@
 # static shapes; sage/training/compile.py). Same model, losses and checkpoint keys, but not bit-exact:
 # inductor fuses and reorders float operations, and draws the drop-path masks from its own RNG stream.
 # The first batches of a run compile one graph per input signature (generator step, discriminator step,
-# validation, demos): a few minutes on a GPU, then a faster step.
-# Measured: generator forward + backward 111 -> 66 ms (A100, batch 8 x 128 frames, TF32, probe); full
-# training step of the proxy recipe: <pending, plan F3/G3>.
+# validation, demos): about 4 minutes on an A100, then a faster step.
+# Measured (A100): generator forward + backward 111 -> 66 ms (batch 8 x 128 frames, TF32); the proxy recipe
+# (stereo_proxy_a3_fm, 2 GPUs, same node) 4.12 -> 4.67 it/s (+13 %), peak memory 14.6 -> 14.1 GiB.
 # Not in speedup/recipe.yaml until the A/B (3 seeds per arm) shows no loss of quality.
 #
 #   python train.py +experiment=stereo_proxy_a3_fm +speedup=generator_fast trainer.trainer.num_gpus=2
