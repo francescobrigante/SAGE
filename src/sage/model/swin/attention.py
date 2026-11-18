@@ -39,6 +39,8 @@ class WindowAttention(nn.Module):
     # Opt-in inference path through F.scaled_dot_product_attention (sage/model/swin/sdpa.py, set per
     # instance by enable_sdpa): same formula, fused kernel. False = the forward below, unchanged.
     sdpa: bool = False
+    # Option of that path (set by enable_sdpa, inert without it): Q/V bias added by the QKV GEMM.
+    fused_bias: bool = False
 
     def __init__(
         self,

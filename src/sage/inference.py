@@ -311,6 +311,9 @@ class SAGE:
                 (``"off"`` = single-phase attention); ``None`` uses the default there (``tri2``).
             sdpa: Run the window attention through ``F.scaled_dot_product_attention``: same
                 formula, fused kernel, faster. On by default; ``False`` runs the original attention.
+                With it, exact reformulations of the same forward: Q/V bias inside the QKV GEMM,
+                one QKV / output projection for all phases of the variable-length blocks, patch
+                layers as one GEMM (``False`` turns them off too).
             chunk_seconds: Inputs longer than this are encoded and decoded in chunks of this length
                 (rounded to the 128-frame window grid, 1.49 s), so the memory stays bounded at any
                 length. ``None`` always runs one pass (memory grows with the length).
@@ -423,13 +426,22 @@ class SAGE:
     def _apply_sdpa(self, sdpa: bool) -> None:
         """Route the window attention through ``F.scaled_dot_product_attention`` (on by default).
 
-        Sets ``sdpa`` (what ran: False when no real-valued attention exists to route) and
-        ``sdpa_blocks`` (attention modules touched). See ``sage/model/swin/sdpa.py``.
+        The same switch turns on the exact reformulations that come with it: the Q/V bias inside
+        the QKV GEMM and one QKV / output projection for all phases of a multi-phase block (options
+        of ``enable_sdpa``, see ``sage/model/swin/sdpa.py``), and the patch layers as one GEMM
+        (``enable_patch_linear``, ``sage/model/swin/patches.py``). Each can be switched off on
+        ``self.autoencoder`` with those functions. Sets ``sdpa`` (what ran: False when no real-valued
+        attention exists to route), ``sdpa_blocks`` (attention modules touched) and
+        ``patch_linear_layers`` (patch layers computed as a GEMM).
         """
+        from sage.model.swin.patches import enable_patch_linear   # imports timm: keep `import sage.inference` light
+
         self.sdpa_blocks = enable_sdpa(self.autoencoder) if sdpa else 0
         self.sdpa = self.sdpa_blocks > 0
+        self.patch_linear_layers = enable_patch_linear(self.autoencoder) if sdpa else 0
         if self.sdpa:
-            ok(f"sdpa attention on {self.sdpa_blocks} attention modules", prefix="CHECKPOINT")
+            ok(f"sdpa attention on {self.sdpa_blocks} attention modules (fused Q/V bias, shared-phase QKV), "
+               f"{self.patch_linear_layers} patch layers as GEMM", prefix="CHECKPOINT")
         elif sdpa:
             warn("sdpa=True ignored: the model has no real-valued window attention", prefix="CHECKPOINT")
 

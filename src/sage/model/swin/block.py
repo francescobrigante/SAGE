@@ -251,6 +251,10 @@ class SwinTransformerBlock(nn.Module):
             when is_complex=True. Default ``"ComplexGELU1d"``. Resolved by sage.nn.activations.get_activation.
     """
 
+    # Option of the SDPA path (set by sage.model.swin.sdpa.enable_sdpa, inert without it): multi-phase
+    # attention with one QKV and one output projection for all phases (_shared_phase_attention).
+    shared_phases: bool = False
+
     def __init__(
         self,
         dim: int,
@@ -387,16 +391,74 @@ class SwinTransformerBlock(nn.Module):
         cache_key = (W, x.device, x.dtype)
         weights = self._varlen_weight_cache.get(cache_key)
         if weights is None:
-            weights = phase_weights(W, self.window_size[1], cfg, x.device).to(x.dtype)  # (P, W)
+            weights = phase_weights(W, self.window_size[1], cfg, x.device, dtype=x.dtype)  # (P, W)
             if not torch.compiler.is_compiling():   # a compiled graph rebuilds it (one graph per length)
                 self._varlen_weight_cache[cache_key] = weights
 
+        attn = self.attn
+        if self.shared_phases and attn.sdpa and not (attn.is_complex or self.training or torch.is_grad_enabled()):
+            return self._shared_phase_attention(x, weights)            # (B, H*W, C)
         acc = None
         for i, phase in enumerate(cfg.phases):
             y = self._attention_branch(x, shift_size=(0, phase))       # (B, H*W, C)
             y = y.view(B, H, W, C) * weights[i].view(1, 1, W, 1)       # (B, H, W, C)
             acc = y if acc is None else acc + y                        # (B, H, W, C)
         return acc.view(B, L, C)                                       # (B, H*W, C)
+
+    def _shared_phase_attention(self, x: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+        """_multiphase_attention on the SDPA path, with one QKV and one output projection for all phases.
+
+        Each phase runs the same branch on translated tokens. The QKV projection is token-wise, so it is
+        computed once and only the projected tokens are rolled and partitioned per phase. XSA is linear
+        in the attention output, with the token's own value vector (the same in every phase), and the
+        output projection is affine: both commute with the per-token combination, whose weights sum to
+        1, and run once on the combined output. Equal in exact arithmetic. The projection's bias is
+        counted once instead of Σ weights times, so the weights are computed in the dtype of ``x`` (in
+        FP64 for FP64 inputs, see varlen.phase_weights) and sum to 1 to its rounding. Padding tokens
+        get the projection of a zero token, as the zero padding of _attention_branch gives them.
+
+        Args:
+            x: (B, H*W, C)
+            weights: (P, W) per-phase, per-token combination weights (sum to 1 over P).
+
+        Returns:
+            (B, H*W, C), in the dtype the per-phase combination returns.
+        """
+        from sage.model.swin.sdpa import sdpa_attend, sdpa_output, sdpa_qkv
+
+        attn = self.attn
+        H = self.input_resolution[0]
+        B, L, C = x.shape                                              # (B, H*W, C)
+        W = L // H
+        wh, ww = self.window_size
+        d = C // attn.num_heads
+        pad_r = (ww - W % ww) % ww
+        pad_b = (wh - H % wh) % wh
+        Hp, Wp = H + pad_b, W + pad_r
+
+        qkv, dt = sdpa_qkv(attn, x)                                    # (B, H*W, 3C), once for all phases
+        grid = qkv.view(B, H, W, 3 * C)                                # (B, H, W, 3C)
+        if pad_r > 0 or pad_b > 0:
+            pad = sdpa_qkv(attn, x.new_zeros(1, 1, 1, C))[0]          # (1, 1, 1, 3C) a zero token, projected
+            grid = torch.cat((grid, pad.expand(B, H, pad_r, 3 * C)), dim=2)    # (B, H, Wp, 3C)
+            grid = torch.cat((grid, pad.expand(B, pad_b, Wp, 3 * C)), dim=1)   # (B, Hp, Wp, 3C)
+
+        acc = None
+        for i, phase in enumerate(self.varlen.phases):                 # shift (0, phase), as _multiphase_attention
+            shifted = torch.roll(grid, shifts=-phase, dims=2) if phase > 0 else grid
+            mask = shift_mask(Hp, Wp, self.window_size, (0, phase), x.device) if phase > 0 else None
+            windows = window_partition(shifted, self.window_size).view(-1, wh * ww, 3 * C)  # (nW*B, wh*ww, 3C)
+            y, _ = sdpa_attend(attn, windows, mask, dt)                # (nW*B, h, wh*ww, d)
+            y = y.transpose(1, 2).reshape(-1, wh, ww, C)               # (nW*B, wh, ww, C)
+            y = window_reverse(y, self.window_size, Hp, Wp)            # (B, Hp, Wp, C)
+            if phase > 0:
+                y = torch.roll(y, shifts=phase, dims=2)
+            y = y[:, :H, :W, :] * weights[i].view(1, 1, W, 1)          # (B, H, W, C)
+            acc = y if acc is None else acc + y                        # (B, H, W, C)
+
+        v = qkv[..., 2 * C:].view(B, L, -1, d)                         # (B, H*W, h, d) each token's own value
+        out = sdpa_output(attn, acc.view(B, L, -1, d), v)              # (B, H*W, C)
+        return out.to(torch.promote_types(out.dtype, weights.dtype))   # the per-phase sum's dtype (FP32 under autocast)
 
     def _attention_branch(
         self,

@@ -217,11 +217,19 @@ def test_readme_usage_pad_encode_decode_equals_reconstruct(tiny_pretrain_ckpt, s
 
 def test_sdpa_is_the_default_and_matches_the_original_attention(tiny_pretrain_ckpt):
     """SAGE.from_checkpoint routes every real attention module through SDPA by default (sdpa=False opts out),
-    with the same output as the original attention up to rounding."""
+    with the exact reformulations that come with it (fused Q/V bias, shared-phase QKV, patch layers as one
+    GEMM), and the same output as the original attention up to rounding."""
     from sage import SAGE
+    from sage.model.swin.attention import WindowAttention
+    from sage.model.swin.block import SwinTransformerBlock
     default = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu", sdpa=False)
     fast = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu")
     assert (default.sdpa, default.sdpa_blocks) == (False, 0) and fast.sdpa and fast.sdpa_blocks > 0
+    assert (default.patch_linear_layers, fast.patch_linear_layers) == (0, 2)      # PatchEmbed + PatchUnembed
+    for codec, on in ((default, False), (fast, True)):
+        modules = list(codec.autoencoder.modules())
+        assert all(m.fused_bias is on for m in modules if isinstance(m, WindowAttention))
+        assert all(m.shared_phases is on for m in modules if isinstance(m, SwinTransformerBlock))
     wav = 0.1 * torch.randn(2, 3 * 44100 + 123, generator=torch.Generator().manual_seed(0))
     a, b = default.reconstruct(wav, deterministic=True), fast.reconstruct(wav, deterministic=True)
     snr = 10 * torch.log10(a.pow(2).sum() / (a - b).pow(2).sum().clamp_min(1e-30))
