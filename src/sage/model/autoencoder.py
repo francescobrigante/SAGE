@@ -409,8 +409,10 @@ class SAGEAutoencoder(nn.Module):
             print(f"Latents shape after encoder: {tuple(latents.shape)}")
             print(f"[SAGEAutoencoder.encode] encoder output shape={tuple(latents.shape)}")
 
-        # Store encoder_info for decode() - decoder will extract what it needs
-        self._last_encoder_info = enc_info
+        # Metadata of the last encode (feature_shape, ...) for decode() without encoder_info; never the tensors:
+        # kept here they would outlive the call, and under CUDA graphs (torch.compile "reduce-overhead") they
+        # live in the graph's memory pool, which the next replay overwrites.
+        self._last_encoder_info = {k: v for k, v in enc_info.items() if not isinstance(v, torch.Tensor)}
 
         bottleneck_info: Optional[Dict[str, Any]] = None
 

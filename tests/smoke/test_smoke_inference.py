@@ -14,7 +14,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from conftest import GOLDEN_DIR, GOLDEN_REF, PAPER_CKPT
+from conftest import GOLDEN_DIR, GOLDEN_REF, PAPER_CKPT, SR
 
 pytestmark = pytest.mark.smoke
 needs_ckpt = pytest.mark.skipif(not PAPER_CKPT.is_file(), reason=f"paper checkpoint not found: {PAPER_CKPT}")
@@ -255,6 +255,128 @@ def test_precision_default_and_options(tiny_pretrain_ckpt):
     assert torch.equal(bf16.reconstruct(wav, deterministic=True), out["fp32"])
     with pytest.raises(ValueError):
         SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu", precision="fp16")
+
+
+@pytest.fixture
+def aot_eager(monkeypatch):
+    """torch.compile on the CPU of the tests: the aot_eager backend, the mode dropped (inductor needs a C++ build,
+    CUDA graphs a GPU; the CUDA runs are in tests/test_flex_attention.py and the GPU benchmark)."""
+    real = torch.compile
+    monkeypatch.setattr(torch, "compile", lambda fn=None, *, mode=None, **kw: real(fn, backend="aot_eager", **kw))
+    yield
+    torch._dynamo.reset()
+
+
+def test_compile_option(tiny_pretrain_ckpt, aot_eager):
+    """compile=: eager by default, True means "default", anything else outside the modes is refused; encoder and
+    decoder compiled in place after the SDPA bias cache (filled eagerly in FP32): same weights and state dict, the
+    eager output, metadata kept for decode without tensors, no FlexAttention on CPU nor at head size 4; the
+    evaluation adapter records the mode in its provenance."""
+    from evaluation.codecs import SAGEAdapter
+    from sage import SAGE
+    from sage.compile import is_compiled
+    from sage.model.swin.attention import WindowAttention
+    eager = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu")
+    assert eager.compile is None and not is_compiled(eager.autoencoder.encoder) and "compile" not in str(
+        eager.speedup_options())
+    with pytest.raises(ValueError):
+        SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu", compile="max-autotune")
+    wav = 0.1 * torch.randn(2, 3 * 44100 + 123, generator=torch.Generator().manual_seed(0))
+    ref = eager.reconstruct(wav, deterministic=True)
+    codec = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu", compile=True)
+    ae = codec.autoencoder
+    assert codec.compile == "default" and "compile=default" in repr(codec)
+    assert is_compiled(ae.encoder) and is_compiled(ae.decoder)
+    attns = [m for m in ae.modules() if isinstance(m, WindowAttention) and not m.is_complex]
+    assert attns and all(m._sdpa_cpb.dtype == torch.float32 for m in attns)    # filled before the compile
+    assert not any(m.flex for m in attns)                                     # head size 4: no fused kernel
+    assert codec.speedup_options()[-1] == "compile:default" and "flex" not in codec.speedup_options()
+    state, ref_state = ae.state_dict(), eager.autoencoder.state_dict()
+    assert state.keys() == ref_state.keys() and all(torch.equal(state[k], v) for k, v in ref_state.items())
+    out = codec.reconstruct(wav, deterministic=True)
+    assert out.shape == ref.shape and _snr(ref, out) > 80, _snr(ref, out)
+    assert ae._last_encoder_info and not any(isinstance(v, torch.Tensor) for v in ae._last_encoder_info.values())
+    prov = {c: SAGEAdapter(device="cpu", checkpoint=str(tiny_pretrain_ckpt), compile=c).provenance()
+            for c in (None, "reduce-overhead")}
+    assert "compile" not in prov[None] and prov["reduce-overhead"]["compile"] == "reduce-overhead"
+    assert prov[None]["sdpa_options"] == prov["reduce-overhead"]["sdpa_options"]
+    assert "flex" not in prov[None]["sdpa_options"]
+
+
+def test_compile_traces_the_precision_and_follows_set_precision(tiny_pretrain_ckpt, aot_eager):
+    """The bf16 autocast wrapper is installed before the compile, so the compiled call runs it; set_precision
+    afterwards takes effect too (the next call compiles again)."""
+    from sage import SAGE
+    wav = 0.1 * torch.randn(1, 2, 2 * 44100, generator=torch.Generator().manual_seed(1))
+    ref = {p: SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu", precision=p).reconstruct(wav, deterministic=True)
+           for p in ("bf16", "fp32")}
+    codec = SAGE.from_checkpoint(tiny_pretrain_ckpt, device="cpu", precision="bf16", compile="default")
+    out = codec.reconstruct(wav, deterministic=True)
+    assert _snr(ref["bf16"], out) > _snr(ref["bf16"], ref["fp32"]) + 20, (_snr(ref["bf16"], out),
+                                                                         _snr(ref["bf16"], ref["fp32"]))
+    codec.set_precision("fp32")
+    assert _snr(ref["fp32"], codec.reconstruct(wav, deterministic=True)) > 80
+
+
+def test_compiled_cuda_graph_mode_keeps_the_sampled_noise_of_chunked_inference(tiny_pretrain_ckpt, aot_eager):
+    """reduce-overhead (on CPU: the copy-out wrapper, no CUDA graphs): the copied outputs keep the encoder's
+    strides, so chunked sampling with a seed draws the eager noise; latents encoded earlier survive later calls."""
+    from sage import SAGE
+    kw = dict(device="cpu", chunk_seconds=1.5, chunk_margin_seconds=6)
+    eager = SAGE.from_checkpoint(tiny_pretrain_ckpt, **kw)
+    codec = SAGE.from_checkpoint(tiny_pretrain_ckpt, compile="reduce-overhead", **kw)
+    wav = 0.1 * torch.randn(2, 2, 4 * 44100 + 321, generator=torch.Generator().manual_seed(2))
+    padded, n = eager.pad(wav)
+    z = {}
+    for name, c in (("eager", eager), ("compiled", codec)):
+        torch.manual_seed(0)
+        z[name] = c.encode(padded)
+    assert z["compiled"].stride() == z["eager"].stride() and _snr(z["eager"], z["compiled"]) > 80
+    z1 = z["compiled"].clone()
+    codec.encode(padded.flip(-1), deterministic=True)                 # a later call
+    assert torch.equal(z["compiled"], z1)
+    rec = codec.decode(z["compiled"], target_length=padded.shape[-1])
+    assert _snr(eager.decode(z["eager"], target_length=padded.shape[-1]), rec) > 80
+
+
+@needs_ckpt
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+def test_paper_model_on_cuda_with_cuda_graphs_keeps_every_output():
+    """compile="reduce-overhead" on CUDA (inductor, FlexAttention, CUDA graphs), FP32: encode(x1), encode(x2),
+    decode(z1), decode(z2) at one length (the same graphs replayed) give the eager results, so no tensor a caller
+    keeps is overwritten by a later replay; chunked inference (chunks kept while the next ones run) and its
+    sampled z (same seed) match eager too."""
+    from sage import SAGE
+    torch._dynamo.reset()
+    g = torch.Generator().manual_seed(0)
+    x1, x2 = (0.1 * torch.randn(1, 2, 3 * SR + 77, generator=g) for _ in range(2))
+    eager = SAGE.from_checkpoint(PAPER_CKPT, device="cuda", precision="fp32")
+    comp = SAGE.from_checkpoint(PAPER_CKPT, device="cuda", precision="fp32", compile="reduce-overhead")
+    assert "flex" in comp.speedup_options() and comp.speedup_options()[-1] == "compile:reduce-overhead"
+    (p1, _), (p2, _) = eager.pad(x1), eager.pad(x2)
+    n = p1.shape[-1]
+    ref = {}
+    for name, c in (("eager", eager), ("comp", comp)):
+        for _ in range(2 if name == "comp" else 1):                       # compiled: a recording, then replays
+            z1 = c.encode(p1, deterministic=True)
+            z2 = c.encode(p2, deterministic=True)
+            r1 = c.decode(z1, target_length=n)
+            r2 = c.decode(z2, target_length=n)
+        ref[name] = [t.cpu() for t in (z1, z2, r1, r2)]
+    for a, b in zip(ref["eager"], ref["comp"]):
+        assert _snr(a, b) > 60, [_snr(a, b) for a, b in zip(ref["eager"], ref["comp"])]
+    kw = dict(device="cuda", precision="fp32", chunk_seconds=3, chunk_margin_seconds=3)
+    chunk_eager = SAGE.from_checkpoint(PAPER_CKPT, **kw)
+    chunk_comp = SAGE.from_checkpoint(PAPER_CKPT, compile="reduce-overhead", **kw)
+    wav = 0.1 * torch.randn(1, 2, 6 * SR, generator=g)                     # 3 chunks, 3 context lengths
+    padded, _ = eager.pad(wav)
+    out = {}
+    for name, c in (("eager", chunk_eager), ("comp", chunk_comp)):
+        torch.manual_seed(0)
+        z = c.encode(padded)
+        out[name] = (z.cpu(), c.decode(z, target_length=padded.shape[-1]).cpu())
+    assert _snr(out["eager"][0], out["comp"][0]) > 60 and _snr(out["eager"][1], out["comp"][1]) > 60
+    torch._dynamo.reset()
 
 
 def _snr(ref: torch.Tensor, est: torch.Tensor) -> float:

@@ -39,8 +39,10 @@ class WindowAttention(nn.Module):
     # Opt-in inference path through F.scaled_dot_product_attention (sage/model/swin/sdpa.py, set per
     # instance by enable_sdpa): same formula, fused kernel. False = the forward below, unchanged.
     sdpa: bool = False
-    # Option of that path (set by enable_sdpa, inert without it): Q/V bias added by the QKV GEMM.
+    # Options of that path (set by enable_sdpa, inert without it): Q/V bias added by the QKV GEMM, and
+    # FlexAttention inside torch.compile graphs on CUDA.
     fused_bias: bool = False
+    flex: bool = False
 
     def __init__(
         self,
@@ -166,7 +168,7 @@ class WindowAttention(nn.Module):
             refresh_cpb(self)
         return module
 
-    def forward(self, x: torch.Tensor, mask=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask=None, shift=None) -> torch.Tensor:
         """Compute windowed cosine self-attention with Log-CPB relative position bias.
 
         With ``sdpa`` on (see sage/model/swin/sdpa.py), eval-mode calls without autograd go
@@ -175,12 +177,13 @@ class WindowAttention(nn.Module):
         Args:
             x: (num_windows * B, N, C) flattened window tokens.
             mask: (num_windows, N, N) cyclic-shift mask for SW-MSA, or None for W-MSA.
+            shift: The mask's geometry (sdpa.ShiftGeometry), read by the FlexAttention path only.
 
         Returns:
             (num_windows * B, N, C)
         """
         if self.sdpa and not (self.training or torch.is_grad_enabled()):
-            return sdpa_forward(self, x, mask)                         # (num_windows * B, N,  C)
+            return sdpa_forward(self, x, mask, shift)                  # (num_windows * B, N,  C)
         B_, N, C = x.shape                                             # (num_windows * B, N,  C)
 
         # Build combined Q/V bias (K bias = 0 per Swin V2 convention).

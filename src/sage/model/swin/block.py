@@ -16,6 +16,7 @@ from sage.nn.conv.normed import NormLinear
 from sage.nn.activations import get_activation
 from sage.model.swin.windowing import window_partition, window_reverse
 from sage.model.swin.attention import WindowAttention
+from sage.model.swin.sdpa import ShiftGeometry
 from sage.model.swin.utils import make_norm, make_drop_path
 
 if TYPE_CHECKING:                       # avoids a circular import at runtime
@@ -447,8 +448,9 @@ class SwinTransformerBlock(nn.Module):
         for i, phase in enumerate(self.varlen.phases):                 # shift (0, phase), as _multiphase_attention
             shifted = torch.roll(grid, shifts=-phase, dims=2) if phase > 0 else grid
             mask = shift_mask(Hp, Wp, self.window_size, (0, phase), x.device) if phase > 0 else None
+            geometry = ShiftGeometry(Hp, Wp, wh, ww, 0, phase) if phase > 0 else None
             windows = window_partition(shifted, self.window_size).view(-1, wh * ww, 3 * C)  # (nW*B, wh*ww, 3C)
-            y, _ = sdpa_attend(attn, windows, mask, dt)                # (nW*B, h, wh*ww, d)
+            y, _ = sdpa_attend(attn, windows, mask, dt, geometry)      # (nW*B, h, wh*ww, d)
             y = y.transpose(1, 2).reshape(-1, wh, ww, C)               # (nW*B, wh, ww, C)
             y = window_reverse(y, self.window_size, Hp, Wp)            # (B, Hp, Wp, C)
             if phase > 0:
@@ -497,11 +499,13 @@ class SwinTransformerBlock(nn.Module):
 
         # SW-MSA mask, -100.0 for cross-region pairs so softmax -> 0 after exp. Built directly on the
         # target device (no host-to-device copy); it only feeds the softmax in WindowAttention, never
-        # the fused CUDA window kernels. Not cached: see shift_mask.
+        # the fused CUDA window kernels. Not cached: see shift_mask. Its geometry goes along for the
+        # FlexAttention path, which computes the mask from the token indices (the graph then drops the tensor).
         if max(sh, sw) > 0:
             attn_mask = shift_mask(Hp, Wp, self.window_size, (sh, sw), x.device)
+            geometry = ShiftGeometry(Hp, Wp, wh, ww, sh, sw)
         else:
-            attn_mask = None
+            attn_mask = geometry = None
 
         x = x.view(B, H, W, C)                                        # (B, H, W,  C)
         if pad_r > 0 or pad_b > 0:
@@ -535,7 +539,7 @@ class SwinTransformerBlock(nn.Module):
         x_windows = x_windows.view(-1, wh * ww, C)                    # (nW*B, wh*ww, C)
 
         # W-MSA / SW-MSA
-        attn_windows = self.attn(x_windows, mask=attn_mask)      # (nW*B, wh*ww, C)
+        attn_windows = self.attn(x_windows, mask=attn_mask, shift=geometry)  # (nW*B, wh*ww, C)
 
         # Reverse window partition + reverse cyclic shift
         attn_windows = attn_windows.view(-1, wh, ww, C)

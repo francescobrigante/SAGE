@@ -30,3 +30,7 @@ DEFAULT_CHUNK_MARGIN_SECONDS = 6.0
 # Numerical precision of inference (sage.inference.SAGE, `precision=`; see sage.precision): TF32 matmuls and
 # convolutions, the setting of the paper's timings (Table 1), which leaves the reconstruction unchanged.
 DEFAULT_PRECISION = "tf32"
+
+# torch.compile of inference (sage.inference.SAGE, `compile=`; see sage.compile): off by default, as the first call at
+# every new input length compiles for ~25-85 s; "default" or "reduce-overhead" (CUDA graphs) for repeated lengths.
+DEFAULT_COMPILE = None

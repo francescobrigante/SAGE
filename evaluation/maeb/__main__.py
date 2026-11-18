@@ -29,6 +29,7 @@ from evaluation.maeb import fma_tasks, moisesdb_tasks  # noqa: E402
 from evaluation.maeb import tasks as maeb_tasks  # noqa: E402
 from evaluation.maeb.runner import run_maeb  # noqa: E402
 from evaluation.codecs import adapter_kwargs  # noqa: E402
+from sage.compile import check_compile  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -45,10 +46,16 @@ def _args_from_cfg(cfg: DictConfig):
         raise SystemExit(f"checkpoint applies to encoder=sage or clap only, not {cfg.encoder}")
     if checkpoint and not Path(checkpoint).is_file():
         raise SystemExit(f"Checkpoint not found: {checkpoint} (set checkpoint=... or configs/paths)")
+    if cfg.get("compile") is not None and cfg.encoder != "sage":
+        raise SystemExit(f"compile applies to encoder=sage only, not {cfg.encoder}")
+    try:
+        compile_mode = check_compile(cfg.get("compile"))
+    except ValueError as e:
+        raise SystemExit(f"compile={cfg.get('compile')}: {e}")
     device = cfg.device if cfg.device == "cpu" or torch.cuda.is_available() else "cpu"
     return SimpleNamespace(encoder=cfg.encoder, checkpoint=str(checkpoint) if checkpoint else None, device=device,
                            max_audio_sec=float(cfg.max_audio_sec), standardize_bottleneck=bool(cfg.standardize_bottleneck),
-                           pooling=cfg.pooling, no_l2_normalize=not cfg.l2_normalize,
+                           pooling=cfg.pooling, no_l2_normalize=not cfg.l2_normalize, compile=compile_mode,
                            adapter_kwargs=adapter_kwargs(cfg.encoder, cfg.paths))
 
 
@@ -58,11 +65,11 @@ def _build_encoder(args):
         from evaluation.maeb.sage_encoder import SAGELatentEncoder, build_sage_model_meta
         model = SAGELatentEncoder(model_name=str(args.checkpoint), device=args.device,
                                   max_audio_length_seconds=args.max_audio_sec,
-                                  standardize_bottleneck=args.standardize_bottleneck)
+                                  standardize_bottleneck=args.standardize_bottleneck, compile=args.compile)
         model.mteb_model_meta = build_sage_model_meta(str(args.checkpoint), model)
         return model, {"ckpt": str(args.checkpoint), "is_complex": model.is_complex,
                        "embed_dim": model.embed_dim, "standardize_bottleneck": model.standardize_bottleneck,
-                       "f_lat": model.f_lat}
+                       "f_lat": model.f_lat, **model.provenance()}
     if args.encoder == "clap":
         from evaluation.maeb.clap_encoder import CLAPOracleEncoder, build_clap_model_meta
         model = CLAPOracleEncoder(ckpt_path=args.checkpoint, device=args.device,

@@ -9,7 +9,9 @@
 # Input audio is resampled to 44.1 kHz and made stereo (mono is duplicated). Latents are
 # saved with torch.save as {"latent": (1, 16, T), "num_samples", "padded_samples", "sample_rate"},
 # so `decode` restores the exact input length. Inputs longer than --chunk-seconds (300 s) run in
-# chunks with context margins, so the memory stays bounded. Needs only the core install (pip install .).
+# chunks with context margins, so the memory stays bounded. --compile compiles encoder and decoder
+# (the first call at a new length takes ~1 min: worth it for long inputs, run in equal chunks).
+# Needs only the core install (pip install .).
 # =============================================================================
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ import torchaudio
 
 from sage import SAGE
 from sage.constants import DEFAULT_CHUNK_MARGIN_SECONDS, DEFAULT_CHUNK_SECONDS
+from sage.compile import COMPILE_MODES
 from sage.precision import DEFAULT_PRECISION, PRECISIONS
 
 
@@ -59,13 +62,17 @@ def main() -> None:
     ap.add_argument("--precision", choices=PRECISIONS, default=DEFAULT_PRECISION,
                     help="tf32 (default, the paper's timings), fp32 (no TF32) or bf16 (autocast: faster on long inputs "
                          "only, slightly lower fidelity)")
+    ap.add_argument("--compile", choices=COMPILE_MODES, default=None,
+                    help="torch.compile encoder and decoder: default, or reduce-overhead (also CUDA graphs); "
+                         "each new input length compiles once (~1 min). Default: off")
     ap.add_argument("--deterministic", action="store_true",
                     help="use the posterior mean instead of a sampled latent (the paper metrics use sampled z)")
     args = ap.parse_args()
 
     codec = SAGE.from_checkpoint(args.ckpt, device=args.device, varlen=args.varlen, sdpa=args.sdpa,
                                  chunk_seconds=None if args.no_chunk else args.chunk_seconds,
-                                 chunk_margin_seconds=args.chunk_margin_seconds, precision=args.precision)
+                                 chunk_margin_seconds=args.chunk_margin_seconds, precision=args.precision,
+                                 compile=args.compile)
     sr, channels = codec.sample_rate, codec.audio_channels
 
     if args.command == "reconstruct":

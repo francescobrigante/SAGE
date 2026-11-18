@@ -26,6 +26,8 @@ max_audio_sec: 30.0         # clips are truncated to this length
 overwrite: false            # recompute tasks that already have results
 batch_size: 1               # sage: DataLoader batch size
 standardize_bottleneck: true  # sage: fold the latent frequency axis into channels (64-d) and pool time only
+compile: null               # sage: torch.compile of the encoder (sage/compile.py): null = eager, default |
+                            # reduce-overhead; every new clip length compiles once (~1 min): only for equal-length sets
 pooling: mean               # baselines: time pooling (mean | max)
 l2_normalize: true          # clap: L2-normalise the teacher embedding
 

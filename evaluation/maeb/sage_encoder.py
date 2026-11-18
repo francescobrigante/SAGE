@@ -58,13 +58,17 @@ class SAGELatentEncoder(AbsEncoder):
         device: str | None = None,
         max_audio_length_seconds: float = 30.0,
         standardize_bottleneck: bool = True,
+        compile: str | bool | None = None,
         **kwargs: Any,
     ) -> None:
         self.model_name = model_name
         self.max_audio_length_seconds = max_audio_length_seconds
 
         _device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        loader = SAGE.from_checkpoint(model_name, device=_device, precision=None)   # PyTorch defaults, as in the paper
+        # precision=None: PyTorch defaults, as in the paper. compile (sage.compile): every new clip length
+        # compiles once (~1 min), so it pays off only on sets of few lengths.
+        loader = SAGE.from_checkpoint(model_name, device=_device, precision=None, compile=compile)
+        self.codec = loader
         self.autoencoder = loader.autoencoder
         self.device: torch.device = loader.device
 
@@ -113,6 +117,17 @@ class SAGELatentEncoder(AbsEncoder):
             self.f_lat, self.embed_dim, self.device,
         )
 
+    def provenance(self) -> dict:
+        """The speed-ups that produced the embeddings (summary fields): the SDPA options when the SDPA path
+        was on and the compile mode when compiled; absent otherwise, as in earlier runs."""
+        options = self.codec.speedup_options()
+        out = {}
+        if self.codec.sdpa:
+            out["sdpa_options"] = [o for o in options if o in ("fused_bias", "shared_phases", "flex", "patch_linear")]
+        if self.codec.compile is not None:
+            out["compile"] = self.codec.compile
+        return out
+
     # ------------------------------------------------------------------
     # One-time latent freq-grid probe (only needed for standardize_bottleneck)
     # ------------------------------------------------------------------
@@ -135,7 +150,8 @@ class SAGELatentEncoder(AbsEncoder):
         spec = self.autoencoder.stft(wav_padded.unsqueeze(0).to(self.device))   # (1,2,F,T)
         if not self.is_complex:
             spec = self.autoencoder._pack_complex(spec)                          # (1,4,F,T)
-        enc_info = self.autoencoder.encode(spec, return_info=True)[1]
+        with torch.compiler.set_stance("force_eager"):                           # no compile for this one length
+            enc_info = self.autoencoder.encode(spec, return_info=True)[1]
         f_lat, _ = enc_info["feature_shape"]                                     # (freq, time)
         return int(f_lat)
 

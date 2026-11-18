@@ -49,6 +49,7 @@ from evaluation.metrics.fad import (PANN_NAME, compute_fad_from_embeddings, comp
                                     embed_mert_framewise, embed_pann, get_pann_model)
 from evaluation.metrics.signal import cdpam_score, compute_sdr_and_sisdr, spectral_losses
 from evaluation.metrics.stereo import MS_COLUMNS, ms_metrics_row
+from sage.compile import check_compile
 from sage.utils.console import err, info, ok, warn
 
 # numpy 1.24+ removed np.float, which CDPAM still uses internally
@@ -79,8 +80,9 @@ def _load_done(parts: Path) -> set[str]:
 
 # Run settings that change the numbers: a run resumed into the same folder must keep them.
 _MANIFEST_KEYS = ("model", "checkpoint", "varlen", "deterministic", "sdpa", "protocol", "data_dir", "fma_csv",
-                  "max_files", "skip_cdpam", "sdr_only", "compute_ms_metrics", "seed", "channel", "use_ema")
-_MANIFEST_DEFAULTS = {"sdpa": False, "channel": "mid", "use_ema": True}   # keys added later: a manifest without them ran with this value
+                  "max_files", "skip_cdpam", "sdr_only", "compute_ms_metrics", "seed", "channel", "use_ema", "compile")
+_MANIFEST_DEFAULTS = {"sdpa": False, "channel": "mid", "use_ema": True,   # keys added later: a manifest without
+                      "compile": None}                                    # them ran with this value
 
 
 def _check_manifest(parts: Path, args: SimpleNamespace, rank: int = 0, timeout: float = 600.0) -> None:
@@ -130,10 +132,15 @@ def _args_from_cfg(cfg: DictConfig) -> SimpleNamespace:
         checkpoint = Path(cfg.checkpoint or cfg.paths.sage_checkpoint)
         if not checkpoint.is_file():
             raise SystemExit(f"SAGE checkpoint not found: {checkpoint} (set checkpoint=... or paths.sage_checkpoint)")
-    elif cfg.checkpoint or cfg.varlen or cfg.deterministic or cfg.sdpa is not None or not cfg.use_ema:
-        raise SystemExit("checkpoint, varlen, deterministic, sdpa and use_ema apply to model=sage only")
+    elif (cfg.checkpoint or cfg.varlen or cfg.deterministic or cfg.sdpa is not None or not cfg.use_ema
+          or cfg.get("compile") is not None):
+        raise SystemExit("checkpoint, varlen, deterministic, sdpa, use_ema and compile apply to model=sage only")
     else:
         checkpoint = None
+    try:
+        compile_mode = check_compile(cfg.get("compile"))
+    except ValueError as e:
+        raise SystemExit(f"compile={cfg.get('compile')}: {e}")
     try:
         channel_suffix(cfg.channel)
     except ValueError as e:
@@ -142,6 +149,7 @@ def _args_from_cfg(cfg: DictConfig) -> SimpleNamespace:
         model=cfg.model, checkpoint=checkpoint, varlen=cfg.varlen, deterministic=bool(cfg.deterministic),
         use_ema=bool(cfg.use_ema),
         sdpa=cfg.model == "sage" and cfg.sdpa is not False,         # null = on for sage; off for the other models
+        compile=compile_mode,                                       # None = eager
         adapter_kwargs=adapter_kwargs(cfg.model, cfg.paths),
         protocol=ds.protocol, data_dir=Path(ds.data_dir), fma_csv=ds.fma_csv,
         extensions=ds.extensions or ".wav,.flac,.mp3,.ogg",
@@ -263,7 +271,7 @@ def run(cfg: DictConfig) -> None:
 
     adapter = build_adapter(args.model, device=str(device), checkpoint=args.checkpoint,
                             varlen=args.varlen, deterministic=args.deterministic, sdpa=args.sdpa,
-                            use_ema=args.use_ema,
+                            use_ema=args.use_ema, compile=args.compile,
                             **args.adapter_kwargs)
     sr, ch = adapter.sample_rate, adapter.audio_channels
     ok(f"Model '{args.model}' ready: sr={sr} ch={ch}", prefix="EVAL")
