@@ -8,7 +8,8 @@ import copy
 from pathlib import Path
 from rich.console import Console
 
-from sage.utils.console import ok, warn
+from sage.compat import strip_compile_prefixes
+from sage.utils.console import err, ok, warn
 from sage.utils.model_info import extract_model_config, log_compression_stats
 
 console = Console()
@@ -150,6 +151,13 @@ class EMACallback(Callback):
             # updates in on_train_batch_end.
             device = next(model.parameters()).device
             self.ema_state_dict = {k: v.to(device) for k, v in self.ema_state_dict.items()}
+            model_keys = model.state_dict().keys()
+            if self.ema_state_dict.keys() != model_keys:
+                # The update skips the keys the model lacks, and the swap of the first validation fails
+                missing = sorted(model_keys - self.ema_state_dict.keys())
+                unexpected = sorted(self.ema_state_dict.keys() - model_keys)
+                err(f"EMA state of the checkpoint does not match the model: {len(missing)} missing "
+                    f"(first {missing[:3]}), {len(unexpected)} unexpected (first {unexpected[:3]}).", prefix="EMA")
             ok(f"EMA state preserved from checkpoint ({len(self.ema_state_dict)} tensors → {device}).", prefix="EMA")
             return
 
@@ -237,6 +245,9 @@ class EMACallback(Callback):
         # and stashes them in checkpoint["_ema_state"] so we can recover them here.
         ema_state = checkpoint.pop("_ema_state", {})
         if ema_state:
+            # SAGELightningModule strips the old torch.compile prefix already; a checkpoint stashed by
+            # another module may still have it (keys of the EMA must be those of the model).
+            strip_compile_prefixes(ema_state)
             self.ema_state_dict = ema_state
             ok(f"Restored EMA state from checkpoint ({len(self.ema_state_dict)} tensors).", prefix="EMA")
 

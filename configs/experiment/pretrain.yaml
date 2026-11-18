@@ -37,7 +37,6 @@ trainer:
     adv_grad_every: 500               # read-only: adversarial share of the generator gradient (diag/*)
     strategy: ddp_find_unused_parameters_true
     precision: "32"
-    compile: false
 
   # ── Generator: AdamW + inverse-square-root schedule (trainer.yaml) ─────────
   # lr 1e-3, betas (0.9, 0.98), wd 1e-4 on matrices only; InverseLR with

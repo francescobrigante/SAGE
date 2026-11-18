@@ -147,6 +147,15 @@ python train.py +experiment=pretrain +speedup=legacy trainer.trainer.num_gpus=4
 `"+speedup=[legacy,critic_fast]"` then adds one group back. The fused Triton kernels of
 `critic_fast_fused` speed up only the fold (mono) critics, so the recipes leave them off.
 
+`+speedup=generator_fast` (off in the recipes) compiles the encoder and the decoder with
+`torch.compile` (`trainer.trainer.compile_generator`: in place, mode `default`, static
+shapes). The checkpoints keep the keys of the eager model, but training is not bit-exact
+(float rounding, other drop-path draws), and the first batches of a run spend a few minutes
+compiling. A compile failure prints an error and that module runs eagerly. It replaces
+`trainer.trainer.compile`, which compiled nothing and is now a deprecated alias of it;
+checkpoints of runs that set it (`_orig_mod.` in their keys) still resume and initialize
+fine-tunings.
+
 ## GPU count and batch size
 
 The paper used four nodes with four A100 GPUs each. For multi-node execution, use

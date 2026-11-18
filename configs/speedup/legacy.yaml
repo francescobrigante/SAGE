@@ -11,6 +11,7 @@ trainer:
   trainer:
     freeze_disc_in_gen_step: false
     disc_step_loss_only: false
+    compile_generator: false
     ema_foreach: false
     log_every_n_batches: 0
     progress_bar_refresh_rate: 1
