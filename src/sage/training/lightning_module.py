@@ -32,7 +32,7 @@ from sage.utils.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 from sage.training.engine import AutoencoderEngine  
 from sage.model.autoencoder import SAGEAutoencoder
 from sage.inference import encode_audio as inference_encode_audio, decode_audio as inference_decode_audio
-from sage.compat import drop_legacy_state_keys
+from sage.compat import drop_legacy_state_keys, strip_compile_prefixes
 from sage.utils.console import info, ok, warn
 from sage.training.loggers import log_metric, log_histogram, log_point_cloud, log_image, log_audio, logger_project_name
 from sage.utils.audio import trim_to_shortest
@@ -241,6 +241,11 @@ class SAGELightningModule(pl.LightningModule):
         removed = drop_legacy_state_keys(checkpoint.get("state_dict", {}))
         if removed:
             ok(f"dropped pre-release training-state keys: {removed}", prefix="RESUME")
+        # Runs with the pre-v0.3 trainer.trainer.compile saved engine.autoencoder._orig_mod.* and
+        # ema_autoencoder._orig_mod.*: the model compiled in place (or eager) has the plain keys.
+        renamed = strip_compile_prefixes(checkpoint.get("state_dict", {}))
+        if renamed:
+            ok(f"stripped the torch.compile prefix '_orig_mod.' from {renamed} checkpoint keys", prefix="RESUME")
         # EMACallback injects ema_autoencoder.* into state_dict at save time.
         # Strip those keys here (before PL calls load_state_dict with strict=True)
         # and stash them so EMACallback.on_load_checkpoint can recover them.

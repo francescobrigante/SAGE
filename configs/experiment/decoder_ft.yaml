@@ -48,7 +48,6 @@ trainer:
     adv_grad_every: 500               # read-only: adversarial share of the generator gradient (diag/*)
     strategy: ddp_find_unused_parameters_true
     precision: "32"
-    compile: false
 
   optimizer:
     lr: 1e-4

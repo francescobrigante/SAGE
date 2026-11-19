@@ -43,6 +43,10 @@ logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 
 OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
+from sage.compat import strip_compile_prefix
+from sage.model.swin.patches import enable_patch_linear
+from sage.model.swin.sdpa import enable_sdpa_train
+from sage.training.compile import compile_generator, compile_generator_requested
 from sage.training.callbacks import DatasetEpochSetter, MultiCorpusEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger
 from sage.training.stereo_diagnostics import StereoCriticDiagnostics
 from sage.training.ddp_hooks import build_ddp_strategy
@@ -158,7 +162,8 @@ def _load_autoencoder_weights(wrapper, ckpt_file: str, use_ema: bool = True) -> 
     fresh run can fine-tune (e.g. decoder-finetune with a newly-added
     discriminator). Reads ``ema_autoencoder.*`` (EMA, default) or
     ``engine.autoencoder.*`` (live) keys and loads them into
-    ``wrapper.engine.autoencoder`` with ``strict=False``.
+    ``wrapper.engine.autoencoder`` with ``strict=False``. Checkpoints of runs with the
+    pre-v0.3 ``trainer.trainer.compile`` have ``_orig_mod.`` in their keys: it is stripped.
 
     Args:
         wrapper:   The SAGELightningModule whose autoencoder receives weights.
@@ -168,15 +173,18 @@ def _load_autoencoder_weights(wrapper, ckpt_file: str, use_ema: bool = True) -> 
     prefix = "ema_autoencoder." if use_ema else "engine.autoencoder."
     ck = torch.load(ckpt_file, map_location="cpu", weights_only=False)
     sd = ck.get("state_dict", ck) if isinstance(ck, dict) else ck
-    weights = {k[len(prefix):]: v for k, v in sd.items() if k.startswith(prefix)}
+
+    def under(p: str) -> dict:                        # keys of a run with the old compile option lose _orig_mod.
+        return {strip_compile_prefix(k[len(p):]): v for k, v in sd.items() if k.startswith(p)}
+
+    weights = under(prefix)
     if not weights:                                   # requested source absent → fall back
         alt = "engine.autoencoder." if use_ema else "ema_autoencoder."
-        weights = {k[len(alt):]: v for k, v in sd.items() if k.startswith(alt)}
+        weights = under(alt)
         warn(f"init_from: '{prefix}' weights absent; fell back to '{alt}'.", prefix="TRAINER")
     if not weights:
         raise ValueError(f"init_from: no autoencoder weights found in {ckpt_file}.")
-    target = getattr(wrapper.engine.autoencoder, "_orig_mod", wrapper.engine.autoencoder)  # unwrap torch.compile
-    missing, unexpected = target.load_state_dict(weights, strict=False)
+    missing, unexpected = wrapper.engine.autoencoder.load_state_dict(weights, strict=False)
     loaded = len(weights) - len(unexpected)
     if loaded == 0:
         raise ValueError(f"init_from: none of the {len(weights)} weights in {ckpt_file} match the model "
@@ -622,28 +630,35 @@ def main(cfg: DictConfig):
     elif init_from:
         # Cold start of a fine-tune run: load only the autoencoder weights, fresh
         # step/optimizer (decoder fine-tuning from the phase-1 EMA, new discriminator).
-        # Done BEFORE torch.compile, whose wrapper renames every key to _orig_mod.* (bug B1).
+        # Done before compile_generator below (its compilation is lazy anyway; the keys stay the same).
         _load_autoencoder_weights(wrapper, str(init_from), use_ema=init_from_ema)
         if init_from_disc:
             _load_discriminator_weights(wrapper, str(init_from))
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Optional torch.compile (off by default; opt-in via trainer.trainer.compile=true).
-    # Uses mode="reduce-overhead" (CUDA Graphs) — safe here because input shapes
-    # are fixed (target_frames=128, freq_bins=1024) and the alignment helpers
-    # in engine.py act as no-ops on this dataset. Falls back to eager on failure.
+    # Optional exact speed-ups of the generator (off by default; +speedup=generator_fast turns them
+    # on): attention through SDPA with autograd (trainer.trainer.sdpa_train) and the patch layers as
+    # one GEMM (trainer.trainer.patch_linear). Same formula and weights, equal in exact arithmetic,
+    # same state_dict keys; complex-valued modules keep their path. Set before compile_generator, so
+    # the compiled graphs trace them.
     # ─────────────────────────────────────────────────────────────────────────
-    compile_model = bool(pl_trainer_cfg.get("compile", False))
-    if compile_model:
-        try:
-            wrapper.engine.autoencoder = torch.compile(
-                wrapper.engine.autoencoder,
-                mode="reduce-overhead",
-                dynamic=False,
-            )
-            ok("torch.compile applied to autoencoder (mode=reduce-overhead).", prefix="COMPILE")
-        except Exception as exc:
-            warn(f"torch.compile failed ({type(exc).__name__}: {exc}); continuing eager.", prefix="COMPILE")
+    if pl_trainer_cfg.get("sdpa_train", False):
+        n = enable_sdpa_train(wrapper.engine.autoencoder)
+        ok(f"sdpa_train: {n} attention modules through SDPA with autograd", prefix="TRAINER")
+    if pl_trainer_cfg.get("patch_linear", False):
+        n = enable_patch_linear(wrapper.engine.autoencoder)
+        ok(f"patch_linear: {n} patch layers as one GEMM", prefix="TRAINER")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Optional torch.compile of the generator (trainer.trainer.compile_generator, off by default;
+    # +speedup=generator_fast turns it on). The encoder and the decoder are compiled in place
+    # (mode default, static shapes), after the weights are loaded: the module tree and the
+    # state_dict keys stay those of the eager model (sage/training/compile.py). A compile
+    # failure prints an error and runs that module eagerly. The old trainer.trainer.compile is
+    # a deprecated alias (it wrapped the autoencoder, which has no forward: nothing was compiled).
+    # ─────────────────────────────────────────────────────────────────────────
+    if compile_generator_requested(pl_trainer_cfg):
+        compile_generator(wrapper.engine.autoencoder)
 
     # ─────────────────────────────────────────────────────────────────────────
     # PyTorch Lightning Trainer

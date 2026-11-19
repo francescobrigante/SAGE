@@ -52,7 +52,8 @@ def log_compression_stats(wrapper, train_dl, console: Console) -> None:
     was_training = wrapper.training
     try:
         wrapper.eval()
-        with torch.no_grad():
+        # force_eager: a one-off batch-1 pass would only add a graph to a compiled encoder (compile_generator)
+        with torch.no_grad(), torch.compiler.set_stance("force_eager"):
             batch = next(iter(train_dl))
             sp_reals, orig_waveforms = batch[0], batch[1]
 
