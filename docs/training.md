@@ -149,7 +149,10 @@ python train.py +experiment=pretrain +speedup=legacy trainer.trainer.num_gpus=4
 
 `+speedup=generator_fast` (off in the recipes) compiles the encoder and the decoder with
 `torch.compile` (`trainer.trainer.compile_generator`: in place, mode `default`, static
-shapes). The checkpoints keep the keys of the eager model, but training is not bit-exact
+shapes), runs their attention through `F.scaled_dot_product_attention` with autograd
+(`trainer.trainer.sdpa_train`) and their patch layers as one matrix product
+(`trainer.trainer.patch_linear`). The last two compute the same formula with the same
+weights. The checkpoints keep the keys of the eager model, but training is not bit-exact
 (float rounding, other drop-path draws), and the first batches of a run spend a few minutes
 compiling. A compile failure prints an error and that module runs eagerly. It replaces
 `trainer.trainer.compile`, which compiled nothing and is now a deprecated alias of it;

@@ -1,9 +1,11 @@
 # ===============================================================
-# SDPA path of WindowAttention (inference only). Same formula as
-# WindowAttention.forward (Swin V2 cosine attention + Log-CPB bias + cyclic-shift
-# mask + XSA), computed by F.scaled_dot_product_attention: one fused kernel on
-# CUDA. Equal in exact arithmetic, not bit-identical; set per module by
-# enable_sdpa, which sage.inference.SAGE calls by default (sdpa=False opts out).
+# SDPA path of WindowAttention. Same formula as WindowAttention.forward (Swin V2
+# cosine attention + Log-CPB bias + cyclic-shift mask + XSA), computed by
+# F.scaled_dot_product_attention: one fused kernel on CUDA. Equal in exact
+# arithmetic, not bit-identical. Inference: set per module by enable_sdpa, which
+# sage.inference.SAGE calls by default (sdpa=False opts out). Training: set per
+# module by enable_sdpa_train (trainer.trainer.sdpa_train), with autograd: the
+# Log-CPB bias is recomputed at every call, with its gradient.
 # Two options of the same path, on with it unless turned off, exact in exact
 # arithmetic too: the Q/V bias added by the QKV GEMM itself (fused_bias), and one
 # QKV / output projection for all phases of a variable-length multi-phase block
@@ -89,8 +91,9 @@ def _cached_cpb(attn: nn.Module) -> torch.Tensor:
     return attn._sdpa_cpb
 
 
-def _sdpa(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
-    """F.scaled_dot_product_attention(q, k, v, attn_mask=bias, scale=1), split when too large to launch.
+def _sdpa(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, bias: torch.Tensor,
+          dropout_p: float = 0.0) -> torch.Tensor:
+    """F.scaled_dot_product_attention(q, k, v, attn_mask=bias, dropout_p, scale=1), split when too large to launch.
 
     The memory-efficient CUDA kernel runs one block per (query tile, head, batch) on the grid axes
     (x, y, z) and does not check the 65535 cap on y and z (torch 2.7): SW-MSA puts the windows on
@@ -102,6 +105,7 @@ def _sdpa(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, bias: torch.Tensor)
     Args:
         q, k, v: (B, H, N, d)
         bias: (1 or B, 1 or H, N, N), broadcast over its size-1 axes.
+        dropout_p: Dropout on the attention weights (training only; 0 = none).
     Returns:
         (B, H, N, d)
     """
@@ -113,9 +117,9 @@ def _sdpa(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, bias: torch.Tensor)
                 size = min(_GRID_LIMIT, n - start)
                 qs, ks, vs = (t.narrow(dim, start, size) for t in (q, k, v))
                 bs = bias if bias.shape[dim] == 1 else bias.narrow(dim, start, size)
-                parts.append(_sdpa(qs, ks, vs, bs))                     # the other axis is checked in there
+                parts.append(_sdpa(qs, ks, vs, bs, dropout_p))          # the other axis is checked in there
             return torch.cat(parts, dim=dim)                            # (B, H, N, d)
-    return F.scaled_dot_product_attention(q, k, v, attn_mask=bias, scale=1.0)
+    return F.scaled_dot_product_attention(q, k, v, attn_mask=bias, dropout_p=dropout_p, scale=1.0)
 
 
 def fusable_qkv_bias(attn: nn.Module) -> bool:
@@ -130,7 +134,8 @@ def _qkv_bias(attn: nn.Module) -> torch.Tensor:
     return torch.cat((attn.q_bias, torch.zeros_like(attn.v_bias), attn.v_bias))
 
 
-def sdpa_qkv(attn: nn.Module, x: torch.Tensor) -> Tuple[torch.Tensor, torch.dtype]:
+def sdpa_qkv(attn: nn.Module, x: torch.Tensor,
+             fused: Optional[bool] = None) -> Tuple[torch.Tensor, torch.dtype]:
     """QKV projection plus Q/V bias of WindowAttention.forward: ``qkv(x) + cat(q_bias, 0, v_bias)``.
 
     With ``attn.fused_bias`` the bias is added by the GEMM (F.linear with the same weight and bias): no
@@ -141,11 +146,12 @@ def sdpa_qkv(attn: nn.Module, x: torch.Tensor) -> Tuple[torch.Tensor, torch.dtyp
     Args:
         attn: A real-valued WindowAttention.
         x: (…, C) tokens.
+        fused: Bias in the GEMM; None = ``attn.fused_bias`` (the inference option).
     Returns:
         (qkv, dt): qkv (…, 3C) in the dtype of the original sum (FP32 under bf16 autocast, the bias
         promotes it); dt, the dtype of the GEMM output (bf16 under autocast), in which the attention runs.
     """
-    if attn.fused_bias:
+    if attn.fused_bias if fused is None else fused:
         bias = _qkv_bias(attn)                                          # (3C,)
         qkv = F.linear(x, attn.qkv.linear.weight, bias)                 # (…, 3C), bias in the GEMM
         dt = qkv.dtype
@@ -157,8 +163,8 @@ def sdpa_qkv(attn: nn.Module, x: torch.Tensor) -> Tuple[torch.Tensor, torch.dtyp
     return qkv, dt
 
 
-def sdpa_attend(attn: nn.Module, qkv: torch.Tensor, mask: Optional[torch.Tensor],
-                dt: torch.dtype) -> Tuple[torch.Tensor, torch.Tensor]:
+def sdpa_attend(attn: nn.Module, qkv: torch.Tensor, mask: Optional[torch.Tensor], dt: torch.dtype,
+                cpb: Optional[torch.Tensor] = None, dropout_p: float = 0.0) -> Tuple[torch.Tensor, torch.Tensor]:
     """Attention of WindowAttention.forward from the projected window tokens, before XSA and projection.
 
     Original:  softmax(s·(q̂·k̂ᵀ) + B_cpb + M_shift)·v   (s = per-head temperature, q̂/k̂ = L2-normalised q/k)
@@ -170,6 +176,9 @@ def sdpa_attend(attn: nn.Module, qkv: torch.Tensor, mask: Optional[torch.Tensor]
         qkv: (nW·B, N, 3C) window tokens from :func:`sdpa_qkv`, window index fastest (window_partition order).
         mask: (nW, N, N) cyclic-shift mask (0 / -100) or None.
         dt: Dtype the attention kernel runs in (second output of :func:`sdpa_qkv`).
+        cpb: (h, N, N) Log-CPB bias; None = the cached one (inference). Training passes
+            :func:`cpb_bias` with its gradient.
+        dropout_p: Dropout on the attention weights (the original's attn_drop, training only).
     Returns:
         (y, v): (nW·B, h, N, d) attention output in ``dt`` and the value vectors in qkv's dtype (for XSA).
     """
@@ -180,10 +189,11 @@ def sdpa_attend(attn: nn.Module, qkv: torch.Tensor, mask: Optional[torch.Tensor]
     s = torch.clamp(attn.logit_scale, max=math.log(1.0 / 0.01)).exp()  # (h, 1, 1)
     q = F.normalize(q, dim=-1) * s                                      # (nW·B, h, N, d)  s·q̂
     k = F.normalize(k, dim=-1)                                          # (nW·B, h, N, d)  k̂
-    cpb = _cached_cpb(attn)                                             # (h, N, N)
+    if cpb is None:
+        cpb = _cached_cpb(attn)                                         # (h, N, N)
     if mask is None:
         bias = cpb.to(dt).unsqueeze(0)                                  # (1, h, N, N), broadcast over windows
-        return _sdpa(q.to(dt), k.to(dt), v.to(dt), bias), v             # (nW·B, h, N, d)
+        return _sdpa(q.to(dt), k.to(dt), v.to(dt), bias, dropout_p), v  # (nW·B, h, N, d)
     # The sum grows with the number of windows (≈ 1 GB per 30 s in FP32 over all blocks): rebuilt on
     # every call, never kept (one elementwise kernel, ~1-4% of an eager call).
     nW = mask.shape[0]
@@ -191,7 +201,7 @@ def sdpa_attend(attn: nn.Module, qkv: torch.Tensor, mask: Optional[torch.Tensor]
     bias = (cpb.unsqueeze(0) + mask.unsqueeze(1)).to(dt)                # (nW, h, N, N)
     bias = bias.reshape(1, nW * h, N, N)                                # (1, nW·h, N, N), broadcast over B
     qh, kh, vh = (t.to(dt).reshape(B, nW * h, N, -1) for t in (q, k, v))  # (B, nW·h, N, d)
-    y = _sdpa(qh, kh, vh, bias)                                         # (B, nW·h, N, d)
+    y = _sdpa(qh, kh, vh, bias, dropout_p)                              # (B, nW·h, N, d)
     return y.reshape(B_, h, N, -1), v                                   # (nW·B, h, N, d)
 
 
@@ -228,6 +238,29 @@ def sdpa_forward(attn: nn.Module, x: torch.Tensor, mask: Optional[torch.Tensor] 
     return sdpa_output(attn, y.transpose(1, 2), v.transpose(1, 2))      # (nW·B, N, C)
 
 
+def sdpa_train_forward(attn: nn.Module, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """WindowAttention.forward of a real-valued module through SDPA with autograd (training path).
+
+    :func:`sdpa_forward` with three differences, so that every weight gets the original's gradient: the
+    Log-CPB bias is :func:`cpb_bias` recomputed at every call (with its gradient to cpb_mlp, no cache),
+    the Q/V bias is added by the QKV GEMM whenever :func:`fusable_qkv_bias` holds, and the original's
+    attn_drop becomes SDPA's ``dropout_p`` in training mode (other draws of the same distribution).
+    The cyclic-shift mask is summed into the bias as in inference. Equal in exact arithmetic.
+
+    Args:
+        attn: The real-valued WindowAttention whose weights are used.
+        x: (nW·B, N, C) window tokens, window index fastest (window_partition order).
+        mask: (nW, N, N) cyclic-shift mask (0 / -100) or None.
+    Returns:
+        (nW·B, N, C)
+    """
+    drop = attn.attn_drop
+    dropout_p = drop.p if attn.training and isinstance(drop, nn.Dropout) else 0.0
+    qkv, dt = sdpa_qkv(attn, x, fused=fusable_qkv_bias(attn))          # (nW·B, N, 3C)
+    y, v = sdpa_attend(attn, qkv, mask, dt, cpb=cpb_bias(attn), dropout_p=dropout_p)  # (nW·B, h, N, d) each
+    return sdpa_output(attn, y.transpose(1, 2), v.transpose(1, 2))      # (nW·B, N, C)
+
+
 def _refresh_after_load(attn: nn.Module, incompatible_keys) -> None:
     """load_state_dict post-hook: new weights → new cached bias (also for an already compiled model)."""
     if attn.sdpa:
@@ -239,7 +272,7 @@ def enable_sdpa(module: nn.Module, enabled: bool = True, *, fused_bias: bool = T
     """Route every real-valued WindowAttention of ``module`` through SDPA (or back).
 
     Inference-time only, like ``enable_varlen``: no weight is touched, and training mode or
-    autograd always runs the original forward. The CPB bias is computed here, in full FP32, and
+    autograd runs the original forward (or, with :func:`enable_sdpa_train`, its own SDPA path). The CPB bias is computed here, in full FP32, and
     cached outside the state_dict; it is recomputed when the weights are loaded, moved, cast or
     (by eager calls) edited in place. Not seen: edits through ``.data``, parameters replaced by
     hand, and in-place edits followed only by torch.compile calls (a compiled graph checks the
@@ -286,3 +319,29 @@ def enable_sdpa(module: nn.Module, enabled: bool = True, *, fused_bias: bool = T
 def disable_sdpa(module: nn.Module) -> int:
     """Restore the original attention everywhere. See :func:`enable_sdpa`."""
     return enable_sdpa(module, False)
+
+
+def enable_sdpa_train(module: nn.Module, enabled: bool = True) -> int:
+    """Route the training (and autograd) calls of every real-valued WindowAttention of ``module`` through
+    :func:`sdpa_train_forward` (or back): trainer.trainer.sdpa_train.
+
+    A flag of its own, separate from the inference path of :func:`enable_sdpa` (which keeps its scope:
+    eval mode without autograd). With both on, those calls take the inference path (cached bias) and
+    every other call this one; with this one alone, every call. No weight and no cache: the state_dict
+    is unchanged, and ``enabled=False`` restores the original forward exactly.
+
+    Args:
+        module: Any module containing WindowAttention — typically the whole SAGEAutoencoder.
+        enabled: True = SDPA with autograd, False = original forward.
+
+    Returns:
+        Number of attention modules affected (complex-valued ones are never touched).
+    """
+    from sage.model.swin.attention import WindowAttention
+
+    count = 0
+    for attn in module.modules():
+        if isinstance(attn, WindowAttention) and not attn.is_complex:
+            attn.sdpa_train = enabled
+            count += 1
+    return count

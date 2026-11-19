@@ -44,6 +44,8 @@ logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
 OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b))  # e.g. ${mul:${model.parameters_to_predict},${model.latent_channels}}
 
 from sage.compat import strip_compile_prefix
+from sage.model.swin.patches import enable_patch_linear
+from sage.model.swin.sdpa import enable_sdpa_train
 from sage.training.compile import compile_generator, compile_generator_requested
 from sage.training.callbacks import DatasetEpochSetter, MultiCorpusEpochSetter, ModelInfoLogger, EMACallback, CompressionStatsLogger
 from sage.training.stereo_diagnostics import StereoCriticDiagnostics
@@ -632,6 +634,20 @@ def main(cfg: DictConfig):
         _load_autoencoder_weights(wrapper, str(init_from), use_ema=init_from_ema)
         if init_from_disc:
             _load_discriminator_weights(wrapper, str(init_from))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Optional exact speed-ups of the generator (off by default; +speedup=generator_fast turns them
+    # on): attention through SDPA with autograd (trainer.trainer.sdpa_train) and the patch layers as
+    # one GEMM (trainer.trainer.patch_linear). Same formula and weights, equal in exact arithmetic,
+    # same state_dict keys; complex-valued modules keep their path. Set before compile_generator, so
+    # the compiled graphs trace them.
+    # ─────────────────────────────────────────────────────────────────────────
+    if pl_trainer_cfg.get("sdpa_train", False):
+        n = enable_sdpa_train(wrapper.engine.autoencoder)
+        ok(f"sdpa_train: {n} attention modules through SDPA with autograd", prefix="TRAINER")
+    if pl_trainer_cfg.get("patch_linear", False):
+        n = enable_patch_linear(wrapper.engine.autoencoder)
+        ok(f"patch_linear: {n} patch layers as one GEMM", prefix="TRAINER")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Optional torch.compile of the generator (trainer.trainer.compile_generator, off by default;

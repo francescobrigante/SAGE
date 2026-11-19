@@ -650,7 +650,8 @@ CRITIC_SPEED_KEYS = ("inplace_act", "fused_feature_matching", "channels_last", "
 FUSED_SPEED_KEYS = ("fused_bias_act", "fused_bias_grad")
 TRAINER_SPEED_KEYS = ("freeze_disc_in_gen_step", "disc_step_loss_only", "ema_foreach", "log_every_n_batches",
                       "progress_bar_refresh_rate", "lr_monitor", "detach_step_output", "ddp_skip_idle_buckets",
-                      "ddp_gradient_as_bucket_view", "ddp_broadcast_buffers", "compile_generator")
+                      "ddp_gradient_as_bucket_view", "ddp_broadcast_buffers", "compile_generator",
+                      "sdpa_train", "patch_linear")
 # Recipes with the speed-ups on, and whether they keep the fused keys (fold critics only: C0, A1).
 RECIPES = {"pretrain": False, "decoder_ft": False, "stereo_proxy": True, "stereo_proxy_a1": True,
            "stereo_proxy_a3": False, "stereo_proxy_a3_fm": False,

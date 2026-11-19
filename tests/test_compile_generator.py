@@ -3,9 +3,9 @@
 # place, so the model keeps its module tree and state_dict keys (no `_orig_mod.`), autoencoder.encode/decode
 # run the compiled code, and the result matches the eager model (fp64, aot_eager on CPU: inductor is checked
 # on GPU). A compile error or the recompile limit prints an error and runs the call eagerly. Config: the key
-# is off by default, in speedup/legacy.yaml, on in speedup/generator_fast.yaml, off in every recipe; the old
-# `trainer.trainer.compile` is a deprecated alias. Checkpoint keys of runs with that old option: test_init_from,
-# smoke/test_smoke_compile.py.
+# (and the other generator_fast keys) is off by default, in speedup/legacy.yaml, on in
+# speedup/generator_fast.yaml, off in every recipe; the old `trainer.trainer.compile` is a deprecated alias.
+# Checkpoint keys of runs with that old option: test_init_from, smoke/test_smoke_compile.py.
 # ===============
 from pathlib import Path
 
@@ -20,6 +20,8 @@ from sage.training.compile import CompiledCall, compile_generator, compile_gener
 REPO = Path(__file__).parents[1]
 CONFIGS = REPO / "configs"
 TINY = ["models.model.swin.embed_dim=32", "models.model.encoder.depths=[2,2,2]", "models.model.decoder.depths=[2,2,2]"]
+# The keys of configs/speedup/generator_fast.yaml (sdpa_train, patch_linear: tests/test_sdpa_train.py).
+GENERATOR_FAST_KEYS = ("compile_generator", "sdpa_train", "patch_linear")
 FP64_RTOL = 1e-12         # Σ|compiled − eager| / Σ|eager|, fp64 (aot_eager runs the same ops: ~1e-17 measured)
 
 
@@ -295,29 +297,31 @@ def _trainer(*overrides):
         return OmegaConf.to_container(compose("main", list(overrides)), resolve=False)
 
 
-def test_the_key_is_off_by_default_and_in_legacy():
+@pytest.mark.parametrize("key", GENERATOR_FAST_KEYS)
+def test_the_key_is_off_by_default_and_in_legacy(key):
     from omegaconf import OmegaConf
-    assert OmegaConf.load(CONFIGS / "trainer.yaml").trainer.compile_generator is False
-    assert OmegaConf.load(CONFIGS / "speedup" / "legacy.yaml").trainer.trainer.compile_generator is False
-    assert "compile_generator" not in OmegaConf.load(CONFIGS / "speedup" / "recipe.yaml").trainer.trainer
+    assert OmegaConf.load(CONFIGS / "trainer.yaml").trainer[key] is False
+    assert OmegaConf.load(CONFIGS / "speedup" / "legacy.yaml").trainer.trainer[key] is False
+    assert key not in OmegaConf.load(CONFIGS / "speedup" / "recipe.yaml").trainer.trainer
 
 
 @pytest.mark.parametrize("recipe", RECIPES)
 def test_recipes_keep_the_generator_eager(recipe):
     """Not in speedup/recipe.yaml until the A/B passes; the old `compile` key is gone from the recipes."""
     t = _trainer(f"+experiment={recipe}")["trainer"]["trainer"]
-    assert t["compile_generator"] is False and "compile" not in t
+    assert all(t[k] is False for k in GENERATOR_FAST_KEYS) and "compile" not in t
 
 
 @pytest.mark.parametrize("recipe", ["pretrain", "decoder_ft", "stereo_proxy_a3_fm"])
-def test_generator_fast_changes_only_compile_generator(recipe):
+def test_generator_fast_changes_only_its_keys(recipe):
     ref = _trainer(f"+experiment={recipe}", "+speedup=legacy")
     fast = _trainer(f"+experiment={recipe}", "+speedup=[legacy,generator_fast]")
-    assert fast["trainer"]["trainer"]["compile_generator"] is True
-    fast["trainer"]["trainer"]["compile_generator"] = False
+    for k in GENERATOR_FAST_KEYS:
+        assert fast["trainer"]["trainer"][k] is True
+        fast["trainer"]["trainer"][k] = False
     assert fast == ref
     on_recipe = _trainer(f"+experiment={recipe}", "+speedup=generator_fast")
-    assert on_recipe["trainer"]["trainer"]["compile_generator"] is True
+    assert all(on_recipe["trainer"]["trainer"][k] is True for k in GENERATOR_FAST_KEYS)
 
 
 def test_the_old_compile_key_is_a_deprecated_alias(monkeypatch):
