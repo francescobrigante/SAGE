@@ -1,9 +1,9 @@
 # @package _global_
 # =============================================================================
 # The speed-ups the recipes turn on (pretrain, decoder_ft, and through pretrain the stereo_proxy arms):
-# critic_fast_fused + loop_fast, key for key (tests/test_disc_speed.py checks it). Written out instead of
-# including those two files: a file merged twice in one composition does not apply its new subtrees
-# again (Hydra 1.3), so "+speedup=[legacy,critic_fast_fused]" on a recipe would silently stay legacy.
+# critic_fast_fused + loop_fast + generator_fast, key for key (tests/test_disc_speed.py checks it). Written
+# out instead of including those files: a file merged twice in one composition does not apply its new
+# subtrees again (Hydra 1.3), so "+speedup=[legacy,critic_fast_fused]" on a recipe would silently stay legacy.
 # The recipes with joint (stereo) critics turn the fused keys off again: pretrain, decoder_ft,
 # stereo_proxy_a3 and its variants; the fold-critic proxy arms (stereo_proxy C0, A1) keep them.
 # =============================================================================
@@ -19,6 +19,9 @@ trainer:
     ddp_skip_idle_buckets: true
     ddp_gradient_as_bucket_view: true
     ddp_broadcast_buffers: false
+    compile_generator: true
+    sdpa_train: true
+    patch_linear: true
   loss_config:
     discriminator:
       config:

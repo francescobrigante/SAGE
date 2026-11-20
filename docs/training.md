@@ -132,13 +132,27 @@ updates (`trainer.trainer.adv_grad_every`, W&B `diag/*`); it does not change tra
 
 ## Training speed-ups
 
-The recipes turn on the exact speed-ups of
-[configs/speedup/recipe.yaml](../configs/speedup/recipe.yaml): a faster critic
-(`critic_fast`: in-place activations, fused feature matching, channels-last, parallel
-branches) and a lighter training loop (`loop_fast`: no discriminator gradients in the
-generator step, windowed logging, DDP bucket options). They train the same losses and
-updates up to float rounding. `+speedup=legacy`, given after the experiment, turns them
-all off:
+The recipes turn on the speed-ups of
+[configs/speedup/recipe.yaml](../configs/speedup/recipe.yaml):
+
+- a faster critic (`critic_fast`: in-place activations, fused feature matching,
+  channels-last, parallel branches);
+- a lighter training loop (`loop_fast`: no discriminator gradients in the generator step,
+  windowed logging, DDP bucket options);
+- a faster generator (`generator_fast`): the encoder and the decoder compiled with
+  `torch.compile` (`trainer.trainer.compile_generator`: in place, mode `default`, static
+  shapes), their attention through `F.scaled_dot_product_attention` with autograd
+  (`trainer.trainer.sdpa_train`) and their patch layers as one matrix product
+  (`trainer.trainer.patch_linear`).
+
+They train the same losses and updates up to float rounding; the compiled generator also
+draws other drop-path masks, so a run is not bit-exact with one without it. In a 90-epoch
+A/B of the `stereo_proxy_a3_fm` recipe (2 A100, 3 seeds per arm), `generator_fast` trained
+14 % faster (4.09 → 4.66 it/s), with reconstruction (MoisesDB, FMA) and MAEB within the
+spread between seeds. The first batches of a run spend about 4 minutes compiling (one graph
+per input signature: generator step, discriminator step, validation, demos); a compile
+failure prints an error and that module runs eagerly. The checkpoints keep the keys of the
+eager model. `+speedup=legacy`, given after the experiment, turns all the speed-ups off:
 
 ```bash
 python train.py +experiment=pretrain +speedup=legacy trainer.trainer.num_gpus=4
@@ -147,17 +161,9 @@ python train.py +experiment=pretrain +speedup=legacy trainer.trainer.num_gpus=4
 `"+speedup=[legacy,critic_fast]"` then adds one group back. The fused Triton kernels of
 `critic_fast_fused` speed up only the fold (mono) critics, so the recipes leave them off.
 
-`+speedup=generator_fast` (off in the recipes) compiles the encoder and the decoder with
-`torch.compile` (`trainer.trainer.compile_generator`: in place, mode `default`, static
-shapes), runs their attention through `F.scaled_dot_product_attention` with autograd
-(`trainer.trainer.sdpa_train`) and their patch layers as one matrix product
-(`trainer.trainer.patch_linear`). The last two compute the same formula with the same
-weights. The checkpoints keep the keys of the eager model, but training is not bit-exact
-(float rounding, other drop-path draws), and the first batches of a run spend a few minutes
-compiling. A compile failure prints an error and that module runs eagerly. It replaces
-`trainer.trainer.compile`, which compiled nothing and is now a deprecated alias of it;
-checkpoints of runs that set it (`_orig_mod.` in their keys) still resume and initialize
-fine-tunings.
+`trainer.trainer.compile`, which compiled nothing, is now a deprecated alias of
+`compile_generator`; checkpoints of runs that set it (`_orig_mod.` in their keys) still
+resume and initialize fine-tunings.
 
 ## GPU count and batch size
 

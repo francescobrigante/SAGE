@@ -70,6 +70,7 @@ RUN = [
     "trainer.trainer.limit_val_batches=1",
     "trainer.trainer.num_sanity_val_steps=0",
     "trainer.trainer.save_every_n_epochs=1",
+    "trainer.trainer.compile_generator=false",  # on in the recipes; inductor on CPU takes minutes (test_smoke_compile)
     "trainer.wandb.use_wandb=false",
 ]
 

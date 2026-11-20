@@ -12,9 +12,11 @@
 # Measured (A100): generator forward + backward 111 -> 66 ms with compile (batch 8 x 128 frames, TF32); the
 # proxy recipe (stereo_proxy_a3_fm, 2 GPUs, same node, 600 batches): off 4.10 it/s, peak memory 14.6 GiB;
 # compile_generator alone 4.64 it/s (+13 %), 14.1 GiB; this file 4.67 it/s (+14 %), 12.5 GiB.
-# Not in speedup/recipe.yaml until the A/B (3 seeds per arm) shows no loss of quality.
+# The recipes have these keys (speedup/recipe.yaml): in an A/B of the proxy recipe (90 epochs, 3 seeds per arm)
+# the runs with them were 14 % faster, with reconstruction (MoisesDB, FMA) and MAEB within the seed spread.
+# After +speedup=legacy it adds them alone:
 #
-#   python train.py +experiment=stereo_proxy_a3_fm +speedup=generator_fast trainer.trainer.num_gpus=2
+#   python train.py +experiment=stereo_proxy_a3_fm "+speedup=[legacy,generator_fast]" trainer.trainer.num_gpus=2
 # =============================================================================
 trainer:
   trainer:

@@ -14,11 +14,12 @@
 # the weight validated for it. The paper fine-tune (folded mono critics, feature matching 0.2) is
 # the one of release v0.2.0, whose epoch 992 is the released checkpoint. Differences from phase 1 are
 # checked by tests/test_recipes.py; everything else is the trainer.yaml default, except the
-# exact speed-ups of configs/speedup/recipe.yaml (critic_fast_fused + loop_fast): same losses and
-# updates up to float rounding; `+speedup=legacy` runs the training loop of the paper run.
+# speed-ups of configs/speedup/recipe.yaml (critic_fast_fused + loop_fast + generator_fast): same losses
+# and updates up to float rounding (the compiled generator also draws other drop-path masks);
+# `+speedup=legacy` runs the training loop of the paper run.
 # =============================================================================
 defaults:
-  - /speedup/recipe                   # exact speed-ups: critic_fast_fused + loop_fast
+  - /speedup/recipe                   # speed-ups: critic_fast_fused + loop_fast + generator_fast
   - override /models: swin_real_swiglu_xsa
   - override /data: multicorpus
 

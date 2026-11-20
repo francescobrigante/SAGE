@@ -14,6 +14,7 @@ from conftest import RUN, SMOKE_DISC, TINY_MODEL, _data_overrides, run_training
 pytestmark = pytest.mark.smoke
 
 ON = ["trainer.trainer.sdpa_train=true", "trainer.trainer.patch_linear=true"]
+OFF = ["trainer.trainer.sdpa_train=false", "trainer.trainer.patch_linear=false"]   # the recipes turn them on
 LOSS_RTOL = 1e-4          # |on − off| / |off| per backward loss (float32)
 # Σ|on − off| / Σ|off| over all trained tensors. Adam's first steps move each weight by ≈ ±lr whatever |g|, so
 # rounding flips the step of the weights whose gradient is ~0 (per-tensor ratios blow up on near-zero tensors);
@@ -45,7 +46,7 @@ def test_sdpa_train_matches_the_original_training(audio_dir, tmp_path, recorded)
     base = (["+experiment=pretrain", "data=fma", "trainer.loss_config.semantic_distill.detach_warmup_steps=0",
              "trainer.wandb.name=smoke_sdpa_train"] + TINY_MODEL + SMOKE_DISC + _data_overrides(audio_dir) + RUN)
     (tmp_path / "off").mkdir(), (tmp_path / "on").mkdir()
-    off_ckpt = run_training(base, tmp_path / "off")
+    off_ckpt = run_training(base + OFF, tmp_path / "off")
     off_losses = recorded["losses"][:]
     assert recorded["sdpa_train"] == 0 and off_losses
     recorded["losses"].clear()

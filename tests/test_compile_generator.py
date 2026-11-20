@@ -4,7 +4,7 @@
 # run the compiled code, and the result matches the eager model (fp64, aot_eager on CPU: inductor is checked
 # on GPU). A compile error or the recompile limit prints an error and runs the call eagerly. Config: the key
 # (and the other generator_fast keys) is off by default, in speedup/legacy.yaml, on in
-# speedup/generator_fast.yaml, off in every recipe; the old `trainer.trainer.compile` is a deprecated alias.
+# speedup/generator_fast.yaml and in every recipe (speedup/recipe.yaml); the old `trainer.trainer.compile` is a deprecated alias.
 # Checkpoint keys of runs with that old option: test_init_from, smoke/test_smoke_compile.py.
 # ===============
 from pathlib import Path
@@ -298,18 +298,18 @@ def _trainer(*overrides):
 
 
 @pytest.mark.parametrize("key", GENERATOR_FAST_KEYS)
-def test_the_key_is_off_by_default_and_in_legacy(key):
+def test_the_key_is_off_by_default_and_in_legacy_on_in_the_recipes(key):
     from omegaconf import OmegaConf
     assert OmegaConf.load(CONFIGS / "trainer.yaml").trainer[key] is False
     assert OmegaConf.load(CONFIGS / "speedup" / "legacy.yaml").trainer.trainer[key] is False
-    assert key not in OmegaConf.load(CONFIGS / "speedup" / "recipe.yaml").trainer.trainer
+    assert OmegaConf.load(CONFIGS / "speedup" / "recipe.yaml").trainer.trainer[key] is True
 
 
 @pytest.mark.parametrize("recipe", RECIPES)
-def test_recipes_keep_the_generator_eager(recipe):
-    """Not in speedup/recipe.yaml until the A/B passes; the old `compile` key is gone from the recipes."""
+def test_recipes_turn_the_generator_speedups_on(recipe):
+    """speedup/recipe.yaml has the generator_fast keys; the old `compile` key is gone from the recipes."""
     t = _trainer(f"+experiment={recipe}")["trainer"]["trainer"]
-    assert all(t[k] is False for k in GENERATOR_FAST_KEYS) and "compile" not in t
+    assert all(t[k] is True for k in GENERATOR_FAST_KEYS) and "compile" not in t
 
 
 @pytest.mark.parametrize("recipe", ["pretrain", "decoder_ft", "stereo_proxy_a3_fm"])

@@ -636,11 +636,11 @@ def main(cfg: DictConfig):
             _load_discriminator_weights(wrapper, str(init_from))
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Optional exact speed-ups of the generator (off by default; +speedup=generator_fast turns them
-    # on): attention through SDPA with autograd (trainer.trainer.sdpa_train) and the patch layers as
-    # one GEMM (trainer.trainer.patch_linear). Same formula and weights, equal in exact arithmetic,
-    # same state_dict keys; complex-valued modules keep their path. Set before compile_generator, so
-    # the compiled graphs trace them.
+    # Exact speed-ups of the generator (off in trainer.yaml, on in the recipes through
+    # speedup/recipe.yaml; +speedup=generator_fast): attention through SDPA with autograd
+    # (trainer.trainer.sdpa_train) and the patch layers as one GEMM (trainer.trainer.patch_linear).
+    # Same formula and weights, equal in exact arithmetic, same state_dict keys; complex-valued
+    # modules keep their path. Set before compile_generator, so the compiled graphs trace them.
     # ─────────────────────────────────────────────────────────────────────────
     if pl_trainer_cfg.get("sdpa_train", False):
         n = enable_sdpa_train(wrapper.engine.autoencoder)
@@ -650,10 +650,10 @@ def main(cfg: DictConfig):
         ok(f"patch_linear: {n} patch layers as one GEMM", prefix="TRAINER")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Optional torch.compile of the generator (trainer.trainer.compile_generator, off by default;
-    # +speedup=generator_fast turns it on). The encoder and the decoder are compiled in place
-    # (mode default, static shapes), after the weights are loaded: the module tree and the
-    # state_dict keys stay those of the eager model (sage/training/compile.py). A compile
+    # torch.compile of the generator (trainer.trainer.compile_generator: off in trainer.yaml, on in
+    # the recipes). The encoder and the decoder are compiled in place (mode default, static
+    # shapes), after the weights are loaded: the module tree and the state_dict keys stay those
+    # of the eager model (sage/training/compile.py). A compile
     # failure prints an error and runs that module eagerly. The old trainer.trainer.compile is
     # a deprecated alias (it wrapped the autoencoder, which has no forward: nothing was compiled).
     # ─────────────────────────────────────────────────────────────────────────
