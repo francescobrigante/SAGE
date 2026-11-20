@@ -91,8 +91,16 @@ rec = codec.reconstruct(wav)  # encode + decode; same shape as the input
 ```
 
 At inference the window attention runs through PyTorch's fused `scaled_dot_product_attention`, which computes
-the same formula faster. `SAGE.from_checkpoint(..., sdpa=False)` (or `--no-sdpa` in `encode_decode.py`) runs the
-original attention instead.
+the same formula faster, together with exact reformulations of the same forward: the Q/V bias inside the QKV
+product, one projection for all phases of the variable-length attention, the patch layers as one matrix product.
+`SAGE.from_checkpoint(..., sdpa=False)` (or `--no-sdpa` in `encode_decode.py`) runs the original attention and
+layers instead.
+
+`compile=True` (`--compile default` in `encode_decode.py`) compiles the encoder and the decoder with
+`torch.compile`; inside the compiled graphs the attention runs through FlexAttention on CUDA. `compile="reduce-overhead"`
+also captures CUDA graphs, the fastest on short clips. The first call at each new input length compiles (about
+25–85 s on an A100), so compiling pays off for many inputs of few lengths (fixed-length clips, the chunks of long
+audio). The outputs equal the eager ones up to floating-point rounding.
 
 Encoding and decoding run in TF32 by default, the setting of the paper's timings, which leaves the reconstruction
 unchanged (paper, Appendix C). `precision="fp32"` (`--precision fp32` in `encode_decode.py`) turns TF32 off;
