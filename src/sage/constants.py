@@ -19,6 +19,14 @@ DEFAULT_SILENCE_THRESHOLD = -62           # dBFS: crops quieter than this are re
 DEFAULT_PARTIAL_READ = False
 DEFAULT_PARTIAL_READ_MARGIN = 4096
 
+# torch.compile of the generator in training (trainer.trainer.compile_generator, sage.training.compile).
+# Mode "default": the CUDA graphs of "reduce-overhead" would overwrite outputs that the G/D alternation, the
+# loss bookkeeping and the validation callbacks still hold. Each module gets one graph per input signature
+# (generator step, discriminator step under no_grad, validation, its last partial batch, demos): about 5,
+# so the limit leaves room without letting a recompiling input go unnoticed.
+GENERATOR_COMPILE_MODE = "default"
+GENERATOR_RECOMPILE_LIMIT = 16
+
 # Long audio (sage.inference.SAGE): inputs longer than one chunk are encoded and decoded in chunks of this length,
 # each with this much context per side that is then discarded (SAME-style). A margin of 3 s or more gives the
 # one-pass output up to float rounding (> 100 dB); with the postnet in slices above ~190 s, 300 s chunks keep the
@@ -30,3 +38,7 @@ DEFAULT_CHUNK_MARGIN_SECONDS = 6.0
 # Numerical precision of inference (sage.inference.SAGE, `precision=`; see sage.precision): TF32 matmuls and
 # convolutions, the setting of the paper's timings (Table 1), which leaves the reconstruction unchanged.
 DEFAULT_PRECISION = "tf32"
+
+# torch.compile of inference (sage.inference.SAGE, `compile=`; see sage.compile): off by default, as the first call at
+# every new input length compiles for ~25-85 s; "default" or "reduce-overhead" (CUDA graphs) for repeated lengths.
+DEFAULT_COMPILE = None

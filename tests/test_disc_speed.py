@@ -190,6 +190,7 @@ def test_trainer_default_is_off():
     cfg = OmegaConf.load(Path(__file__).parents[1] / "configs" / "trainer.yaml")
     assert cfg.trainer.freeze_disc_in_gen_step is False
     assert cfg.trainer.disc_step_loss_only is False
+    assert cfg.trainer.compile_generator is False              # tests/test_compile_generator.py
     critic = WavTokenizerGANLoss(loss_type="rpgan", **BASE)
     assert not (critic.fused_feature_matching or critic.discriminator.branch_streams)
     assert not (critic.discriminator.fused_bias_act or critic.discriminator.fused_bias_grad)
@@ -646,12 +647,13 @@ def test_ema_foreach_is_bit_identical():
 
 CONFIGS = Path(__file__).parents[1] / "configs"
 CRITIC_SPEED_KEYS = ("inplace_act", "fused_feature_matching", "channels_last", "branch_streams")
+GENERATOR_SPEED_KEYS = ("compile_generator", "sdpa_train", "patch_linear")
 FUSED_SPEED_KEYS = ("fused_bias_act", "fused_bias_grad")
 TRAINER_SPEED_KEYS = ("freeze_disc_in_gen_step", "disc_step_loss_only", "ema_foreach", "log_every_n_batches",
                       "progress_bar_refresh_rate", "lr_monitor", "detach_step_output", "ddp_skip_idle_buckets",
-                      "ddp_gradient_as_bucket_view", "ddp_broadcast_buffers")
-# Recipes with the speed-ups on, and whether they keep the fused keys (fold critics only).
-RECIPES = {"pretrain": True, "decoder_ft": True, "stereo_proxy": True, "stereo_proxy_a1": True,
+                      "ddp_gradient_as_bucket_view", "ddp_broadcast_buffers") + GENERATOR_SPEED_KEYS
+# Recipes with the speed-ups on, and whether they keep the fused keys (fold critics only: C0, A1).
+RECIPES = {"pretrain": False, "decoder_ft": False, "stereo_proxy": True, "stereo_proxy_a1": True,
            "stereo_proxy_a3": False, "stereo_proxy_a3_fm": False,
            "stereo_proxy_ft": False}
 
@@ -694,11 +696,13 @@ def test_speedup_override_changes_only_speed_keys(arm, speedup):
 
 @pytest.mark.parametrize("recipe", list(RECIPES))
 def test_recipe_has_the_speedups_on(recipe):
-    """The recipe = recipe + legacy + critic_fast_fused + loop_fast, except the fused keys, off on the joint
-    critics: speedup/recipe.yaml holds the keys of those two files, and they still apply after legacy."""
+    """The recipe = recipe + legacy + critic_fast_fused + loop_fast + generator_fast, except the fused keys,
+    off on the joint critics: speedup/recipe.yaml holds the keys of those files, and they still apply after legacy."""
     rec, t, d = _compose(f"+experiment={recipe}")
-    fast, _, fast_d = _compose(f"+experiment={recipe}", "+speedup=[legacy,critic_fast_fused,loop_fast]")
+    fast, _, fast_d = _compose(f"+experiment={recipe}",
+                               "+speedup=[legacy,critic_fast_fused,loop_fast,generator_fast]")
     assert t["freeze_disc_in_gen_step"] and t["log_every_n_batches"] == 1 and t["ddp_skip_idle_buckets"]
+    assert all(t[k] is True for k in GENERATOR_SPEED_KEYS)
     assert all(d[k] is True for k in CRITIC_SPEED_KEYS)
     assert all(d[k] is RECIPES[recipe] for k in FUSED_SPEED_KEYS)
     for k in FUSED_SPEED_KEYS:

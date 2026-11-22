@@ -73,11 +73,13 @@ class CodecAdapter(ABC):
 # waveform is right-padded so the STFT frame count is a multiple of
 # 2**num_downsamples, z is SAMPLED from the posterior (deterministic=False; the
 # posterior mean with deterministic=True), decoded and trimmed back.
+# compile (off by default) compiles encoder and decoder (sage.compile): every
+# new clip length compiles once, so it pays off on sets of equal-length clips.
 # ===========================================================================
 class SAGEAdapter(CodecAdapter):
     def __init__(self, device: str = "cuda", checkpoint: str | None = None,
                  varlen: str | None = None, deterministic: bool = False, sdpa: bool = True,
-                 use_ema: bool = True, **_: Any):
+                 use_ema: bool = True, compile: str | bool | None = None, **_: Any):
         from sage.inference import SAGE
 
         if checkpoint is None:
@@ -86,7 +88,8 @@ class SAGEAdapter(CodecAdapter):
         self.deterministic = deterministic          # posterior mean instead of sampled z
         # precision=None: PyTorch's default flags, as for the paper's tables and every other adapter
         self.codec = SAGE.from_checkpoint(checkpoint, device=self.device, varlen=varlen, sdpa=sdpa, precision=None,
-                                          use_ema=use_ema)        # False: the training weights
+                                          use_ema=use_ema,        # False: the training weights
+                                          compile=compile)
         self.sample_rate = self.codec.sample_rate or 44100
         self.audio_channels = self.codec.audio_channels or 2
 
@@ -97,14 +100,19 @@ class SAGEAdapter(CodecAdapter):
 
     def provenance(self) -> dict:
         """The attention settings that produced the numbers (metrics/varlen.json): variable-length
-        mode, the SDPA path when it was on (the key is absent otherwise, as in earlier runs), and the
-        chunk length above which long inputs run in chunks."""
+        mode, the SDPA path and its options when it was on, the compile mode when compiled (these keys
+        are absent otherwise, as in earlier runs), and the chunk length above which long inputs run in
+        chunks."""
         from sage.model.swin.varlen import resolve
         vl = resolve(self.codec.varlen_mode)
         out = {"mode": self.codec.varlen_mode, "blocks": self.codec.varlen_blocks,
                "phases": list(vl.phases) if vl else [], "combine": vl.combine if vl else None}
+        options = self.codec.speedup_options()          # what ran: read from the modules
         if self.codec.sdpa:
             out["sdpa"] = True
+            out["sdpa_options"] = [o for o in options if o in ("fused_bias", "shared_phases", "flex", "patch_linear")]
+        if self.codec.compile is not None:
+            out["compile"] = self.codec.compile
         if self.codec.chunk_seconds is not None:      # inputs longer than this ran in chunks
             out["chunk_seconds"] = self.codec.chunk_seconds
             out["chunk_margin_seconds"] = self.codec.chunk_margin_seconds

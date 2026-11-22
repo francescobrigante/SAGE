@@ -5,7 +5,8 @@
 # variable-length multi-phase blocks; the cached bias follows the weights (load,
 # cast, in-place edits, compiled models) and works under inference_mode; calls above
 # the CUDA launch grid limit are split with the same values, calls below it are the
-# single call; training and autograd always take the original forward; the state_dict
+# single call; training and autograd take the original forward unless the separate
+# training path is on (enable_sdpa_train, tests/test_sdpa_train.py); the state_dict
 # does not change.
 # ===============================================================
 
@@ -52,7 +53,7 @@ def attentions(module: torch.nn.Module) -> list[WindowAttention]:
 
 def test_off_by_default():
     blk = make_block(LOCAL, shift=(2, 16))
-    assert not any(a.sdpa for a in attentions(blk))
+    assert not any(a.sdpa or a.sdpa_train for a in attentions(blk))
 
 
 def test_disable_restores_the_original_bit_for_bit():
@@ -285,6 +286,7 @@ def test_autograd_and_training_take_the_original_forward():
         ref_train = blk(x)
     blk.eval()
     enable_sdpa(blk)
+    assert not blk.attn.sdpa_train                         # the training path is a separate opt-in
     assert torch.equal(blk(x), ref_grad)
     blk.train()
     with torch.no_grad():

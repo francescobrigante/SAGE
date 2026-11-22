@@ -5,12 +5,16 @@
 #   PatchMerging  tokens ↓2x                 (end of encoder stages 0–2)
 #   PatchExpand   tokens ↑2x                 (between decoder stages)
 #   PatchUnembed  tokens       → spectrogram (decoder output)
+#
+# PatchEmbed / PatchUnembed can run as one GEMM (enable_patch_linear):
+# kernel = stride, so each patch is an independent matrix product.
 # ===============================================================
 
 from typing import Tuple, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from timm.layers import to_2tuple
 from sage.nn.conv.normed import NormLinear
 from sage.nn.conv.causal import SConv2d, SConvTranspose2d
@@ -37,6 +41,10 @@ class PatchEmbed(nn.Module):
             is_complex=True (make_norm is used instead).
         is_complex: If True, uses SConv2d + ComplexLayerNorm.
     """
+
+    # Patches as one GEMM (set per instance by enable_patch_linear): reshape + F.linear with the
+    # Conv2d weights, equal in exact arithmetic. False = the Conv2d below, unchanged.
+    patch_linear: bool = False
 
     def __init__(
         self,
@@ -92,13 +100,33 @@ class PatchEmbed(nn.Module):
         _, _, H, W = x.shape                                          # (B, C, H, W)
         assert H == self.img_size[0], f"Freq mismatch: got {H}, expected {self.img_size[0]}"
         assert W % self.patch_size[1] == 0, f"W={W} not divisible by patch_size_w={self.patch_size[1]}"
-        x = self.proj(x)                                              # (B, embed_dim, H/ph, W/pw)
-        x = x.flatten(2).transpose(1, 2)                             # (B, num_patches, embed_dim)
+        if self.patch_linear:
+            x = self._proj_as_linear(x)                               # (B, num_patches, embed_dim)
+        else:
+            x = self.proj(x)                                          # (B, embed_dim, H/ph, W/pw)
+            x = x.flatten(2).transpose(1, 2)                         # (B, num_patches, embed_dim)
         if self.norm is not None:
             x = self.norm(x)
         if hasattr(self, 'pos_embed'):
             x = x + self.pos_embed
         return x
+
+    def _proj_as_linear(self, x: torch.Tensor) -> torch.Tensor:
+        """self.proj as one GEMM on the flattened patches: same weights, same token order (f·W' + t).
+
+        Args:
+            x: (B, C, H, W)
+
+        Returns:
+            (B, H/ph * W/pw, embed_dim)
+        """
+        B, C, H, W = x.shape
+        ph, pw = self.patch_size
+        Hg, Wg = H // ph, W // pw                                     # token grid (the conv drops a partial row)
+        x = x[:, :, :Hg * ph].reshape(B, C, Hg, ph, Wg, pw)          # (B, C, Hg, ph, Wg, pw)
+        x = x.permute(0, 2, 4, 1, 3, 5).reshape(B, Hg * Wg, C * ph * pw)  # (B, Hg*Wg, C*ph*pw)
+        weight = self.proj.weight                                     # (embed_dim, C, ph, pw)
+        return F.linear(x, weight.reshape(weight.shape[0], -1), self.proj.bias)   # (B, Hg*Wg, embed_dim)
 
 
 # --------------------------------------------------------------------------- #
@@ -121,6 +149,10 @@ class PatchUnembed(nn.Module):
         patch_size: Kernel = stride of ConvTranspose2d (must match PatchEmbed).
         is_complex: If True, uses SConvTranspose2d(is_complex=True).
     """
+
+    # Patches as one GEMM (set per instance by enable_patch_linear): F.linear with the
+    # ConvTranspose2d weights + reshape, equal in exact arithmetic. False = the conv below, unchanged.
+    patch_linear: bool = False
 
     def __init__(
         self,
@@ -158,8 +190,29 @@ class PatchUnembed(nn.Module):
         B, L, C = x.shape                                             # (B, H*W, embed_dim)
         assert L % H == 0, f"Token count {L} not divisible by H={H}"
         W = L // H
+        if self.patch_linear:
+            return self._conv_as_linear(x, H, W)                      # (B, out_channels, H*ps, W*ps)
         x = x.transpose(1, 2).view(B, C, H, W)                       # (B, embed_dim, H, W)
         return self.conv(x)                                           # (B, out_channels, H*ps, W*ps)
+
+    def _conv_as_linear(self, x: torch.Tensor, H: int, W: int) -> torch.Tensor:
+        """self.conv as one GEMM: each token maps to its own (out_channels, ph, pw) patch, same weights.
+
+        Args:
+            x: (B, H*W, embed_dim)
+
+        Returns:
+            (B, out_channels, H*ph, W*pw), contiguous as the conv's output.
+        """
+        B, _, C = x.shape
+        weight = self.conv.weight                                     # (embed_dim, out_channels, ph, pw)
+        _, C_out, ph, pw = weight.shape
+        bias = self.conv.bias
+        if bias is not None:
+            bias = bias.repeat_interleave(ph * pw)                    # (out_channels*ph*pw,)
+        y = F.linear(x, weight.reshape(C, -1).t(), bias)              # (B, H*W, out_channels*ph*pw)
+        y = y.view(B, H, W, C_out, ph, pw).permute(0, 3, 1, 4, 2, 5)  # (B, out_channels, H, ph, W, pw)
+        return y.reshape(B, C_out, H * ph, W * pw)                    # (B, out_channels, H*ph, W*pw)
 
 
 # --------------------------------------------------------------------------- #
@@ -361,3 +414,41 @@ class SpatialConvSmooth(nn.Module):
 
     def extra_repr(self) -> str:
         return f"input_resolution={self.input_resolution}"
+
+
+# --------------------------------------------------------------------------- #
+# Patch layers as one GEMM                                                     #
+# --------------------------------------------------------------------------- #
+
+def _is_patchwise(conv: nn.Module) -> bool:
+    """Kernel = stride, no padding, dilation or groups: every output patch comes from one input patch."""
+    padding = conv.padding if isinstance(conv.padding, str) else tuple(conv.padding)
+    return (tuple(conv.kernel_size) == tuple(conv.stride) and padding in ("valid", (0, 0))
+            and tuple(conv.dilation) == (1, 1) and conv.groups == 1
+            and tuple(getattr(conv, "output_padding", (0, 0))) == (0, 0))
+
+
+def enable_patch_linear(module: nn.Module, enabled: bool = True) -> int:
+    """Compute every real-valued PatchEmbed / PatchUnembed of ``module`` as one GEMM (or back).
+
+    Their Conv2d / ConvTranspose2d has kernel = stride and no padding, so each patch is an independent
+    matrix product: a reshape + F.linear with the same weights replaces the convolution and the layout
+    changes around it. Equal in exact arithmetic, not bit-identical. No weight is touched (same
+    state_dict), and the path is differentiable, so training may use it too. ``enabled=False``
+    restores the convolutions exactly.
+
+    Args:
+        module: Any module containing patch layers — typically the whole SAGEAutoencoder.
+        enabled: True = GEMM, False = original convolution.
+
+    Returns:
+        Number of patch layers affected (complex-valued ones are never touched).
+    """
+    count = 0
+    for m in module.modules():
+        conv = m.proj if isinstance(m, PatchEmbed) else m.conv if isinstance(m, PatchUnembed) else None
+        if conv is None or m.is_complex or not _is_patchwise(conv):
+            continue
+        m.patch_linear = enabled
+        count += 1
+    return count

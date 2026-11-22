@@ -76,6 +76,13 @@ trainer:
                                     # gradients there); same generator gradient and updates (exact speed-up)
   disc_step_loss_only: false        # true: the discriminator step computes only the critic loss (critic.dis_loss),
                                     # not the dropped generator terms; same loss and critic gradients (exact)
+  compile_generator: false          # true: torch.compile of the encoder and the decoder, in place (mode default,
+                                    # static shapes; configs/speedup/generator_fast.yaml). Same state_dict keys;
+                                    # not bit-exact (float rounding, other drop-path draws). Replaces `compile`
+  sdpa_train: false                 # true: generator attention through SDPA with autograd (sage/model/swin/sdpa.py,
+                                    # enable_sdpa_train): same formula, equal in exact arithmetic, fused kernel
+  patch_linear: false               # true: PatchEmbed / PatchUnembed as reshape + one GEMM (enable_patch_linear):
+                                    # same weights, equal in exact arithmetic
   # Training-loop speed keys (configs/speedup/loop_fast.yaml turns the exact ones on; so do the recipes)
   log_every_n_batches: 0            # >0: train/* summed on the GPU, logged every N batches with one host copy
                                     # (sets the Trainer's log_every_n_steps; 0 = .item() per value, log_interval)

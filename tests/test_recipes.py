@@ -1,6 +1,8 @@
 # ===============
 # The two training recipes (configs/experiment/{pretrain,decoder_ft}.yaml) compose to the
-# configuration of the paper, Table 6, value by value. Also checks that the semantic gate,
+# configuration of the paper, Table 6, value by value, except the discriminator: stereo critics
+# (joint on L, R, M, S, shared DAC gain) and feature matching 10 (pretraining) / 5 (decoder
+# fine-tune) instead of folded mono critics and 0.2 (release v0.2.0). Also checks that the semantic gate,
 # now counted in generator updates, opens at exactly the same batch as in the paper run,
 # where it was compared with Lightning's global_step (bug B3).
 # ===============
@@ -77,6 +79,10 @@ def test_shared_optimization(phase, request):
     d = t["loss_config"]["discriminator"]
     assert d["type"] == "wavtokenizer" and d["config"]["loss_type"] == "rpgan"
     assert d["config"]["fold_lrms"] is True                                              # L, R, M, S
+    stereo = {k: d["config"][k] for k in ("preprocess_gain", "mpd_stereo", "mrd_stereo", "dac_stereo")}
+    assert stereo == {"preprocess_gain": "shared", "mpd_stereo": "lrms", "mrd_stereo": "lrms",
+                      "dac_stereo": "lrms"}                                              # joint critics
+    assert d["config"]["fused_bias_act"] is False and d["config"]["fused_bias_grad"] is False
     assert (d["config"]["periods"], d["config"]["fft_sizes"]) == ([2, 3, 5, 7, 11], [2048, 1024, 512])
     sd = t["loss_config"]["mrstft_sd"]["config"]
     assert sd["fft_sizes"] == [2048, 1024, 512, 256, 128, 64] and sd["perceptual_weighting"] is True
@@ -88,7 +94,7 @@ def test_shared_optimization(phase, request):
 def test_pretrain(pre):
     t = pre["trainer"]
     assert t["trainer"]["epochs"] == 500 and t["optimizer"]["lr"] == 1e-3
-    assert _loss_weights(pre) == (1.0, 0.5, 1.0, 1e-4, 1.0, 0.1, 0.2)
+    assert _loss_weights(pre) == (1.0, 0.5, 1.0, 1e-4, 1.0, 0.1, 10.0)
     aux = t["aux_optimizer"]
     assert (aux["lr"], aux["betas"], aux["weight_decay"]) == (1e-5, [0.9, 0.98], 1e-4)
     assert t["aux_scheduler"]["_target_"] == "torch.optim.lr_scheduler.ConstantLR"
@@ -104,7 +110,7 @@ def test_pretrain(pre):
 def test_decoder_finetune(ft):
     t = ft["trainer"]
     assert t["trainer"]["epochs"] == 992 and t["optimizer"]["lr"] == 1e-4
-    assert _loss_weights(ft) == (1.0, 0.5, 1.0, 0.0, 0.0, 0.1, 0.2)                    # λKL = λsem = 0
+    assert _loss_weights(ft) == (1.0, 0.5, 1.0, 0.0, 0.0, 0.1, 5.0)                    # λKL = λsem = 0
     assert "semantic_distill" not in t["loss_config"]                                    # no CLAP teacher
     assert t["trainer"]["freeze_encoder"] is True and t["trainer"]["warmup_steps"] == 0
     assert ft["models"]["model"]["decoder"]["use_postnet"] is True

@@ -69,7 +69,9 @@ def test_paper_config_rebuilds_the_recorded_state_dict_layout():
 def test_paper_checkpoint_resumes_into_the_decoder_ft_recipe():
     """Full resume (`ckpt_path=`): Lightning calls on_load_checkpoint and then a strict
     load_state_dict. The pre-release loss key is dropped there (LEGACY_STATE_KEYS), the
-    EMA weights are stashed for the EMA callback, and every other key must match."""
+    EMA weights are stashed for the EMA callback, and every other key must match. The recipe is
+    composed with the discriminator of the paper run (folded mono critics, release v0.2.0): the
+    stereo critics of the current recipe have other first-convolution shapes."""
     import torch
     from hydra import compose, initialize_config_dir
     from omegaconf import OmegaConf
@@ -81,7 +83,13 @@ def test_paper_checkpoint_resumes_into_the_decoder_ft_recipe():
 
     ckpt = torch.load(PAPER_CKPT, map_location="cpu", weights_only=True, mmap=True)
     with initialize_config_dir(config_dir=str(REPO / "configs"), version_base=None):
-        cfg = compose(config_name="main", overrides=["+experiment=decoder_ft"])
+        cfg = compose(config_name="main", overrides=[
+            "+experiment=decoder_ft",
+            "trainer.loss_config.discriminator.config.preprocess_gain=per_channel",
+            "trainer.loss_config.discriminator.config.mpd_stereo=fold",
+            "trainer.loss_config.discriminator.config.mrd_stereo=fold",
+            "trainer.loss_config.discriminator.config.dac_stereo=fold",
+            "trainer.loss_config.discriminator.weights.feature_matching=0.2"])
     ds = cfg.data.train_dataset
     wrapper = SAGELightningModule(
         autoencoder=SAGEAutoencoder.from_config(upgrade_model_config(ckpt["inference_config"]["model"])),

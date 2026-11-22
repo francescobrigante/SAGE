@@ -18,7 +18,11 @@ e.g. `paths.musiccaps=/data/musiccaps_10s`. The weights go under `SAGE_MODELS`
 
 ## Training (Table 6)
 
-See the [training guide](training.md) for data and teacher setup, GPU sizing,
+The released checkpoint was trained with the recipes of release
+[v0.2.0](https://github.com/francescobrigante/SAGE/tree/v0.2.0) (`git checkout v0.2.0`), which hold
+every value of Table 6. From v0.3.0 the recipes use a stereo discriminator
+([training guide](training.md#discriminator)) and no longer reproduce Table 6 exactly; the commands
+below are those of v0.2.0. See the [training guide](training.md) for data and teacher setup, GPU sizing,
 logging, checkpoint resuming, and SLURM execution.
 
 | Result | Command |
@@ -26,16 +30,16 @@ logging, checkpoint resuming, and SLURM execution.
 | Phase 1, pretraining (500 epochs, 16 GPUs, global batch 128) | `python train.py +experiment=pretrain trainer.trainer.num_gpus=4 ++trainer.trainer.num_nodes=4` |
 | Phase 2, decoder fine-tuning → `SAGE_FTe992.ckpt` (epoch 992) | `python train.py +experiment=decoder_ft +init_from=<phase-1 checkpoint> trainer.trainer.num_gpus=4 ++trainer.trainer.num_nodes=4` |
 
-The recipes (`configs/experiment/pretrain.yaml`, `decoder_ft.yaml`) hold every value of
+At v0.2.0 the recipes (`configs/experiment/pretrain.yaml`, `decoder_ft.yaml`) hold every value of
 Table 6; `tests/test_recipes.py` checks them. The batch size is global, so fewer GPUs run
 the same recipe.
 
-The recipes also turn on the exact speed-ups of `configs/speedup/recipe.yaml` (the keys of
-`critic_fast_fused` and `loop_fast`: the critic and the training loop around it), which came
-after the paper. They train the same losses and updates up to float rounding (+43 % it/s on
-the stereo proxy, 2 A100s). `+speedup=legacy`, given after the experiment
-(`+experiment=pretrain +speedup=legacy`), turns them all off: the training loop of the paper
-runs.
+The recipes of later releases also turn on speed-ups of the critic, of the training loop and of
+the generator, which came after the paper (same losses and updates up to float rounding);
+`+speedup=legacy` turns them off ([training guide](training.md#training-speed-ups)).
+With `+speedup=legacy` and the paper's discriminator keys
+([training guide](training.md#discriminator)), the recipes of `main` compose to the losses and
+hyperparameters of v0.2.0.
 
 ## Reconstruction (Table 2)
 

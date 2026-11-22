@@ -7,7 +7,8 @@ from __future__ import annotations
 #   z     = codec.encode(wav)                               # (B, 2, N) -> (B, 16, T_lat)
 #   rec   = codec.decode(z, target_length=wav.shape[-1])    # -> (B, 2, N)
 # Inputs longer than one chunk (300 s by default) run in chunks with context margins (sage.chunked).
-# Encode and decode run in TF32 by default (`precision=`, see sage.precision).
+# Encode and decode run in TF32 by default (`precision=`, see sage.precision); `compile=` compiles the encoder
+# and the decoder with torch.compile (see sage.compile).
 # =============================================================================
 
 import math
@@ -17,7 +18,7 @@ from typing import Any, Dict, Optional, Union
 import torch
 import torch.nn.functional as F
 
-from sage import chunked, precision as _precision
+from sage import chunked, compile as _compile, precision as _precision
 from sage.constants import DEFAULT_CHUNK_MARGIN_SECONDS, DEFAULT_CHUNK_SECONDS
 from sage.model.autoencoder import SAGEAutoencoder
 from sage.utils.console import ok, warn
@@ -300,6 +301,7 @@ class SAGE:
         chunk_margin_seconds: float = DEFAULT_CHUNK_MARGIN_SECONDS,
         precision: Optional[str] = _precision.DEFAULT_PRECISION,
         use_ema: bool = True,
+        compile: Union[None, bool, str] = _compile.DEFAULT_COMPILE,
     ) -> "SAGE":
         """Load a SAGE checkpoint (EMA weights when present, unless ``use_ema=False``).
 
@@ -311,6 +313,9 @@ class SAGE:
                 (``"off"`` = single-phase attention); ``None`` uses the default there (``tri2``).
             sdpa: Run the window attention through ``F.scaled_dot_product_attention``: same
                 formula, fused kernel, faster. On by default; ``False`` runs the original attention.
+                With it, exact reformulations of the same forward: Q/V bias inside the QKV GEMM,
+                one QKV / output projection for all phases of the variable-length blocks, patch
+                layers as one GEMM (``False`` turns them off too).
             chunk_seconds: Inputs longer than this are encoded and decoded in chunks of this length
                 (rounded to the 128-frame window grid, 1.49 s), so the memory stays bounded at any
                 length. ``None`` always runs one pass (memory grows with the length).
@@ -324,10 +329,16 @@ class SAGE:
                 restored afterwards; they are process-wide while those calls run.
             use_ema: Load the EMA weights when the checkpoint has them (default); ``False`` loads the
                 training weights.
+            compile: ``None`` / ``False`` (default): eager. ``True`` / ``"default"``: encoder and decoder
+                compiled with ``torch.compile`` (static shapes); ``"reduce-overhead"``: also CUDA graphs, the
+                fastest on short clips. Inside the compiled graphs the attention runs through FlexAttention on
+                CUDA (with ``sdpa``). The first call at each new input length compiles, ~25-85 s on an A100;
+                worth it for many inputs of few lengths (fixed-length clips, the chunks of long audio). Outputs
+                equal the eager ones up to float rounding. See ``sage/compile.py``.
         """
         return cls(checkpoint_path, device=device, strict=strict, varlen=varlen, sdpa=sdpa,
                    chunk_seconds=chunk_seconds, chunk_margin_seconds=chunk_margin_seconds,
-                   precision=precision, use_ema=use_ema)
+                   precision=precision, use_ema=use_ema, compile=compile)
 
     def __init__(
         self,
@@ -341,8 +352,10 @@ class SAGE:
         chunk_margin_seconds: float = DEFAULT_CHUNK_MARGIN_SECONDS,
         precision: Optional[str] = _precision.DEFAULT_PRECISION,
         use_ema: bool = True,
+        compile: Union[None, bool, str] = _compile.DEFAULT_COMPILE,
     ) -> None:
         _precision.check_precision(precision)
+        compile_mode = _compile.check_compile(compile)
         self.checkpoint_path = Path(checkpoint_path)
         if not self.checkpoint_path.is_file():
             raise FileNotFoundError(f"Checkpoint not found: {self.checkpoint_path}")
@@ -396,9 +409,10 @@ class SAGE:
         # Lightning modules build their SAGEAutoencoder directly. Inert at or below
         # the training length, so short-segment results are bit-identical.
         self._apply_varlen(varlen)
-        self._apply_sdpa(sdpa)
+        self._apply_sdpa(sdpa)                      # fills the cached attention bias outside any compiled graph
         self._apply_chunking(chunk_seconds, chunk_margin_seconds)
         self.set_precision(precision)
+        self._apply_compile(compile_mode)           # last: the compiled call traces the precision wrapper
 
         ok(f"Loaded checkpoint: {self.checkpoint_path}", prefix="CHECKPOINT")
 
@@ -423,15 +437,52 @@ class SAGE:
     def _apply_sdpa(self, sdpa: bool) -> None:
         """Route the window attention through ``F.scaled_dot_product_attention`` (on by default).
 
-        Sets ``sdpa`` (what ran: False when no real-valued attention exists to route) and
-        ``sdpa_blocks`` (attention modules touched). See ``sage/model/swin/sdpa.py``.
+        The same switch turns on the exact reformulations that come with it: the Q/V bias inside
+        the QKV GEMM and one QKV / output projection for all phases of a multi-phase block (options
+        of ``enable_sdpa``, see ``sage/model/swin/sdpa.py``), and the patch layers as one GEMM
+        (``enable_patch_linear``, ``sage/model/swin/patches.py``). Each can be switched off on
+        ``self.autoencoder`` with those functions. Sets ``sdpa`` (what ran: False when no real-valued
+        attention exists to route), ``sdpa_blocks`` (attention modules touched) and
+        ``patch_linear_layers`` (patch layers computed as a GEMM).
         """
+        from sage.model.swin.patches import enable_patch_linear   # imports timm: keep `import sage.inference` light
+
         self.sdpa_blocks = enable_sdpa(self.autoencoder) if sdpa else 0
         self.sdpa = self.sdpa_blocks > 0
+        self.patch_linear_layers = enable_patch_linear(self.autoencoder) if sdpa else 0
         if self.sdpa:
-            ok(f"sdpa attention on {self.sdpa_blocks} attention modules", prefix="CHECKPOINT")
+            ok(f"sdpa attention on {self.sdpa_blocks} attention modules (fused Q/V bias, shared-phase QKV), "
+               f"{self.patch_linear_layers} patch layers as GEMM", prefix="CHECKPOINT")
         elif sdpa:
             warn("sdpa=True ignored: the model has no real-valued window attention", prefix="CHECKPOINT")
+
+    def _apply_compile(self, mode: Optional[str]) -> None:
+        """Compile the encoder and the decoder in place (``sage.compile.compile_module``) and set ``compile``
+        (the mode, None when eager)."""
+        self.compile = mode
+        for block in (self.autoencoder.encoder, self.autoencoder.decoder):
+            _compile.compile_module(block, mode)
+        if mode is not None:
+            ok(f"torch.compile mode={mode} on encoder and decoder (each new input length compiles once)",
+               prefix="CHECKPOINT")
+
+    def speedup_options(self) -> list:
+        """The exact speed-ups in effect, read from the modules: ``"sdpa"``, its options ``"fused_bias"``,
+        ``"shared_phases"`` (on blocks with variable-length attention, where it applies) and ``"flex"`` (when
+        compiled, where it applies), ``"patch_linear"``, and ``"compile:<mode>"``. Empty for the original paths."""
+        modules = list(self.autoencoder.modules())
+
+        def on(name, also=lambda m: True):
+            return any(getattr(m, name, False) is True and also(m) for m in modules)
+
+        names = [name for name, active in (
+            ("sdpa", on("sdpa")),
+            ("fused_bias", on("fused_bias")),
+            ("shared_phases", on("shared_phases", lambda m: getattr(m, "varlen", None) is not None)),
+            ("flex", self.compile is not None and self.device.type == "cuda" and on("flex")),   # see sdpa._flex_ready
+            ("patch_linear", on("patch_linear")),
+        ) if active]
+        return names + ([f"compile:{self.compile}"] if self.compile is not None else [])
 
     def _apply_chunking(self, chunk_seconds: Optional[float], margin_seconds: float) -> None:
         """Set the chunk length and margin, in frames on the window grid (see ``sage/chunked.py``).
@@ -472,7 +523,8 @@ class SAGE:
             self._margin_frames = max(self._margin_frames, g.grid)
 
     def set_precision(self, precision: Optional[str]) -> None:
-        """Numerical precision of the next :meth:`encode` / :meth:`decode` calls (see :meth:`from_checkpoint`)."""
+        """Numerical precision of the next :meth:`encode` / :meth:`decode` calls (see :meth:`from_checkpoint`).
+        On a compiled model the next call at each length compiles again."""
         self.precision = _precision.check_precision(precision)
         dtype = torch.bfloat16 if precision == "bf16" else None
         for block in (self.autoencoder.encoder, self.autoencoder.decoder):
@@ -597,4 +649,5 @@ class SAGE:
         return rec if batched else rec[0]
 
     def __repr__(self) -> str:
-        return f"SAGE(device={self.device}, sr={self.sample_rate}, precision={self.precision})"
+        return (f"SAGE(device={self.device}, sr={self.sample_rate}, precision={self.precision}, "
+                f"compile={self.compile})")

@@ -26,6 +26,16 @@ from sage.utils.run_config import build_run_name
 REPO = Path(__file__).resolve().parents[1]
 PAPER_KEYS = json.loads((REPO / "tests" / "data" / "paper_ckpt_loss_manager_keys.json").read_text())["keys"]
 PREFIX = "engine.loss_manager."
+# The discriminator of the paper run (release v0.2.0): folded mono critics, feature matching 0.2.
+# The recipes now use joint stereo critics, whose first convolutions have other shapes, so the tests
+# against the paper checkpoint and the frozen reference compose the recipes with these overrides.
+PAPER_DISC = (
+    "trainer.loss_config.discriminator.config.preprocess_gain=per_channel",
+    "trainer.loss_config.discriminator.config.mpd_stereo=fold",
+    "trainer.loss_config.discriminator.config.mrd_stereo=fold",
+    "trainer.loss_config.discriminator.config.dac_stereo=fold",
+    "trainer.loss_config.discriminator.weights.feature_matching=0.2",
+)
 KL = {"bottleneck": {"weights": {"kl": 1e-4}}}
 
 
@@ -85,9 +95,9 @@ PAPER_LOSS_CLASSES = {ComplexMSE, MelSpectrogramLoss, SumAndDifferenceSTFTLoss}
 
 
 @pytest.mark.parametrize("experiment,expected", [
-    ("pretrain", [("loss_adv", 0.1), ("feature_matching_loss", 0.2), ("pwc_mse_loss", 1.0), ("mrmel_loss", 0.5),
+    ("pretrain", [("loss_adv", 0.1), ("feature_matching_loss", 10.0), ("pwc_mse_loss", 1.0), ("mrmel_loss", 0.5),
                   ("mrstft_sd_loss", 1.0), ("distill_loss", 1.0), ("kl_loss", 1e-4)]),
-    ("decoder_ft", [("loss_adv", 0.1), ("feature_matching_loss", 0.2), ("pwc_mse_loss", 1.0), ("mrmel_loss", 0.5),
+    ("decoder_ft", [("loss_adv", 0.1), ("feature_matching_loss", 5.0), ("pwc_mse_loss", 1.0), ("mrmel_loss", 0.5),
                     ("mrstft_sd_loss", 1.0), ("kl_loss", 0.0)]),
 ])
 def test_recipe_builds_exactly_the_paper_terms(experiment, expected):
@@ -256,19 +266,19 @@ def _strip(state):
 
 
 def test_legacy_key_list_matches_the_paper_checkpoint():
-    current = {PREFIX + k for k in _manager(*_configs("+experiment=decoder_ft")).state_dict()}
+    current = {PREFIX + k for k in _manager(*_configs("+experiment=decoder_ft", *PAPER_DISC)).state_dict()}
     assert set(PAPER_KEYS) - current == set(LEGACY_STATE_KEYS)             # nothing else is orphaned
     assert current - set(PAPER_KEYS) == set()                              # and nothing is missing
 
 
 def test_paper_loss_state_needs_the_filter():
-    lm = _manager(*_configs("+experiment=decoder_ft"))
+    lm = _manager(*_configs("+experiment=decoder_ft", *PAPER_DISC))
     with pytest.raises(RuntimeError, match="consistency_loss._window"):
         lm.load_state_dict(_strip(_paper_loss_state()), strict=True)
 
 
 def test_paper_loss_state_loads_strictly_after_the_filter():
-    lm = _manager(*_configs("+experiment=decoder_ft"))
+    lm = _manager(*_configs("+experiment=decoder_ft", *PAPER_DISC))
     state = _paper_loss_state()
     assert drop_legacy_state_keys(state) == list(LEGACY_STATE_KEYS)
     lm.load_state_dict(_strip(state), strict=True)
@@ -294,7 +304,7 @@ REFERENCE = REPO / "tests" / "data" / "loss_manager_reference.json"
 
 def _reference_record(experiment):
     torch.manual_seed(94)                                    # trainer seed: discriminator + CLAP head init
-    lm = _manager(*_configs(f"+experiment={experiment}"))
+    lm = _manager(*_configs(f"+experiment={experiment}", *PAPER_DISC))
     record = {}
     for gen_step in (0, 10_000):                             # semantic gate closed / open
         info = _loss_info()

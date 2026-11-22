@@ -105,7 +105,7 @@ def group_bounds(time_tokens: int, window: int, phase: int,
 
 
 def phase_weights(time_tokens: int, window: int, cfg: VarlenConfig,
-                  device: Optional[torch.device] = None) -> torch.Tensor:
+                  device: Optional[torch.device] = None, dtype: torch.dtype = torch.float32) -> torch.Tensor:
     """Per-token, per-phase combination weights.
 
     The quantity that decides the weight is ``d``, the token's distance to the
@@ -121,16 +121,20 @@ def phase_weights(time_tokens: int, window: int, cfg: VarlenConfig,
         cfg: Phases and combination mode.
         device: Where the weights are computed (default CPU). The values are
             integers until the final division, so they are the same everywhere.
+        dtype: Dtype of the weights, computed in it (in float32 when it is narrower,
+            then cast). In float64 they sum to 1 up to float64 rounding, which keeps
+            the shared-phase attention (one output projection for all phases, see
+            SwinTransformerBlock._shared_phase_attention) equal to the per-phase one.
 
     Returns:
-        ``(P, W)`` float32 tensor summing to 1 over the phase axis.
+        ``(P, W)`` tensor of ``dtype`` summing to 1 over the phase axis.
     """
     dists = []
     for phase in cfg.phases:
         start, end = group_bounds(time_tokens, window, phase, device)  # (W,), (W,)
         t = torch.arange(time_tokens, dtype=torch.int64, device=device)
         dists.append(torch.minimum(t - start, end - 1 - t))         # (W,) distance to group edge
-    d = torch.stack(dists).to(torch.float32)                        # (P, W)
+    d = torch.stack(dists).to(torch.promote_types(dtype, torch.float32))   # (P, W)
 
     if cfg.combine == "mean":
         w = torch.ones_like(d)                                      # (P, W)
@@ -138,7 +142,7 @@ def phase_weights(time_tokens: int, window: int, cfg: VarlenConfig,
         w = d + 1.0                                                 # (P, W) linear in the margin
     else:  # "hard"
         w = (d == d.max(dim=0, keepdim=True).values).to(d.dtype)    # (P, W) ties shared equally
-    return w / w.sum(dim=0, keepdim=True)                           # (P, W)
+    return (w / w.sum(dim=0, keepdim=True)).to(dtype)               # (P, W)
 
 
 # --------------------------------------------------------------------------

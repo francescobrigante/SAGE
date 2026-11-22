@@ -334,12 +334,35 @@ def test_use_ema_false_loads_the_training_weights():
     assert set(_extract_autoencoder_state(state, use_ema=False)) == {"encoder.w"}
 
 
+def test_compile_is_a_sage_setting_and_part_of_the_manifest(tmp_path):
+    """compile= applies to model=sage only, takes the modes of sage.compile (true = default), and is part of the
+    manifest: a run.json written before the key ran eager."""
+    from types import SimpleNamespace
+
+    def cfg(*overrides):
+        with initialize_config_dir(config_dir=str(CONFIGS), version_base=None):
+            return compose("reconstruction", ["dataset=moisesdb_mix", *overrides, f"paths.eval_output={tmp_path}",
+                                              f"dataset.data_dir={tmp_path}"])
+    assert cfg("model=sage").compile is None
+    with pytest.raises(SystemExit, match="compile apply to model=sage only"):
+        reconstruction._args_from_cfg(cfg("model=identity", "compile=default"))
+    (tmp_path / "x.ckpt").touch()
+    assert reconstruction._args_from_cfg(cfg("model=sage", f"checkpoint={tmp_path}/x.ckpt", "compile=true")).compile \
+        == "default"
+    with pytest.raises(SystemExit, match="compile=max-autotune"):
+        reconstruction._args_from_cfg(cfg("model=sage", f"checkpoint={tmp_path}/x.ckpt", "compile=max-autotune"))
+    (tmp_path / "run.json").write_text(json.dumps({"model": "sage", "seed": 0}))   # written before the key
+    reconstruction._check_manifest(tmp_path, SimpleNamespace(model="sage", seed=0, compile=None), rank=0)
+    with pytest.raises(SystemExit, match="other settings"):
+        reconstruction._check_manifest(tmp_path, SimpleNamespace(model="sage", seed=0, compile="default"), rank=0)
+
+
 def test_use_ema_is_a_sage_setting_and_part_of_the_manifest(tmp_path):
     from types import SimpleNamespace
     with initialize_config_dir(config_dir=str(CONFIGS), version_base=None):
         cfg = compose("reconstruction", ["dataset=moisesdb_mix", "model=identity", "use_ema=false",
                                          f"paths.eval_output={tmp_path}", f"dataset.data_dir={tmp_path}"])
-    with pytest.raises(SystemExit, match="use_ema apply to model=sage only"):
+    with pytest.raises(SystemExit, match="use_ema and compile apply to model=sage only"):
         reconstruction._args_from_cfg(cfg)
     (tmp_path / "run.json").write_text(json.dumps({"model": "sage", "seed": 0}))   # written before the key
     reconstruction._check_manifest(tmp_path, SimpleNamespace(model="sage", seed=0, use_ema=True), rank=0)

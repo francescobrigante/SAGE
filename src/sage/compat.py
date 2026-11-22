@@ -5,6 +5,7 @@
 # paper checkpoint (SAGE_FTe992.ckpt) was saved with the pre-release layout
 # (`c_vae.*`, `ar_spectra.*`). Only class paths moved: constructor arguments,
 # attribute names and therefore state_dict keys are unchanged.
+# Also: the `_orig_mod.` keys of runs that wrapped the autoencoder in torch.compile.
 # =============================================================================
 from __future__ import annotations
 
@@ -60,3 +61,36 @@ def drop_legacy_state_keys(state_dict: dict) -> list[str]:
     for k in removed:
         del state_dict[k]
     return removed
+
+
+# Runs with the pre-v0.3 `trainer.trainer.compile=true` wrapped the whole autoencoder in torch.compile's
+# OptimizedModule, which stores the model under `_orig_mod`: their checkpoints have keys such as
+# `engine.autoencoder._orig_mod.encoder...` and `ema_autoencoder._orig_mod.encoder...`. The generator is now
+# compiled in place (sage.training.compile), so the keys of the model never carry it.
+COMPILE_WRAPPER = "_orig_mod"
+
+
+def strip_compile_prefix(key: str) -> str:
+    """A state_dict key without the `_orig_mod.` components of torch.compile wrappers, at any depth."""
+    if COMPILE_WRAPPER + "." not in key:
+        return key
+    return ".".join(part for part in key.split(".") if part != COMPILE_WRAPPER)
+
+
+def strip_compile_prefixes(state_dict: dict) -> int:
+    """Rename the keys of a state_dict in place with strip_compile_prefix (order kept); return how many changed.
+
+    Raises:
+        ValueError: if a stripped key collides with another key of the same state_dict.
+    """
+    renamed = {k: strip_compile_prefix(k) for k in state_dict}
+    changed = sum(k != new for k, new in renamed.items())
+    if not changed:
+        return 0
+    if len(set(renamed.values())) != len(renamed):
+        raise ValueError("state_dict holds the same key with and without the torch.compile prefix "
+                         f"'{COMPILE_WRAPPER}.': cannot strip it")
+    items = [(renamed[k], v) for k, v in state_dict.items()]
+    state_dict.clear()
+    state_dict.update(items)
+    return changed

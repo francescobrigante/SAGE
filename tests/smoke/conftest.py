@@ -1,6 +1,6 @@
 # ===============
 # Shared fixtures for the smoke tests: synthetic stereo audio and a tiny SAGE trained for a few
-# batches with the paper's pretraining recipe (CPU, CLAP teacher replaced by a fake, no W&B).
+# batches with the pretraining recipe (CPU, CLAP teacher replaced by a fake, no W&B).
 # The resulting checkpoint feeds the fine-tuning, inference and evaluation smoke tests.
 # ===============
 from __future__ import annotations
@@ -70,6 +70,7 @@ RUN = [
     "trainer.trainer.limit_val_batches=1",
     "trainer.trainer.num_sanity_val_steps=0",
     "trainer.trainer.save_every_n_epochs=1",
+    "trainer.trainer.compile_generator=false",  # on in the recipes; inductor on CPU takes minutes (test_smoke_compile)
     "trainer.wandb.use_wandb=false",
 ]
 
@@ -135,7 +136,7 @@ def audio_dir(tmp_path_factory) -> Path:
 
 
 PRETRAIN = [
-    "+experiment=pretrain",                                        # paper pretraining recipe (Table 6)
+    "+experiment=pretrain",                                        # pretraining recipe (Table 6, stereo critics)
     "data=fma",                                                    # single-corpus loader for the smoke test
     "trainer.loss_config.semantic_distill.detach_warmup_steps=0",  # gate open: gradient flows into the latent
     "trainer.wandb.name=smoke_pretrain",
